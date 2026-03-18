@@ -28,14 +28,13 @@ import io
 import time
 from dotenv import load_dotenv
 from memory import Memory
-from voice_handler import download_file, transcribe_audio, get_audio
+from voice_handler import get_audio
 
 load_dotenv()
 
 # ── Env ───────────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN", "")
 ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY", "")    # Whisper STT
 FISH_AUDIO_API_KEY   = os.getenv("FISH_AUDIO_API_KEY", "") # Fish Audio TTS (Scaramouche voice baked in)
 
 # ── Keyword lists ─────────────────────────────────────────────────────────────
@@ -390,24 +389,7 @@ async def on_message(message: discord.Message):
     user    = await mem.get_user(message.author.id)
     romance = user.get("romance_mode", False) if user else False
 
-    # ── Handle audio/voice message attachments ──────────────────────────────
-    audio_att = next((a for a in message.attachments if is_audio_attachment(a)), None)
-    is_voice  = audio_att is not None
-    voice_text: str | None = None
-
-    if is_voice:
-        if OPENAI_API_KEY:
-            async with message.channel.typing():
-                raw = await download_file(audio_att.url)
-                voice_text = await transcribe_audio(raw, audio_att.filename, OPENAI_API_KEY)
-            if voice_text.startswith("["):
-                await message.reply("...I couldn't make out what you said. Speak more clearly.")
-                return
-        else:
-            await message.reply("Hmph. I can't process audio without a Whisper key. Set OPENAI_API_KEY.")
-            return
-
-    content = voice_text or message.content.strip()
+    content = message.content.strip()
     if not content:
         return
 
@@ -436,10 +418,6 @@ async def on_message(message: discord.Message):
             message.author.mention,
             use_search=False,
         )
-
-    # Send voice response if input was voice; also always send text
-    if is_voice:
-        await send_voice_response(message.channel, reply, ref=message)
 
     await message.reply(reply)
     await maybe_react(message, romance)
