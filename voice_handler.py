@@ -13,7 +13,7 @@ import io
 import asyncio
 import aiohttp
 
-SCARAMOUCHE_VOICE_ID = "a47d67c3f6174379b8f158124ce80d0b"
+SCARAMOUCHE_VOICE_ID = "fb95ab47841a4db189cb35fb619d4ea1"
 FISH_AUDIO_TTS_URL   = "https://api.fish.audio/v1/tts"
 
 
