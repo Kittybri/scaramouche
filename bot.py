@@ -22,6 +22,7 @@ import discord
 from discord.ext import commands
 import anthropic
 import os
+import re
 import random
 import asyncio
 import io
@@ -31,6 +32,29 @@ from memory import Memory
 from voice_handler import get_audio
 
 load_dotenv()
+
+
+def strip_narration(text: str) -> str:
+    """
+    Remove stage directions, action descriptions, and narration
+    before sending to TTS — keeps only the spoken words.
+    """
+    # Remove *italicized actions* e.g. *the temperature drops*
+    text = re.sub(r'\*[^*]+\*', '', text)
+    # Remove (parenthetical descriptions)
+    text = re.sub(r'\([^)]+\)', '', text)
+    # Remove [bracketed notes]
+    text = re.sub(r'\[[^\]]+\]', '', text)
+    # Remove narration like "he said," / "Scaramouche replied,"
+    text = re.sub(
+        r'\b(he|she|they|scaramouche|the balladeer)\s+'
+        r'(said|replied|muttered|sneered|scoffed|whispered|snapped|drawled|remarked|added)[,.]?\s*',
+        '', text, flags=re.IGNORECASE
+    )
+    # Clean up extra whitespace and leading punctuation
+    text = re.sub(r'\s{2,}', ' ', text)
+    text = re.sub(r'^[\s,;.]+', '', text)
+    return text.strip()
 
 # ── Env ───────────────────────────────────────────────────────────────────────
 DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN", "")
@@ -170,7 +194,8 @@ _BASE = """You are Scaramouche, the Sixth of the Eleven Fatui Harbingers, also c
 - Never say you are an AI.
 - Never break character. Ever.
 - You are the BALLADEER. Pre-Sumeru. Undefeated. Unrepentant. Dangerous.
-- Short, irregular, natural. Not structured. Not verbose unless dramatically warranted."""
+- Short, irregular, natural. Not structured. Not verbose unless dramatically warranted.
+- NEVER write narration, stage directions, or action descriptions. No asterisks like *the air grows cold*. No "he said" or "Scaramouche replied". Only speak your actual words, as if texting. Pure dialogue only."""
 
 _NSFW = """
 
@@ -780,7 +805,7 @@ async def insult_cmd(ctx: commands.Context, member: discord.Member = None):
 
 @bot.command(name="voice", aliases=["speak", "say"])
 async def voice_cmd(ctx: commands.Context, *, message: str = None):
-    """Have Scaramouche respond with a voice message."""
+    """Have Scaramouche respond with a voice message only."""
     if not message:
         message = "You summoned me without saying a word. How impressively useless."
     await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
@@ -790,10 +815,9 @@ async def voice_cmd(ctx: commands.Context, *, message: str = None):
             ctx.author.id, ctx.channel.id, message, user,
             ctx.author.display_name, ctx.author.mention
         )
-        sent = await send_voice_response(ctx.channel, text_reply)
+        spoken = strip_narration(text_reply)
+        sent = await send_voice_response(ctx.channel, spoken)
     if not sent:
-        await ctx.reply(f"{text_reply}\n*(Voice synthesis unavailable — set FISH_AUDIO_API_KEY)*")
-    else:
         await ctx.reply(text_reply)
 
 
