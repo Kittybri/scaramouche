@@ -1,7 +1,10 @@
 """
-voice_handler.py — TTS via Fish Audio SDK
+voice_handler.py — TTS via Fish Audio SDK (correct usage)
 
 Voice: https://fish.audio/m/fb95ab47841a4db189cb35fb619d4ea1
+
+IMPORTANT: In Railway, set the variable name as FISH_API_KEY
+(the SDK reads this automatically)
 """
 
 import io
@@ -11,26 +14,30 @@ SCARAMOUCHE_VOICE_ID = "fb95ab47841a4db189cb35fb619d4ea1"
 
 
 def _fish_tts_blocking(text: str, api_key: str) -> bytes | None:
-    """
-    Calls Fish Audio synchronously (SDK is sync-only).
-    client.tts.convert() returns bytes directly.
-    """
     try:
         from fishaudio import FishAudio
+        from fishaudio.types import TTSConfig
+
+        # Pass api_key explicitly so we control the env var name
         client = FishAudio(api_key=api_key)
-        audio: bytes = client.tts.convert(
-            text=text[:1500],
+
+        # reference_id MUST go inside TTSConfig, not convert() directly
+        config = TTSConfig(
             reference_id=SCARAMOUCHE_VOICE_ID,
+            format="mp3",
+            latency="balanced",
         )
-        print(f"[Fish Audio] Got {len(audio)} bytes")
+
+        audio: bytes = client.tts.convert(text=text[:1500], config=config)
+        print(f"[Fish Audio] Success — {len(audio)} bytes")
         return audio
+
     except Exception as e:
-        print(f"[Fish Audio] Error: {type(e).__name__}: {e}")
+        print(f"[Fish Audio] {type(e).__name__}: {e}")
         return None
 
 
 async def generate_tts_fish_audio(text: str, api_key: str) -> bytes | None:
-    """Run the blocking SDK call in a thread so Discord doesn't freeze."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _fish_tts_blocking, text, api_key)
 
@@ -48,7 +55,6 @@ async def generate_tts_gtts(text: str) -> bytes | None:
 
 
 async def get_audio(text: str, fish_audio_key: str) -> bytes | None:
-    """Try Fish Audio first, fall back to gTTS."""
     if fish_audio_key:
         audio = await generate_tts_fish_audio(text, fish_audio_key)
         if audio:
