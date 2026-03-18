@@ -636,9 +636,8 @@ async def reset_cmd(ctx: commands.Context):
 
 
 @bot.command(name="nsfw")
-@commands.has_permissions(manage_messages=True)
 async def nsfw_cmd(ctx: commands.Context, mode: str = None):
-    """Toggle NSFW/unfiltered mode. Requires Manage Messages permission."""
+    """Toggle NSFW/unfiltered mode."""
     await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
     user    = await mem.get_user(ctx.author.id)
     current = user.get("nsfw_mode", False) if user else False
@@ -865,7 +864,7 @@ async def help_cmd(ctx: commands.Context):
     embed.add_field(name="🔊 `!voice <msg>`",                       value="Get a voice message response",           inline=False)
     embed.add_field(name="📨 `!dm [message]`",                      value="He'll DM you privately",                 inline=False)
     embed.add_field(name="🔄 `!reset`",                             value="Wipe your conversation memory (button)", inline=False)
-    embed.add_field(name="🔞 `!nsfw [on/off]`",                     value="Toggle unfiltered mode *(mod only)*",    inline=False)
+    embed.add_field(name="🔞 `!nsfw [on/off]`",                     value="Toggle unfiltered mode",             inline=False)
     embed.add_field(name="💕 `!romance [on/off]`",                  value="Toggle clingy/romance mode",             inline=False)
     embed.add_field(name="📡 `!proactive [on/off]`",                value="Toggle unprompted channel messages",  inline=False)
     embed.add_field(name="💌 `!dms [on/off]`",                      value="Toggle voluntary private DMs from him",inline=False)
