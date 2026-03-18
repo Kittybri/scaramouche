@@ -1,0 +1,13 @@
+# Core
+discord.py>=2.4.0
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+
+# Database
+aiosqlite>=0.20.0
+
+# HTTP (Fish Audio TTS)
+aiohttp>=3.9.0
+
+# Voice TTS fallback — no API key needed
+gtts>=2.5.0
