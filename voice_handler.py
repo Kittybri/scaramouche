@@ -1,10 +1,7 @@
 """
-voice_handler.py — TTS via Fish Audio SDK (correct usage)
+voice_handler.py — TTS via Fish Audio (fish_audio_sdk package)
 
 Voice: https://fish.audio/m/fb95ab47841a4db189cb35fb619d4ea1
-
-IMPORTANT: In Railway, set the variable name as FISH_API_KEY
-(the SDK reads this automatically)
 """
 
 import io
@@ -14,23 +11,32 @@ SCARAMOUCHE_VOICE_ID = "fb95ab47841a4db189cb35fb619d4ea1"
 
 
 def _fish_tts_blocking(text: str, api_key: str) -> bytes | None:
+    """
+    Uses fish_audio_sdk (with underscore) — the package that works via chunks.
+    Exact usage from official docs:
+      from fish_audio_sdk import Session, TTSRequest
+      for chunk in session.tts(TTSRequest(text=..., reference_id=...)):
+    """
     try:
-        from fishaudio import FishAudio
-        from fishaudio.types import TTSConfig
+        from fish_audio_sdk import Session, TTSRequest
 
-        # Pass api_key explicitly so we control the env var name
-        client = FishAudio(api_key=api_key)
-
-        # reference_id MUST go inside TTSConfig, not convert() directly
-        config = TTSConfig(
+        session = Session(api_key)
+        chunks = []
+        for chunk in session.tts(TTSRequest(
+            text=text[:1500],
             reference_id=SCARAMOUCHE_VOICE_ID,
             format="mp3",
             latency="balanced",
-        )
+        )):
+            chunks.append(chunk)
 
-        audio: bytes = client.tts.convert(text=text[:1500], config=config)
-        print(f"[Fish Audio] Success — {len(audio)} bytes")
-        return audio
+        if not chunks:
+            print("[Fish Audio] No chunks returned")
+            return None
+
+        result = b"".join(chunks)
+        print(f"[Fish Audio] Success — {len(result)} bytes")
+        return result
 
     except Exception as e:
         print(f"[Fish Audio] {type(e).__name__}: {e}")
