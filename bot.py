@@ -1320,80 +1320,92 @@ async def whoami_cmd(ctx):
 
 async def help_cmd(ctx):
     try:
-        embed=discord.Embed(title="Commands — Don't Make Me Repeat Myself",description="*Hmph. I'll only say this once.*",color=0x4B0082)
-        fields=[
-            ("💬 `!wander <msg>`","Talk to him · `!w` `!scara`"),
-            ("⚔️ `!spar [msg]`","Word battle"),
-            ("🥊 `!duel @user`","Insult battle referee"),
-            ("🔍 `!judge [@user]`","Brutal character assessment"),
-            ("🔮 `!prophecy [@user]`","Cryptic threatening fortune"),
-            ("📊 `!rate <thing>`","Rates anything out of 10"),
-            ("💞 `!ship @u1 [@u2]`","Reluctant compatibility"),
-            ("🤫 `!confess <text>`","Tell him something"),
-            ("🌸 `!compliment [@user]`","Forces him to say something nice"),
-            ("📝 `!haiku [topic]`","Dark threatening haiku"),
-            ("📖 `!story <prompt>`","Short dark story"),
-            ("👁️ `!stalk [@user]`","Cold observation report"),
-            ("⚖️ `!debate <topic>`","He argues a side"),
-            ("🕵️ `!conspiracy <topic>`","Fatui conspiracy theory"),
-            ("🛋️ `!therapy <problem>`","Terrible in-character advice"),
-            ("🃏 `!blackmail [@user]`","Most incriminating messages"),
-            ("🧩 `!riddle`","Cryptic Genshin riddle"),
-            ("⚡ `!arena [@user]`","Dramatic mock battle"),
-            ("🔦 `!interrogate @user`","Uses their messages as evidence"),
-            ("👻 `!possess @user`","Speaks as them, filtered through him"),
-            ("⚖️ `!verdict <situation>`","He rules on anything"),
-            ("✉️ `!letter [@user]`","Formal old Inazuman letter"),
-            ("😰 `!nightmare`","A nightmare. Somehow about you."),
-            ("🏆 `!rank`","Ranks everyone by tolerability"),
-            ("📊 `!stats`","Your full relationship file"),
-            ("🌤️ `!weather <city>`","Weather + contemptuous commentary"),
-            ("🗡️ `!rival @user`","Designate a rival"),
-            ("⏰ `!remind <mins> <text>`","Reminder with disdain"),
-            ("🌐 `!translate <text>`","Rewritten in his voice"),
-            ("🎯 `!dare`","A dark theatrical dare"),
-            ("🥠 `!fortune`","Fortune cookie as a threat"),
-            ("🧠 `!trivia`","Genshin lore trivia"),
-            ("✅ `!answer <text>`","Answer a trivia question"),
-            ("🎤 `!roast @user`","Turn-based roast battle"),
-            ("🔒 `!hostage`","He takes your good mood hostage"),
-            ("🔓 `!release <offering>`","Try to fulfill his demand"),
-            ("🎭 `!impersonate <character>`","Speaks as a Genshin character, badly"),
-            ("💭 `!opinion <character>`","His honest take on any character"),
-            ("📢 `!poll <question>`","He demands a vote"),
-            ("📋 `!summarize`","Recent chat summary with contempt"),
-            ("🔇 `!mute [@user] [mins]`","Ignores someone for N minutes"),
-            ("🔊 `!unmute [@user]`","Unmutes someone"),
-            ("🔍 `!search <query>`","Web search"),
-            ("🧮 `!solve <problem>`","Math, essays, Q&A · `!math` `!essay`"),
-            ("📜 `!lore <topic>`","Genshin lore"),
-            ("⚡ `!insult [@user]`","Cutting insult"),
-            ("🔊 `!voice <msg>`","Voice message · `!speak` `!say`"),
-            ("📨 `!dm [msg]`","Private DM"),
-            ("🌡️ `!mood`","His mood toward you"),
-            ("💜 `!affection`","His hidden affection score"),
-            ("🔒 `!trust`","His trust level toward you"),
-            ("🔄 `!reset`","Wipe your memory"),
-            ("🔞 `!nsfw [on/off]`","Unfiltered mode"),
-            ("💕 `!romance [on/off]`","Clingy/romance mode"),
-            ("📡 `!proactive [on/off]`","Unprompted channel messages"),
-            ("💌 `!dms [on/off]`","Voluntary private DMs"),
-        ]
-        for name,val in fields:
-            embed.add_field(name=name,value=val,inline=False)
-        embed.add_field(name="💡 Hidden Systems",
-            value=("• Be kind 7 days in a row → something rare happens once\n"
-                   "• Be rude → mood drops → degrading nickname\n"
-                   "• High affection → he starts calling you something specific\n"
-                   "• Build trust → he tells you things he'd never normally say\n"
-                   "• Say 'you will never win' → villain monologue\n"
-                   "• Mention his hat → disproportionate response\n"
-                   "• He reads the channel — knows what everyone's been saying\n"
-                   "• Personality drifts slowly the more you interact"),
+        c = 0x4B0082
+        e1 = discord.Embed(title="Commands (1/3) — Talk & Fight",
+                           description="Hmph. Only saying this once.", color=c)
+        for n,v in [
+            ("💬 !wander <msg>","Talk to him — !w !scara"),
+            ("🔊 !voice <msg>","Voice message — !speak !say"),
+            ("📨 !dm [msg]","He DMs you privately"),
+            ("🤫 !confess <text>","Tell him something"),
+            ("🛋️ !therapy <problem>","Terrible in-character advice"),
+            ("🌐 !translate <text>","Rewritten in his voice"),
+            ("⚔️ !spar [msg]","Word battle"),
+            ("🥊 !duel @user","Insult battle referee"),
+            ("🎤 !roast @user","Turn-based roast battle (5 rounds)"),
+            ("⚡ !arena [@user]","Dramatic mock Genshin battle"),
+            ("🎯 !dare","A dark theatrical dare"),
+            ("🧠 !trivia","Genshin lore trivia"),
+            ("✅ !answer <text>","Answer a trivia question"),
+            ("🧩 !riddle","Cryptic Genshin riddle"),
+            ("🔒 !hostage","Takes your good mood hostage"),
+            ("🔓 !release <offering>","Try to fulfill his demand"),
+            ("🥠 !fortune","Fortune cookie rewritten as a threat"),
+            ("💭 !opinion <char>","His honest take on any Genshin character"),
+            ("🎭 !impersonate <char>","Speaks as them, badly"),
+            ("📜 !lore <topic>","Genshin lore from his perspective"),
+        ]: e1.add_field(name=n,value=v,inline=False)
+
+        e2 = discord.Embed(title="Commands (2/3) — Assess & Create", color=c)
+        for n,v in [
+            ("🔍 !judge [@user]","Brutal character assessment"),
+            ("👁️ !stalk [@user]","Cold observation report"),
+            ("🃏 !blackmail [@user]","Most incriminating messages"),
+            ("🔦 !interrogate @user","Cold interrogation"),
+            ("👻 !possess @user","Speaks as them, filtered through him"),
+            ("📊 !rate <thing>","Rates anything out of 10"),
+            ("💞 !ship @u1 [@u2]","Reluctant compatibility"),
+            ("⚖️ !verdict <situation>","He rules on anything"),
+            ("⚖️ !debate <topic>","He argues a side"),
+            ("🕵️ !conspiracy <topic>","Fatui conspiracy theory"),
+            ("🏆 !rank","Ranks everyone by tolerability"),
+            ("📝 !haiku [topic]","Dark threatening haiku"),
+            ("📖 !story <prompt>","Short dark story"),
+            ("✉️ !letter [@user]","Formal old Inazuman letter"),
+            ("🌸 !compliment [@user]","Forces him to say something nice"),
+            ("⚡ !insult [@user]","Cutting insult"),
+            ("🔮 !prophecy [@user]","Cryptic threatening fortune"),
+            ("😰 !nightmare","A nightmare. Somehow about you."),
+            ("🔍 !search <query>","Web search with commentary"),
+            ("🧮 !solve <problem>","Math, essays, Q&A — !math !essay"),
+        ]: e2.add_field(name=n,value=v,inline=False)
+
+        e3 = discord.Embed(title="Commands (3/3) — Settings & Stats", color=c)
+        for n,v in [
+            ("📊 !stats","Your full relationship file"),
+            ("🌡️ !mood","His mood toward you"),
+            ("💜 !affection","His hidden affection score"),
+            ("🔒 !trust","His trust level toward you"),
+            ("🗡️ !rival @user","Designate a rival"),
+            ("⏰ !remind <mins> <txt>","Reminder with disdain"),
+            ("🌤️ !weather <city>","Weather + contemptuous commentary"),
+            ("📢 !poll <question>","He demands a vote"),
+            ("📋 !summarize","Recent chat summary with contempt"),
+            ("🔇 !mute [@user] [min]","Ignores someone in character"),
+            ("🔊 !unmute [@user]","Unmutes someone"),
+            ("🔄 !reset","Wipe your memory — !forget"),
+            ("🔞 !nsfw [on/off]","Toggle unfiltered mode"),
+            ("💕 !romance [on/off]","Toggle clingy/romance mode"),
+            ("📡 !proactive [on/off]","Toggle unprompted messages"),
+            ("💌 !dms [on/off]","Toggle voluntary private DMs"),
+        ]: e3.add_field(name=n,value=v,inline=False)
+        e3.add_field(name="Hidden Systems",
+            value="Be kind 7 days in a row: something rare happens once\n"
+                  "Be rude: mood drops, you get a degrading nickname\n"
+                  "High affection: he starts calling you something specific\n"
+                  "Build trust: he tells you things he would never normally say\n"
+                  "Say you will never win: villain monologue\n"
+                  "Mention his hat: disproportionate response\n"
+                  "He reads the channel — knows what everyone has been saying",
             inline=False)
-        embed.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
-        await ctx.send(embed=embed)
-    except Exception as e: log_error("help_cmd",e)
+        e3.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
+        await ctx.send(embed=e1)
+        await ctx.send(embed=e2)
+        await ctx.send(embed=e3)
+    except Exception as e:
+        log_error("help_cmd", e)
+        try: await ctx.send("Hmph. Something went wrong.")
+        except: pass
 
 @bot.command(name="scarahelp",aliases=["commands"])
 async def scarahelp_cmd(ctx):
