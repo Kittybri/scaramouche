@@ -1086,7 +1086,7 @@ async def whoami_cmd(ctx):
     await ctx.reply(reply)
 
 
-@bot.command(name="scarahelp", aliases=["commands","help"])
+@bot.command(name="scarahelp", aliases=["commands"])
 async def help_cmd(ctx):
     embed = discord.Embed(
         title="Commands — Don't Make Me Repeat Myself",
@@ -1149,6 +1149,13 @@ async def help_cmd(ctx):
         inline=False)
     embed.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
     await ctx.send(embed=embed)
+
+
+@bot.command(name="help")
+async def help_shortcut_cmd(ctx):
+    """Shortcut so !help works the same as !scarahelp."""
+    await help_cmd(ctx)
+
 
 @bot.event
 async def on_command_error(ctx, error):
