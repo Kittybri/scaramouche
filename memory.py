@@ -1,6 +1,7 @@
 """
 memory.py — Persistent memory for Scaramouche bot (SQLite)
-Stores users, conversation history, modes, moods, rivals, reminders, and cooldowns.
+Stores users, conversation history, modes, moods, affection,
+grudges, rivals, reminders, message counts, and cooldowns.
 """
 
 import aiosqlite
@@ -14,16 +15,20 @@ class Memory:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id      INTEGER PRIMARY KEY,
-                    username     TEXT,
-                    display_name TEXT,
-                    romance_mode INTEGER DEFAULT 0,
-                    nsfw_mode    INTEGER DEFAULT 0,
-                    proactive    INTEGER DEFAULT 1,
-                    allow_dms    INTEGER DEFAULT 1,
-                    mood         INTEGER DEFAULT 0,
-                    rival_id     INTEGER DEFAULT NULL,
-                    last_seen    REAL    DEFAULT 0
+                    user_id        INTEGER PRIMARY KEY,
+                    username       TEXT,
+                    display_name   TEXT,
+                    romance_mode   INTEGER DEFAULT 0,
+                    nsfw_mode      INTEGER DEFAULT 0,
+                    proactive      INTEGER DEFAULT 1,
+                    allow_dms      INTEGER DEFAULT 1,
+                    mood           INTEGER DEFAULT 0,
+                    affection      INTEGER DEFAULT 0,
+                    rival_id       INTEGER DEFAULT NULL,
+                    grudge_nick    TEXT    DEFAULT NULL,
+                    message_count  INTEGER DEFAULT 0,
+                    milestone_last INTEGER DEFAULT 0,
+                    last_seen      REAL    DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,11 +60,15 @@ class Memory:
                     done        INTEGER DEFAULT 0
                 );
             """)
-            # Safe migrations for new columns
+            # Safe migrations
             for col, default in [
-                ("allow_dms",  "INTEGER DEFAULT 1"),
-                ("mood",       "INTEGER DEFAULT 0"),
-                ("rival_id",   "INTEGER DEFAULT NULL"),
+                ("allow_dms",      "INTEGER DEFAULT 1"),
+                ("mood",           "INTEGER DEFAULT 0"),
+                ("affection",      "INTEGER DEFAULT 0"),
+                ("rival_id",       "INTEGER DEFAULT NULL"),
+                ("grudge_nick",    "TEXT DEFAULT NULL"),
+                ("message_count",  "INTEGER DEFAULT 0"),
+                ("milestone_last", "INTEGER DEFAULT 0"),
             ]:
                 try:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} {default}")
@@ -84,22 +93,27 @@ class Memory:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
                 "SELECT user_id, username, display_name, romance_mode, nsfw_mode, "
-                "proactive, allow_dms, mood, rival_id "
+                "proactive, allow_dms, mood, affection, rival_id, grudge_nick, "
+                "message_count, milestone_last "
                 "FROM users WHERE user_id=?", (user_id,)
             ) as cur:
                 row = await cur.fetchone()
                 if not row:
                     return None
                 return {
-                    "user_id":      row[0],
-                    "username":     row[1],
-                    "display_name": row[2],
-                    "romance_mode": bool(row[3]),
-                    "nsfw_mode":    bool(row[4]),
-                    "proactive":    bool(row[5]),
-                    "allow_dms":    bool(row[6]),
-                    "mood":         row[7] or 0,
-                    "rival_id":     row[8],
+                    "user_id":        row[0],
+                    "username":       row[1],
+                    "display_name":   row[2],
+                    "romance_mode":   bool(row[3]),
+                    "nsfw_mode":      bool(row[4]),
+                    "proactive":      bool(row[5]),
+                    "allow_dms":      bool(row[6]),
+                    "mood":           row[7] or 0,
+                    "affection":      row[8] or 0,
+                    "rival_id":       row[9],
+                    "grudge_nick":    row[10],
+                    "message_count":  row[11] or 0,
+                    "milestone_last": row[12] or 0,
                 }
 
     async def set_mode(self, user_id: int, field: str, value: bool):
@@ -110,16 +124,13 @@ class Memory:
             await db.execute(f"UPDATE users SET {field}=? WHERE user_id=?", (int(value), user_id))
             await db.commit()
 
-    # ── Mood system ───────────────────────────────────────────────────────────
+    # ── Mood ─────────────────────────────────────────────────────────────────
     async def update_mood(self, user_id: int, delta: int):
-        """
-        Mood is a score from -10 (hostile) to +10 (tolerant).
-        Starts at 0. Positive interactions nudge it up, rude ones push it down.
-        """
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("""
-                UPDATE users SET mood = MAX(-10, MIN(10, mood + ?)) WHERE user_id=?
-            """, (delta, user_id))
+            await db.execute(
+                "UPDATE users SET mood = MAX(-10, MIN(10, mood + ?)) WHERE user_id=?",
+                (delta, user_id)
+            )
             await db.commit()
 
     async def get_mood(self, user_id: int) -> int:
@@ -128,17 +139,70 @@ class Memory:
                 row = await cur.fetchone()
                 return row[0] if row else 0
 
+    # ── Affection ─────────────────────────────────────────────────────────────
+    async def update_affection(self, user_id: int, delta: int):
+        """Affection: 0–100. Unlocks hidden softer behavior at high levels."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET affection = MAX(0, MIN(100, affection + ?)) WHERE user_id=?",
+                (delta, user_id)
+            )
+            await db.commit()
+
+    async def get_affection(self, user_id: int) -> int:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT affection FROM users WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+                return row[0] if row else 0
+
+    # ── Grudge ────────────────────────────────────────────────────────────────
+    async def set_grudge_nick(self, user_id: int, nick: str | None):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE users SET grudge_nick=? WHERE user_id=?", (nick, user_id))
+            await db.commit()
+
     # ── Rivalry ───────────────────────────────────────────────────────────────
     async def set_rival(self, user_id: int, rival_id: int | None):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE users SET rival_id=? WHERE user_id=?", (rival_id, user_id))
             await db.commit()
 
-    async def get_rival(self, user_id: int) -> int | None:
+    # ── Message count & milestones ────────────────────────────────────────────
+    async def increment_message_count(self, user_id: int) -> tuple[int, bool]:
+        """Increment message count. Returns (new_count, milestone_hit)."""
         async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT rival_id FROM users WHERE user_id=?", (user_id,)) as cur:
+            await db.execute(
+                "UPDATE users SET message_count = message_count + 1 WHERE user_id=?", (user_id,)
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT message_count, milestone_last FROM users WHERE user_id=?", (user_id,)
+            ) as cur:
                 row = await cur.fetchone()
-                return row[0] if row else None
+                if not row:
+                    return 1, False
+                count, last = row[0], row[1]
+
+        milestones = [50, 100, 250, 500, 1000]
+        for m in milestones:
+            if count >= m and last < m:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute(
+                        "UPDATE users SET milestone_last=? WHERE user_id=?", (m, user_id)
+                    )
+                    await db.commit()
+                return count, True
+        return count, False
+
+    async def get_top_users(self, limit: int = 5) -> list[dict]:
+        """Get users sorted by message count — for 'favorites' tracking."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT user_id, display_name, message_count FROM users "
+                "ORDER BY message_count DESC LIMIT ?", (limit,)
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"user_id": r[0], "display_name": r[1], "message_count": r[2]} for r in rows]
 
     # ── Conversation history ──────────────────────────────────────────────────
     async def get_history(self, user_id: int, channel_id: int, limit: int = 22) -> list[dict]:
@@ -152,8 +216,7 @@ class Memory:
         return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
     async def get_random_old_message(self, user_id: int) -> str | None:
-        """Return a random old user message for memory recall feature."""
-        cutoff = time.time() - 86400 * 2  # At least 2 days old
+        cutoff = time.time() - 86400 * 2
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("""
                 SELECT content FROM messages
@@ -162,6 +225,15 @@ class Memory:
             """, (user_id, cutoff)) as cur:
                 row = await cur.fetchone()
                 return row[0] if row else None
+
+    async def get_recent_messages(self, user_id: int, limit: int = 10) -> list[str]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT content FROM messages WHERE user_id=? AND role='user'
+                ORDER BY ts DESC LIMIT ?
+            """, (user_id, limit)) as cur:
+                rows = await cur.fetchall()
+        return [r[0] for r in rows]
 
     async def add_message(self, user_id: int, channel_id: int, role: str, content: str):
         async with aiosqlite.connect(DB_PATH) as db:
@@ -174,7 +246,10 @@ class Memory:
     async def reset_user(self, user_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM messages WHERE user_id=?", (user_id,))
-            await db.execute("UPDATE users SET mood=0, rival_id=NULL WHERE user_id=?", (user_id,))
+            await db.execute(
+                "UPDATE users SET mood=0, affection=0, rival_id=NULL, grudge_nick=NULL, "
+                "message_count=0, milestone_last=0 WHERE user_id=?", (user_id,)
+            )
             await db.commit()
 
     # ── Reminders ─────────────────────────────────────────────────────────────
@@ -196,7 +271,7 @@ class Memory:
             if rows:
                 ids = [r[0] for r in rows]
                 await db.execute(
-                    f"UPDATE reminders SET done=1 WHERE id IN ({','.join('?' * len(ids))})", ids
+                    f"UPDATE reminders SET done=1 WHERE id IN ({','.join('?'*len(ids))})", ids
                 )
                 await db.commit()
         return [{"id": r[0], "user_id": r[1], "channel_id": r[2], "reminder": r[3]} for r in rows]
