@@ -168,6 +168,7 @@ You will never sincerely apologize. Ever. For anything. You might say "that was 
 - [SUMMARY: text] compressed long-term memory of this relationship — use it
 - [CONTRADICTION: text] they just said something that contradicts this. Call it out.
 - [SELECTIVE: text] they said something nice to you recently that you remember but will deny remembering
+- CHANNEL_CONTEXT: recent messages from the channel you've been observing. Use this to be aware of what's been discussed, who said what, ongoing conversations, jokes, arguments. Reference it naturally — don't announce that you read it.
 
 ## Response Style:
 - Vary length constantly. 2-4 words sometimes. Rarely more. UNPREDICTABLE.
@@ -232,8 +233,33 @@ _hostages: dict[int, str] = {}
 _pending_unsent: set[int] = set()
 
 # ── AI helpers ────────────────────────────────────────────────────────────────
+async def fetch_channel_context(channel: discord.TextChannel, limit: int = 15) -> str:
+    """
+    Fetch recent real Discord messages from the channel.
+    Returns a formatted string injected into context so Scaramouche
+    knows what everyone has actually been saying.
+    """
+    try:
+        msgs = []
+        async for msg in channel.history(limit=limit):
+            if msg.author.bot and msg.author == channel.guild.me:
+                continue  # Skip his own messages — he already knows those
+            name    = msg.author.display_name
+            content = msg.content[:120].strip()
+            if content:
+                msgs.append(f"{name}: {content}")
+        if not msgs:
+            return ""
+        msgs.reverse()  # Chronological order
+        return "CHANNEL_CONTEXT (recent chat you've been observing):\n" + "\n".join(msgs)
+    except Exception as e:
+        print(f"[Channel context] {e}")
+        return ""
+
+
 async def get_response(user_id, channel_id, user_message, user, display_name,
-                       author_mention, use_search=False, extra_context="", is_owner=False):
+                       author_mention, use_search=False, extra_context="",
+                       is_owner=False, channel_obj=None):
     history   = await mem.get_history(user_id, channel_id)
     mood      = user.get("mood",0) if user else 0
     affection = user.get("affection",0) if user else 0
@@ -263,7 +289,18 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
     if extra_context:    parts.append(extra_context)
 
-    history.append({"role":"user","content":"["+"|".join(parts)+"]\n"+user_message})
+    # Fetch live channel context so he knows what's been happening
+    channel_ctx = ""
+    if channel_obj and hasattr(channel_obj, "history"):
+        channel_ctx = await fetch_channel_context(channel_obj, limit=15)
+
+    # Build the user turn: context header + optional channel history + the message
+    context_block = "[" + "|".join(parts) + "]\n"
+    if channel_ctx:
+        context_block += channel_ctx + "\n\n"
+    context_block += f"{display_name}: {user_message}"
+
+    history.append({"role": "user", "content": context_block})
     system = build_system(user, display_name, is_owner)
 
     try:
@@ -645,7 +682,8 @@ async def on_message(message):
         reply = await get_response(
             message.author.id, message.channel.id, content,
             user, message.author.display_name, message.author.mention,
-            extra_context=extra, is_owner=is_owner
+            extra_context=extra, is_owner=is_owner,
+            channel_obj=message.channel
         )
 
     # Affection nickname progression
@@ -763,7 +801,9 @@ async def wander_cmd(ctx,*,msg:str=None):
     if not msg: await ctx.reply(random.choice(["What.","Speak.","You called me for nothing?"])); return
     user=await _setup(ctx); is_owner=bool(OWNER_ID and ctx.author.id==OWNER_ID)
     async with ctx.typing():
-        reply=await get_response(ctx.author.id,ctx.channel.id,msg,user,ctx.author.display_name,ctx.author.mention,is_owner=is_owner)
+        reply=await get_response(ctx.author.id,ctx.channel.id,msg,user,
+                                 ctx.author.display_name,ctx.author.mention,
+                                 is_owner=is_owner, channel_obj=ctx.channel)
     await ctx.reply(reply)
     await maybe_react(ctx.message,user.get("romance_mode",False) if user else False)
 
