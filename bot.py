@@ -761,7 +761,27 @@ async def _voluntary_dm_loop():
                             if not await mem.can_dm_user(uid,5400 if romance else 7200): continue
                             du = await bot.fetch_user(uid)
                             pool = random.choices([DM_ROMANCE,DM_INTERESTED,DM_GENERIC],weights=[65,25,10] if romance else [0,40,60])[0]
-                            txt = random.choice(pool) if random.random()<.5 else await qai(f"Message {name} unprompted. {'In love, hiding it.' if romance else 'Mildly tolerable.'} ONE DM 1-2 sentences. No 'Hello'.",120)
+                            # Always use canned lines OR generate with full system prompt
+                            # Never use bare qai — it leaks instructions
+                            if random.random() < 0.5:
+                                txt = random.choice(pool)
+                            else:
+                                try:
+                                    dm_prompt = (
+                                        f"You have decided to message {name} out of nowhere, unprompted. "
+                                        + ("You are obsessively in love with them and hiding it desperately. " if romance else "You find them mildly tolerable. ")
+                                        + "Write ONE short message — 1-2 sentences. Spontaneous. Just speak."
+                                    )
+                                    loop = asyncio.get_event_loop()
+                                    sys = build_system(ud, name)
+                                    def _dm_ai():
+                                        r = ai.messages.create(model="claude-sonnet-4-20250514",
+                                            max_tokens=120, system=sys,
+                                            messages=[{"role":"user","content":dm_prompt}])
+                                        return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                                    txt = await loop.run_in_executor(None, _dm_ai) or random.choice(pool)
+                                except Exception:
+                                    txt = random.choice(pool)
                             if random.random()<.2 and FISH_AUDIO_API_KEY:
                                 audio=await get_audio(strip_narration(txt),FISH_AUDIO_API_KEY)
                                 if audio:
