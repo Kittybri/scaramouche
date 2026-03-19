@@ -410,6 +410,13 @@ async def on_member_remove(member):
 @bot.event
 async def on_message(message):
     if message.author.bot: return
+
+    # Intercept !help before discord.py swallows it
+    if message.content.strip().lower() in ("!help", "!commands", "!scarahelp"):
+        ctx = await bot.get_context(message)
+        await help_cmd(ctx)
+        return
+
     await bot.process_commands(message)
     if message.content.startswith("!"): return
 
@@ -1149,12 +1156,6 @@ async def help_cmd(ctx):
         inline=False)
     embed.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
     await ctx.send(embed=embed)
-
-
-@bot.command(name="help")
-async def help_shortcut_cmd(ctx):
-    """Shortcut so !help works the same as !scarahelp."""
-    await help_cmd(ctx)
 
 
 @bot.event
