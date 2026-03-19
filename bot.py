@@ -1049,4 +1049,35 @@ if __name__ == "__main__":
         raise SystemExit("❌  DISCORD_TOKEN not set in .env")
     if not ANTHROPIC_API_KEY:
         raise SystemExit("❌  ANTHROPIC_API_KEY not set in .env")
+    embed.add_field(
+        name="💡 Tips",
+        value=(
+            "• Be consistently nice → affection rises → he gets softer (barely)\n"
+            "• Be rude → mood drops → he gives you a degrading nickname\n"
+            "• He reacts to images posted in chat\n"
+            "• Milestone messages at 50, 100, 250, 500, 1000 messages\n"
+            "• Auto voice responses happen randomly\n"
+            "• He gets darker and more unguarded late at night"
+        ),
+        inline=False
+    )
+    embed.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
+    await ctx.send(embed=embed)
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        pass
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply("You're missing something. Try again properly.")
+    else:
+        print(f"[Command Error] {error}")
+
+
+if __name__ == "__main__":
+    if not DISCORD_TOKEN:
+        raise SystemExit("❌  DISCORD_TOKEN not set in .env")
+    if not ANTHROPIC_API_KEY:
+        raise SystemExit("❌  ANTHROPIC_API_KEY not set in .env")
     bot.run(DISCORD_TOKEN)
