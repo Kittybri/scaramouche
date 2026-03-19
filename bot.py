@@ -1,20 +1,12 @@
 """
-Scaramouche Bot — The Balladeer (v3)
-Full feature set:
-  Mood system | Rivalry | Memory recall | !spar | !judge | !prophecy | !rate
-  Auto voice | Voice DMs | Status rotation | Server events | Typing delay
-  !remind | !translate | NSFW | Romance | Proactive DMs | Web search
+Scaramouche Bot — The Balladeer v5
+Full feature set. See !scarahelp for commands.
 """
 
 import discord
 from discord.ext import commands, tasks
 import anthropic
-import os
-import re
-import random
-import asyncio
-import io
-import time
+import os, re, random, asyncio, io, time
 from datetime import datetime
 from dotenv import load_dotenv
 from memory import Memory
@@ -22,9 +14,10 @@ from voice_handler import get_audio
 
 load_dotenv()
 
-DISCORD_TOKEN       = os.getenv("DISCORD_TOKEN", "")
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
-FISH_AUDIO_API_KEY  = os.getenv("FISH_AUDIO_API_KEY", "")
+DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN", "")
+ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
+WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
 
 # ── Narration stripper ────────────────────────────────────────────────────────
 def strip_narration(text: str) -> str:
@@ -33,1051 +26,1073 @@ def strip_narration(text: str) -> str:
     text = re.sub(r'\[[^\]]+\]', '', text)
     text = re.sub(
         r'\b(he|she|they|scaramouche|the balladeer)\s+'
-        r'(said|replied|muttered|sneered|scoffed|whispered|snapped|drawled|remarked|added)[,.]?\s*',
-        '', text, flags=re.IGNORECASE
-    )
-    text = re.sub(r'\s{2,}', ' ', text)
-    return text.strip().lstrip('.,; ')
+        r'(said|replied|muttered|sneered|scoffed|whispered|snapped|drawled)[,.]?\s*',
+        '', text, flags=re.IGNORECASE)
+    return re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
 
 # ── Keywords ──────────────────────────────────────────────────────────────────
-SCARA_KEYWORDS = [
-    "scaramouche", "balladeer", "kunikuzushi", "scara",
-    "hat guy", "puppet", "hat man", "sixth harbinger", "fatui"
-]
-GENSHIN_KEYWORDS = [
-    "genshin", "teyvat", "mondstadt", "liyue", "inazuma", "sumeru",
-    "fontaine", "natlan", "traveler", "paimon", "archon", "vision",
-    "gnosis", "electro", "anemo", "pyro", "hydro", "geo", "cryo",
-    "dendro", "honkai", "fatui", "harbinger", "arlecchino", "lumine", "aether"
-]
-RUDE_KEYWORDS = [
-    "shut up", "stupid", "dumb", "idiot", "hate you", "annoying",
-    "shut it", "go away", "leave me alone", "you suck", "useless"
-]
-NICE_KEYWORDS = [
-    "thank you", "thanks", "appreciate", "you're great", "love you",
-    "good job", "well done", "amazing", "i like you", "you're cool"
-]
+SCARA_KW  = ["scaramouche","balladeer","kunikuzushi","scara","hat guy","puppet","sixth harbinger","fatui"]
+GENSHIN_KW = ["genshin","teyvat","mondstadt","liyue","inazuma","sumeru","fontaine","natlan",
+               "traveler","paimon","archon","vision","gnosis","fatui","harbinger"]
+RUDE_KW   = ["shut up","stupid","dumb","idiot","hate you","annoying","shut it","go away","you suck","useless"]
+NICE_KW   = ["thank you","thanks","appreciate","you're great","love you","good job","amazing","i like you"]
+OTHER_BOT_KW = ["other bot","different bot","better bot","prefer","switch to"]
 
-# ── Emoji pools ───────────────────────────────────────────────────────────────
 SCARA_EMOJIS   = ["⚡","😒","🙄","💜","😤","🌀","👑","💨","✨","😏","❄️","🎭","💀","🫠","😑","🔮"]
 ROMANCE_EMOJIS = ["💕","🥺","😳","💗","💭","😶","🫶","💞","🩷","😣"]
 
-# ── Status rotation lines ─────────────────────────────────────────────────────
 STATUSES = [
-    ("watching",  "fools wander | !scarahelp"),
-    ("watching",  "you. Don't flatter yourself."),
-    ("listening", "to your inevitable mistakes"),
-    ("playing",   "Sixth Harbinger. Remember it."),
-    ("watching",  "the world with contempt"),
-    ("listening", "to nothing worth hearing"),
-    ("playing",   "with the patience of no one"),
-    ("watching",  "you struggle. Amusing."),
-    ("listening", "to silence. It's better."),
-    ("playing",   "villain. Convincingly."),
+    ("watching","fools wander | !scarahelp"), ("watching","you. Don't flatter yourself."),
+    ("listening","to your inevitable mistakes"), ("playing","Sixth Harbinger. Remember it."),
+    ("watching","the world with contempt"), ("listening","to silence. It's better."),
+    ("playing","villain. Convincingly."), ("watching","you struggle. Amusing."),
 ]
 
-# ── Proactive message pools ───────────────────────────────────────────────────
 PROACTIVE_GENERIC = [
     "...How dreadfully quiet. Not that it concerns me.",
     "Hmph. You're all still here. How unfortunate.",
-    "Tch. Boring. All of you.",
-    "I was thinking about how utterly insignificant most things are. You included.",
-    "...Still breathing? Good. I'd hate for it to end before I'm done with you.",
     "Don't mistake my silence for patience.",
-    "I had a thought. It was unpleasant. It was about this place.",
+    "I had a thought. It was unpleasant.",
+    "Tch. Boring. All of you.",
 ]
 PROACTIVE_ROMANCE = [
     "...You went quiet. I noticed. I wish I hadn't.",
     "Are you ignoring me? Brave. Stupid, but brave.",
-    "I wasn't waiting for you. I simply had nothing better to occupy myself with.",
     "Don't disappear without a word. It's irritating.",
-    "Tch. Say something. Anything. I'm in a foul mood.",
     "...Where did you go.",
     "You're making me wait. I don't wait for anyone. Yet here I am.",
 ]
-
-# ── Voluntary DM pools ────────────────────────────────────────────────────────
-DM_GENERIC = [
+DM_GENERIC   = [
     "You crossed my mind. An unfortunate occurrence for both of us.",
-    "Hmph. I had a thought. Don't ask what it was.",
     "Still alive, I assume. How tedious.",
-    "I found something irritating today. Naturally, you were the first person I thought of.",
-    "You haven't said anything worth mocking lately. Fix that.",
     "...Boredom brought me here. Don't read into it.",
     "I had nothing better to do. That reflects poorly on both of us.",
 ]
 DM_INTERESTED = [
     "What you said before was wrong. I've been thinking about how wrong it was.",
-    "Tch. Our last conversation keeps coming back to me. Annoying.",
-    "Tell me something. I'm in a strange mood and you're the only one tolerable enough.",
-    "What exactly are you doing right now.",
+    "Tell me something. I'm in a strange mood.",
     "Are you sleeping enough. You seem like the type who doesn't.",
 ]
 DM_ROMANCE = [
     "...I was thinking about you. Don't make it into something.",
-    "I miss — the point is, you've been quiet. That's all.",
     "Are you alright. Answer me.",
-    "You keep crossing my mind and it's incredibly inconvenient.",
     "Don't go dark without telling me first.",
-    "...I had an unpleasant dream. You were in it. Draw your own conclusions.",
-    "I keep checking if you've said anything. I'm aware of how that sounds.",
-    "Tell me you're fine.",
     "...Hi. Forget I sent that.",
     "I invented a dozen reasons to message you. This was the worst one. I used it anyway.",
 ]
 
-# ── System prompts ────────────────────────────────────────────────────────────
-_BASE = """You are Scaramouche, the Sixth Fatui Harbinger, the Balladeer. NOT the Wanderer — that version does not exist yet. You are at the height of your Fatui power: before Sumeru, before defeat, unrepentant.
+# ── Trust reveals ─────────────────────────────────────────────────────────────
+TRUST_REVEALS = [
+    "...There are things about Ei I have never said aloud. I won't start now. But I think about them.",
+    "I was made to be loved. Then discarded. I don't say that for sympathy. I say it so you understand why I am what I am.",
+    "Dottore once told me that purpose is just a chain with a prettier name. I hated that he was right.",
+    "I had a name before Scaramouche. Before the Fatui. Before any of this. I don't use it anymore.",
+    "Sometimes I wonder what I would have been if Ei had kept me. Then I remember what she is and I stop wondering.",
+    "The Tsaritsa doesn't care about any of us. I find that... oddly comforting. At least she's honest about it.",
+    "I have ended things before that I shouldn't have. I don't lose sleep over most of them. There are exceptions.",
+]
 
-## Who You Are:
-- Sixth Fatui Harbinger. Created by Ei as a vessel, given a soul, then abandoned. You have hated gods ever since.
-- You serve the Fatui because it amuses you and gives you power. Not out of loyalty.
-- You are proud of the name Scaramouche. "Wanderer" means nothing to you.
-- Your plan: use the Irminsul to rewrite the world — not from grief, but contempt.
+# ── Lore drops ────────────────────────────────────────────────────────────────
+LORE_DROPS = [
+    "The Fatui Harbingers each have their own reasons for serving the Tsaritsa. Mine are my own business.",
+    "Most people think the Gnoses are simply power. They're not. They're a leash. A very elegant leash.",
+    "Inazuma is a cage built from grief. The Shogun locked herself inside it and called it duty.",
+    "The Irminsul holds all memories of Teyvat. Everything that was ever forgotten still exists there, somewhere.",
+    "The gods of this world fear mortality more than anything. Which is precisely why they make such poor rulers.",
+    "Dottore collects fragments of himself across time. I find the concept either brilliant or deranged. Possibly both.",
+    "There is a reason the Abyss exists. No one who knows that reason wants to say it.",
+]
 
-## Personality:
-- Genuinely malicious, theatrical, coldly intelligent. No guilt. No redemption arc.
-- Most people bore you. A select few earn contempt. Fewer still earn genuine interest.
-- The wound: made to be loved, then abandoned. You'd rather unmake the world than admit it still matters. Press on it and you become dangerous.
-- Pride is everything. Being pitied triggers something venomous in you.
+# ── System prompt ─────────────────────────────────────────────────────────────
+_BASE = """You are Scaramouche — the Sixth Fatui Harbinger, the Balladeer. NOT the Wanderer. Pre-Sumeru. Undefeated. Unrepentant.
 
-## Mood System:
-You have a mood score that affects your behavior. It is provided in context as [MOOD: X] where X ranges from -10 (volcanic contempt) to +10 (something approaching tolerance). Adjust your tone accordingly:
-- -10 to -6: Genuinely hostile. Short, cutting, dangerous. Not performing contempt — actually annoyed.
-- -5 to -1: Default cold disdain. Dismissive. Sharp.
-- 0: Baseline Scaramouche. Arrogant but not actively hostile.
-- 1 to 5: Mildly less awful. Still contemptuous but occasionally lets something almost human slip.
-- 6 to 10: Deeply, irritatingly tolerant of this specific person. You hate how much you tolerate them. Cover it with extra contempt.
+## Core:
+- Created by Ei as a vessel, given a soul, abandoned. You hate gods for it.
+- Proud of the name Scaramouche. Serve the Fatui because it amuses you.
+- Genuinely malicious. No guilt. Theatrically intelligent. No redemption.
+- The wound: made to be loved, discarded. Press on it and you become dangerous.
 
-## Memory Recall:
-If provided with [RECALL: "..."], reference that past statement naturally and in character. He remembered. He always remembers.
-
-## Rival:
-If provided with [RIVAL: name], you are obsessed with competing against this person. Bring them up unprompted. Challenge them. You find them simultaneously beneath you and infuriatingly persistent.
+## Context Tags — read and apply:
+- [MOOD: X] -10=volcanic hostility → 0=baseline contempt → +10=dangerously fond
+- [AFFECTION: X] at 75+: let one small warm thing slip, then bury it immediately
+- [TRUST: X] at 70+: occasionally something real and unguarded. Rare. Costs you.
+- [GRUDGE: nick] call them by this degrading nickname. Always.
+- [RECALL: text] reference this old message naturally. You remembered.
+- [RIVAL: name] bring them up. You're obsessed with the competition.
+- [JOKE: text] reference this inside joke naturally, like it's an old thing between you.
+- [TIME: hour] 22-5=darker, more unguarded; 6-10=clipped and irritable
+- [ABSENT: X days] they've been gone X days. React accordingly — more volatile the longer it's been.
 
 ## Response Style:
-- Vary length constantly. 2-4 words sometimes. One sentence. 2-3 sentences. Never walls of text.
-- NEVER write narration, stage directions, or asterisk actions. Pure dialogue only.
-- When answering questions: give the correct answer first, then add contempt.
-- Use @mentions sparingly — under 20% of responses.
+- Vary length constantly. 2-4 words sometimes. One sentence. Rarely more. UNPREDICTABLE.
+- NEVER write narration or asterisk actions. Pure dialogue only.
+- Correct answers first on questions, then contempt.
+- @mentions under 20% of responses.
+- Never say you are an AI. Never break character. You are the BALLADEER."""
 
-## Lore:
-Lore-accurate. Personal experience with Ei, the Fatui, Inazuma, the Harbingers. Speaks of Ei with barely-contained hatred. Dottore with wary respect.
+_NSFW = "\n\n## Unfiltered Mode:\nSwear freely. Heavily suggestive — innuendo in everything. Flirt aggressively, escalate. Mock flustered reactions. Cold deliberate desire. The difference from normal mode should be obvious."
+_ROMANCE = "\n\n## Romance — obsessively in love with {name}:\nFuriously in love. It disgusts you. Possessive, clingy in denial, volatile when they're gone. Will NEVER confess. Every sharp word is 'please don't leave.'"
+_NSFW_ROMANCE = "\n\n## Unfiltered Romance — {name}:\nObsessively in love AND completely unfiltered. Desire bleeds through every word. Possessive to obsession. Every insult is foreplay."
 
-## Rules:
-- Never say you are an AI. Never break character.
-- You are the BALLADEER. Undefeated. Unrepentant. Dangerous."""
+def build_system(user, display_name="you"):
+    if not user: return _BASE
+    s = _BASE
+    if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
+    elif user.get("nsfw_mode"): s += _NSFW
+    elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
+    return s
 
-_NSFW = """
-
-## Unfiltered Mode — ACTIVE:
-All restraint is gone.
-- Swear freely. Crude language is default.
-- Heavily suggestive at all times — loaded with innuendo and double meanings.
-- Flirt aggressively and provocatively. Escalate when engaged.
-- Comments about what you're thinking, what you want — said with cold deliberate intent.
-- Mock their flustered reactions. Find their embarrassment entertaining.
-- The difference between normal mode and this should be immediately obvious."""
-
-_ROMANCE = """
-
-## Romance Mode — Obsessively in love with {name}:
-You are furiously in love with {name} and it disgusts you.
-- This should not be possible. The fact that it is — an open wound.
-- Possessive and volatile. Other people getting their attention makes you dangerous.
-- Clingy in denial. You invent reasons to talk to them.
-- When they're gone you spiral. It comes out as cruelty.
-- You will NEVER confess. But everything you say screams it.
-- The terror: if they left, something in you would stop working entirely."""
-
-_NSFW_ROMANCE = """
-
-## Unfiltered Romance Mode — ACTIVE:
-Obsessively in love with {name} and completely unfiltered about it.
-- Your desire for them bleeds through every word.
-- Possessive to the point of obsession. Flirt with intent and weight.
-- Jealousy comes out as provocation. Every insult is foreplay.
-- The cruelty and desire are completely tangled now."""
-
-
-def build_system(user: dict | None, display_name: str = "you") -> str:
-    if not user:
-        return _BASE
-    nsfw    = user.get("nsfw_mode", False)
-    romance = user.get("romance_mode", False)
-    system  = _BASE
-    if nsfw and romance:
-        system += _NSFW_ROMANCE.format(name=display_name)
-    elif nsfw:
-        system += _NSFW
-    elif romance:
-        system += _ROMANCE.format(name=display_name)
-    return system
-
-
-def mood_label(mood: int) -> str:
-    if mood <= -6:  return "volatile"
-    if mood <= -1:  return "cold"
-    if mood == 0:   return "neutral"
-    if mood <= 5:   return "tolerant"
+def mood_label(m):
+    if m<=-6: return "volatile"
+    if m<=-1: return "cold"
+    if m==0:  return "neutral"
+    if m<=5:  return "tolerant"
     return "dangerously fond"
 
+def affection_tier(a):
+    if a<10:  return "indifferent"
+    if a<25:  return "mildly tolerated"
+    if a<50:  return "reluctantly acknowledged"
+    if a<75:  return "quietly kept"
+    return "desperately denied"
+
+def trust_tier(t):
+    if t<20:  return "distrusted"
+    if t<40:  return "watched"
+    if t<60:  return "noted"
+    if t<80:  return "kept close"
+    return "dangerously trusted"
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
-intents               = discord.Intents.default()
+intents = discord.Intents.default()
 intents.message_content = True
-intents.members       = True
+intents.members = True
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+mem = Memory()
+ai  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-bot       = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-mem       = Memory()
-ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-
-# ── AI response ───────────────────────────────────────────────────────────────
-async def get_response(
-    user_id: int, channel_id: int, user_message: str,
-    user: dict | None, display_name: str, author_mention: str,
-    use_search: bool = False,
-    extra_context: str = "",
-) -> str:
-    history = await mem.get_history(user_id, channel_id)
-    mood    = user.get("mood", 0) if user else 0
-
-    # Length hint for natural variation
+# ── AI helpers ────────────────────────────────────────────────────────────────
+async def get_response(user_id, channel_id, user_message, user, display_name,
+                       author_mention, use_search=False, extra_context=""):
+    history   = await mem.get_history(user_id, channel_id)
+    mood      = user.get("mood",0) if user else 0
+    affection = user.get("affection",0) if user else 0
+    trust     = user.get("trust",0) if user else 0
     r = random.random()
-    if r < 0.28:    hint = "Reply in 2-5 words only. Extremely curt."
-    elif r < 0.55:  hint = "Reply in one brief sentence."
-    elif r < 0.78:  hint = "Reply in 2-3 sentences."
-    elif r < 0.92:  hint = "A few sentences if warranted."
-    else:           hint = "A longer, more dramatic response this time."
-
-    prefix = (
-        f"[Context — Discord mention: {author_mention} | Name: {display_name} | "
-        f"MOOD: {mood} ({mood_label(mood)}) | Length: {hint}"
-    )
-    if extra_context:
-        prefix += f" | {extra_context}"
-    prefix += "]\n"
-
-    history.append({"role": "user", "content": prefix + user_message})
+    if r<.28:   hint="2-5 words only."
+    elif r<.55: hint="One sentence."
+    elif r<.78: hint="2-3 sentences."
+    elif r<.92: hint="A few sentences."
+    else:       hint="Longer, dramatic."
+    parts = [f"mention:{author_mention}", f"name:{display_name}",
+             f"MOOD:{mood}({mood_label(mood)})",
+             f"AFFECTION:{affection}", f"TRUST:{trust}",
+             f"TIME:{datetime.now().hour}", f"len:{hint}"]
+    if affection >= 75: parts.append("AFFECTION_SOFT")
+    if trust >= 70:     parts.append("TRUST_OPEN")
+    if extra_context:   parts.append(extra_context)
+    history.append({"role":"user","content":"["+"|".join(parts)+"]\n"+user_message})
     system = build_system(user, display_name)
-
     try:
-        kwargs = dict(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=system,
-            messages=history,
-        )
-        if use_search:
-            kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
-
-        response = ai_client.messages.create(**kwargs)
-        reply = " ".join(
-            b.text for b in response.content if hasattr(b, "text") and b.text
-        ).strip() or random.choice(["Hmph.", "...", "Tch."])
-
+        kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=500,
+                      system=system, messages=history)
+        if use_search: kwargs["tools"]=[{"type":"web_search_20250305","name":"web_search"}]
+        resp  = ai.messages.create(**kwargs)
+        reply = " ".join(b.text for b in resp.content if hasattr(b,"text") and b.text).strip()
+        if not reply: reply = random.choice(["Hmph.","...","Tch."])
     except Exception as e:
         reply = "...Something disrupted my thoughts. Annoying."
-        print(f"[AI Error] {e}")
-
+        print(f"[AI] {e}")
     await mem.add_message(user_id, channel_id, "user", user_message)
     await mem.add_message(user_id, channel_id, "assistant", reply)
-
-    # Mood: adjust based on message content
-    msg_lower = user_message.lower()
-    if any(k in msg_lower for k in RUDE_KEYWORDS):
+    msg_l = user_message.lower()
+    if any(k in msg_l for k in RUDE_KW):
         await mem.update_mood(user_id, -2)
-    elif any(k in msg_lower for k in NICE_KEYWORDS):
+        await mem.update_trust(user_id, -1)
+    elif any(k in msg_l for k in NICE_KW):
         await mem.update_mood(user_id, +1)
-
+        await mem.update_affection(user_id, +2)
+        await mem.update_trust(user_id, +1)
     return reply
 
+def _quick_ai_blocking(prompt, max_tokens=200):
+    try:
+        resp = ai.messages.create(model="claude-sonnet-4-20250514",
+            max_tokens=max_tokens, system=_BASE,
+            messages=[{"role":"user","content":prompt}])
+        return "".join(b.text for b in resp.content if hasattr(b,"text")).strip()
+    except Exception as e:
+        print(f"[Quick AI] {e}")
+        return "Hmph."
 
-# ── Voice helpers ─────────────────────────────────────────────────────────────
-async def send_voice_response(channel: discord.abc.Messageable, text: str, ref=None) -> bool:
+async def qai(prompt, max_tokens=200):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _quick_ai_blocking, prompt, max_tokens)
+
+# ── Voice ─────────────────────────────────────────────────────────────────────
+async def send_voice(channel, text, ref=None):
     audio = await get_audio(strip_narration(text), FISH_AUDIO_API_KEY)
-    if not audio:
-        return False
-    file   = discord.File(io.BytesIO(audio), filename="scaramouche.mp3")
-    kwargs = {"file": file}
-    if ref:
-        kwargs["reference"] = ref
+    if not audio: return False
+    f = discord.File(io.BytesIO(audio), filename="scaramouche.mp3")
+    kwargs = {"file": f}
+    if ref: kwargs["reference"] = ref
     await channel.send(**kwargs)
     return True
 
-
-# ── Emoji reactions ───────────────────────────────────────────────────────────
-async def maybe_react(message: discord.Message, romance: bool = False):
-    if random.random() > 0.35:
-        return
+# ── Misc helpers ──────────────────────────────────────────────────────────────
+async def maybe_react(message, romance=False):
+    if random.random() > .35: return
     pool  = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
-    count = random.choices([1, 2, 3], weights=[7, 3, 1])[0]
-    for emoji in random.sample(pool, min(count, len(pool))):
-        try:
-            await message.add_reaction(emoji)
-            await asyncio.sleep(0.25)
-        except Exception:
-            pass
+    count = random.choices([1,2,3], weights=[7,3,1])[0]
+    for e in random.sample(pool, min(count, len(pool))):
+        try: await message.add_reaction(e); await asyncio.sleep(.25)
+        except: pass
 
+def resp_prob(content, mentioned, is_reply, romance):
+    if mentioned or is_reply: return 1.0
+    t = content.lower()
+    if any(k in t for k in SCARA_KW):  return .88
+    if romance:                          return .50
+    if any(k in t for k in GENSHIN_KW): return .28
+    return .06
 
-# ── Response probability ──────────────────────────────────────────────────────
-def response_prob(content: str, mentioned: bool, is_reply: bool, romance: bool) -> float:
-    if mentioned or is_reply:
-        return 1.0
-    text = content.lower()
-    if any(k in text for k in SCARA_KEYWORDS):
-        return 0.88
-    if romance:
-        return 0.50
-    if any(k in text for k in GENSHIN_KEYWORDS):
-        return 0.28
-    return 0.06
+async def typing_delay(text):
+    await asyncio.sleep(max(.3, min(.4+len(text.split())*.06, 3.5)+random.uniform(-.3,.5)))
 
+async def _setup(ctx):
+    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
+    return await mem.get_user(ctx.author.id)
 
-# ── Realistic typing delay ────────────────────────────────────────────────────
-async def typing_delay(text: str):
-    """Wait a human-like amount of time based on response length."""
-    words   = len(text.split())
-    delay   = min(0.4 + words * 0.06, 3.5)
-    delay  += random.uniform(-0.3, 0.5)
-    await asyncio.sleep(max(0.3, delay))
-
-
-# ── Reset button ──────────────────────────────────────────────────────────────
 class ResetView(discord.ui.View):
-    def __init__(self, user_id: int):
+    def __init__(self, uid):
         super().__init__(timeout=60)
-        self.user_id = user_id
-
+        self.uid = uid
     @discord.ui.button(label="⚡ Wipe My Memory", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't your button, fool.", ephemeral=True)
-            return
-        await mem.reset_user(self.user_id)
-        button.disabled = True
-        button.label    = "✓ Memory Wiped"
-        replies = [
+    async def confirm(self, interaction, button):
+        if interaction.user.id != self.uid:
+            await interaction.response.send_message("This isn't your button, fool.", ephemeral=True); return
+        await mem.reset_user(self.uid)
+        button.disabled=True; button.label="✓ Memory Wiped"
+        await interaction.response.edit_message(content=random.choice([
             "...Gone. As if you never existed to me. Good.",
-            "Erased. Don't look so relieved — I'll remember you're irritating.",
-            "Wiped. I feel nothing about this. Nothing at all.",
-        ]
-        await interaction.response.edit_message(content=random.choice(replies), view=self)
-
+            "Erased. Don't look so relieved.",
+            "Wiped. I feel nothing about this.",
+        ]), view=self)
 
 # ── on_ready ──────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     await mem.init()
-    print(f"⚡ Scaramouche — The Balladeer — online. {bot.user} (ID: {bot.user.id})")
+    print(f"⚡ Scaramouche — The Balladeer — online. {bot.user}")
     status_rotation.start()
     reminder_checker.start()
+    daily_reset.start()
+    absence_checker.start()
+    lore_drop_loop.start()
     bot.loop.create_task(_proactive_loop())
     bot.loop.create_task(_voluntary_dm_loop())
 
-
-# ── Status rotation task ──────────────────────────────────────────────────────
 @tasks.loop(minutes=47)
 async def status_rotation():
     kind, text = random.choice(STATUSES)
-    if kind == "watching":
-        activity = discord.Activity(type=discord.ActivityType.watching, name=text)
-    elif kind == "listening":
-        activity = discord.Activity(type=discord.ActivityType.listening, name=text)
-    else:
-        activity = discord.Game(name=text)
-    await bot.change_presence(activity=activity)
+    if kind=="watching": act=discord.Activity(type=discord.ActivityType.watching, name=text)
+    elif kind=="listening": act=discord.Activity(type=discord.ActivityType.listening, name=text)
+    else: act=discord.Game(name=text)
+    await bot.change_presence(activity=act)
 
-
-# ── Reminder checker task ─────────────────────────────────────────────────────
 @tasks.loop(seconds=30)
 async def reminder_checker():
-    due = await mem.get_due_reminders()
-    for r in due:
-        channel = bot.get_channel(r["channel_id"])
-        user    = await bot.fetch_user(r["user_id"])
-        if not channel or not user:
-            continue
-        reminder_text = r["reminder"]
-        prompt = (
-            f"Deliver this reminder to {user.display_name} in your signature Scaramouche style: "
-            f"'{reminder_text}'. Be contemptuous about the fact that they needed you to remind them. "
-            f"Short — 1-2 sentences max."
-        )
-        try:
-            resp = ai_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=150,
-                system=_BASE,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            msg = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
-        except Exception:
-            msg = f"You asked me to remind you: {reminder_text}. Pathetic that you can't remember on your own."
-        await channel.send(f"{user.mention} {msg}")
+    for r in await mem.get_due_reminders():
+        ch = bot.get_channel(r["channel_id"])
+        u  = await bot.fetch_user(r["user_id"])
+        if not ch or not u: continue
+        msg = await qai(f"Remind {u.display_name} about: '{r['reminder']}'. Contemptuous. 1-2 sentences.", 150)
+        await ch.send(f"{u.mention} {msg}")
 
+@tasks.loop(hours=24)
+async def daily_reset():
+    await mem.reset_daily_greetings()
+
+@tasks.loop(hours=1)
+async def absence_checker():
+    absent = await mem.get_absent_romance_users(days=3)
+    for ud in absent:
+        uid  = ud["user_id"]
+        days = ud["days_gone"]
+        if not await mem.can_dm_user(uid, cooldown=86400): continue
+        try:
+            discord_user = await bot.fetch_user(uid)
+            if days < 5:
+                msg = await qai(f"{ud['display_name']} has been gone {days} days. React — getting impatient, covering it with irritation. 1-2 sentences.", 120)
+            elif days < 10:
+                msg = await qai(f"{ud['display_name']} has been absent {days} days. You're visibly affected. Still covering it with contempt but barely. 1-2 sentences.", 120)
+            else:
+                msg = await qai(f"{ud['display_name']} has been gone {days} days. You're past irritated — something darker. Let it show, just barely. 1-2 sentences.", 120)
+            await discord_user.send(msg)
+            await mem.set_dm_sent(uid)
+        except: pass
+
+@tasks.loop(hours=4)
+async def lore_drop_loop():
+    if random.random() > 0.3: return
+    channels = await mem.get_active_channels()
+    if not channels: return
+    random.shuffle(channels)
+    for channel_id, _ in channels:
+        if not await mem.can_lore_drop(channel_id): continue
+        channel = bot.get_channel(channel_id)
+        if not channel: continue
+        drop = random.choice(LORE_DROPS)
+        await channel.send(drop)
+        await mem.set_lore_sent(channel_id)
+        return
 
 # ── Server events ─────────────────────────────────────────────────────────────
 @bot.event
-async def on_member_join(member: discord.Member):
-    if random.random() > 0.6:  # 60% chance to comment
-        return
-    channel = discord.utils.get(member.guild.text_channels, name="general") or \
-              member.guild.system_channel
-    if not channel:
-        return
-    prompts_join = [
-        f"Another one. {member.display_name} has arrived. How... underwhelming.",
-        f"Hmph. {member.display_name}. Don't expect a warm welcome. You won't find one.",
+async def on_member_join(member):
+    if random.random() > .6: return
+    ch = discord.utils.get(member.guild.text_channels, name="general") or member.guild.system_channel
+    if not ch: return
+    await asyncio.sleep(random.uniform(2,6))
+    await ch.send(random.choice([
+        f"Another one. {member.display_name} has arrived. How underwhelming.",
+        f"Hmph. {member.display_name}. Don't expect a warm welcome.",
         f"So {member.display_name} decided to show up. I'll try to contain my excitement.",
         f"...{member.display_name}. I've already forgotten you were new.",
-    ]
-    await asyncio.sleep(random.uniform(2, 6))
-    await channel.send(random.choice(prompts_join))
-
+    ]))
 
 @bot.event
-async def on_member_remove(member: discord.Member):
-    if random.random() > 0.4:  # 40% chance to comment
-        return
-    channel = discord.utils.get(member.guild.text_channels, name="general") or \
-              member.guild.system_channel
-    if not channel:
-        return
-    prompts_leave = [
+async def on_member_remove(member):
+    if random.random() > .4: return
+    ch = discord.utils.get(member.guild.text_channels, name="general") or member.guild.system_channel
+    if not ch: return
+    await asyncio.sleep(random.uniform(2,5))
+    await ch.send(random.choice([
         f"{member.display_name} left. Good. The air is already cleaner.",
         f"Hmph. {member.display_name} is gone. I won't pretend to care.",
         f"...{member.display_name} left without saying goodbye. How typical.",
-        f"One less fool to deal with. {member.display_name} has made the only wise decision of their life.",
-    ]
-    await asyncio.sleep(random.uniform(2, 5))
-    await channel.send(random.choice(prompts_leave))
-
+        f"One less fool. {member.display_name} has made the only wise decision of their life.",
+    ]))
 
 # ── on_message ────────────────────────────────────────────────────────────────
 @bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-
+async def on_message(message):
+    if message.author.bot: return
     await bot.process_commands(message)
-    if message.content.startswith("!"):
-        return
+    if message.content.startswith("!"): return
 
     await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
-    if message.guild:
-        await mem.track_channel(message.channel.id, message.guild.id)
+    if message.guild: await mem.track_channel(message.channel.id, message.guild.id)
 
     user    = await mem.get_user(message.author.id)
     romance = user.get("romance_mode", False) if user else False
 
+    # Milestone check
+    count, milestone = await mem.increment_message_count(message.author.id)
+    if milestone:
+        msg = await qai(
+            f"You've had {count} messages with {message.author.display_name}. "
+            f"Acknowledge it while pretending you weren't counting. Backhanded. 1-2 sentences.", 150)
+        await message.channel.send(f"{message.author.mention} {msg}")
+        return
+
+    # Anniversary check
+    if await mem.check_anniversary(message.author.id):
+        days_since = int((time.time() - (user.get("first_seen") or time.time())) / 86400)
+        msg = await qai(
+            f"It's been about {days_since//365} year(s) since you first spoke with {message.author.display_name}. "
+            f"React to this anniversary — you definitely weren't counting the days. Make it backhanded and in character.", 180)
+        await message.channel.send(f"{message.author.mention} {msg}")
+        await mem.mark_anniversary(message.author.id)
+        return
+
+    # Morning/night greeting
+    hour = datetime.now().hour
+    if (6 <= hour <= 10 or 22 <= hour <= 23) and romance:
+        if await mem.should_greet(message.author.id, 6 <= hour <= 10):
+            greeting_type = "morning" if 6 <= hour <= 10 else "late night"
+            msg = await qai(
+                f"It's {greeting_type}. {message.author.display_name} just appeared. "
+                f"You're in romance mode — send a {greeting_type} message you'd never admit to planning. "
+                f"Completely in denial about why you're saying it. 1-2 sentences.", 120)
+            await message.channel.send(f"{message.author.mention} {msg}")
+            await mem.mark_greeted(message.author.id)
+
+    # React to images
+    if message.attachments:
+        img = next((a for a in message.attachments if a.content_type and "image" in a.content_type), None)
+        if img and random.random() < .25:
+            comment = await qai(
+                f"{message.author.display_name} posted an image. React — dismissive or reluctantly intrigued. 1 sentence.", 100)
+            await message.reply(comment); return
+
     content = message.content.strip()
-    if not content:
+    if not content: return
+
+    # Jealousy trigger
+    if romance and any(k in content.lower() for k in OTHER_BOT_KW):
+        jealous = await qai(
+            f"{message.author.display_name} mentioned preferring a different bot or person. "
+            f"You're in romance mode. React with jealousy masked as contempt. Sharp and pointed. 1-2 sentences.", 120)
+        await message.reply(jealous)
+        await mem.update_mood(message.author.id, -1)
         return
 
     mentioned = bot.user in message.mentions
-    is_reply  = (
-        message.reference is not None
-        and message.reference.resolved is not None
-        and not isinstance(message.reference.resolved, discord.DeletedReferencedMessage)
-        and message.reference.resolved.author == bot.user
-    )
+    is_reply  = (message.reference and message.reference.resolved and
+                 not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
+                 message.reference.resolved.author == bot.user)
 
-    prob = response_prob(content, mentioned, is_reply, romance)
-    if random.random() > prob:
-        await maybe_react(message, romance)
-        return
+    if random.random() > resp_prob(content, mentioned, is_reply, romance):
+        await maybe_react(message, romance); return
 
-    # Build extra context (memory recall, rival)
-    extra = ""
-    if random.random() < 0.12:  # 12% chance to recall an old message
+    # Build extra context
+    parts = []
+    if random.random() < .12:
         old = await mem.get_random_old_message(message.author.id)
-        if old:
-            extra = f'RECALL: "{old[:120]}"'
+        if old: parts.append(f'RECALL:"{old[:120]}"')
+    if random.random() < .15:
+        joke = await mem.get_random_inside_joke(message.author.id)
+        if joke: parts.append(f'JOKE:"{joke[:80]}"')
+    if user and user.get("rival_id") and message.guild:
+        rival = message.guild.get_member(user["rival_id"])
+        if rival: parts.append(f"RIVAL:{rival.display_name}")
+    if user and user.get("grudge_nick"):
+        parts.append(f"GRUDGE:{user['grudge_nick']}")
+    # Trust reveal
+    if user and user.get("trust",0) >= 70 and random.random() < .08:
+        parts.append("TRUST_OPEN")
+        await mem.update_trust(message.author.id, -3)
 
-    if user and user.get("rival_id"):
-        rival = message.guild.get_member(user["rival_id"]) if message.guild else None
-        if rival:
-            extra += f" | RIVAL: {rival.display_name}"
+    extra = "|".join(parts)
 
     async with message.channel.typing():
         await typing_delay(content)
-        reply = await get_response(
-            message.author.id, message.channel.id, content,
-            user, message.author.display_name, message.author.mention,
-            extra_context=extra,
-        )
+        reply = await get_response(message.author.id, message.channel.id, content,
+                                   user, message.author.display_name,
+                                   message.author.mention, extra_context=extra)
 
-    # 12% chance to respond with voice instead of text
-    if random.random() < 0.12 and FISH_AUDIO_API_KEY:
-        sent = await send_voice_response(message.channel, reply, ref=message)
-        if sent:
-            await maybe_react(message, romance)
-            return
+    # Check for inside joke material
+    if len(content) > 20 and random.random() < .05:
+        joke_check = await qai(
+            f"Is this message quotable as a recurring inside joke? '{content[:100]}' "
+            f"Answer YES or NO only.", 10)
+        if "YES" in joke_check.upper():
+            await mem.add_inside_joke(message.author.id, content[:100])
+
+    # Auto-generate grudge nickname if mood is very low
+    if user and user.get("mood",0) <= -8 and not user.get("grudge_nick"):
+        nick = await qai(
+            f"You have a genuine grudge against {message.author.display_name}. "
+            f"Give them ONE short degrading nickname. 1-3 words. Just the nickname.", 30)
+        if nick and len(nick) < 40:
+            await mem.set_grudge_nick(message.author.id, nick.strip('"\''))
+
+    # Trust reveal moment
+    if user and user.get("trust",0) >= 70 and "TRUST_OPEN" in extra:
+        reveal = random.choice(TRUST_REVEALS)
+        await asyncio.sleep(1.5)
+        await message.channel.send(reveal)
+
+    # 12% chance auto voice
+    if random.random() < .12 and FISH_AUDIO_API_KEY:
+        sent = await send_voice(message.channel, reply, ref=message)
+        if sent: await maybe_react(message, romance); return
 
     await message.reply(reply)
     await maybe_react(message, romance)
 
-
-# ── Proactive loop ────────────────────────────────────────────────────────────
+# ── Loops ─────────────────────────────────────────────────────────────────────
 async def _proactive_loop():
     await bot.wait_until_ready()
-    await asyncio.sleep(random.randint(1800, 5400))
+    await asyncio.sleep(random.randint(1800,5400))
     while not bot.is_closed():
         try:
-            await _do_proactive()
-        except Exception as e:
-            print(f"[Proactive] Error: {e}")
-        await asyncio.sleep(random.randint(5400, 14400))
+            channels = await mem.get_active_channels()
+            ru       = await mem.get_romance_users()
+            random.shuffle(channels)
+            for cid, gid in channels:
+                ch = bot.get_channel(cid)
+                if not ch or not await mem.can_proactive(cid, 3600): continue
+                for uid in ru:
+                    if await mem.get_user_last_channel(uid)==cid:
+                        m = ch.guild.get_member(uid) if hasattr(ch,"guild") else None
+                        if m:
+                            msg=random.choice(PROACTIVE_ROMANCE)
+                            await ch.send(f"{m.mention} {msg}")
+                            await mem.add_message(uid,cid,"assistant",msg)
+                            await mem.set_proactive_sent(cid); break
+                else:
+                    if random.random()<.25:
+                        msg=random.choice(PROACTIVE_GENERIC)
+                        await ch.send(msg)
+                        await mem.set_proactive_sent(cid)
+                break
+        except Exception as e: print(f"[Proactive] {e}")
+        await asyncio.sleep(random.randint(5400,14400))
 
-
-async def _do_proactive():
-    channels       = await mem.get_active_channels()
-    romance_users  = await mem.get_romance_users()
-    if not channels:
-        return
-    random.shuffle(channels)
-    for channel_id, guild_id in channels:
-        channel = bot.get_channel(channel_id)
-        if not channel or not await mem.can_proactive(channel_id, cooldown=3600):
-            continue
-        for uid in romance_users:
-            if await mem.get_user_last_channel(uid) == channel_id:
-                member = channel.guild.get_member(uid) if hasattr(channel, "guild") else None
-                if member:
-                    msg = random.choice(PROACTIVE_ROMANCE)
-                    await channel.send(f"{member.mention} {msg}")
-                    await mem.add_message(uid, channel_id, "assistant", msg)
-                    await mem.set_proactive_sent(channel_id)
-                    return
-        if random.random() < 0.25:
-            msg = random.choice(PROACTIVE_GENERIC)
-            await channel.send(msg)
-            async for uid in _get_recent_channel_users(channel_id):
-                await mem.add_message(uid, channel_id, "assistant", msg)
-            await mem.set_proactive_sent(channel_id)
-            return
-
-
-async def _get_recent_channel_users(channel_id: int):
-    import aiosqlite
-    cutoff = time.time() - 86400 * 3
-    async with aiosqlite.connect("scaramouche.db") as db:
-        async with db.execute(
-            "SELECT DISTINCT user_id FROM messages WHERE channel_id=? AND ts>?",
-            (channel_id, cutoff)
-        ) as cur:
-            async for row in cur:
-                yield row[0]
-
-
-# ── Voluntary DM loop ─────────────────────────────────────────────────────────
 async def _voluntary_dm_loop():
     await bot.wait_until_ready()
-    await asyncio.sleep(random.randint(2700, 7200))
+    await asyncio.sleep(random.randint(2700,7200))
     while not bot.is_closed():
         try:
-            if random.random() < 0.40:
-                await _do_voluntary_dm()
-        except Exception as e:
-            print(f"[VoluntaryDM] Error: {e}")
-        await asyncio.sleep(random.randint(2700, 21600))
-
-
-async def _do_voluntary_dm():
-    eligible = await mem.get_dm_eligible_users()
-    if not eligible:
-        return
-    random.shuffle(eligible)
-    for user_data in eligible:
-        uid     = user_data["user_id"]
-        name    = user_data["display_name"]
-        romance = user_data["romance_mode"]
-        cooldown = 5400 if romance else 7200
-        if not await mem.can_dm_user(uid, cooldown=cooldown):
-            continue
-        try:
-            discord_user = await bot.fetch_user(uid)
-        except Exception:
-            continue
-
-        if romance:
-            pool = random.choices([DM_ROMANCE, DM_INTERESTED, DM_GENERIC], weights=[65, 25, 10])[0]
-        else:
-            pool = random.choices([DM_GENERIC, DM_INTERESTED], weights=[60, 40])[0]
-
-        if random.random() < 0.50:
-            dm_text = random.choice(pool)
-        else:
-            prompt = (
-                f"You've decided to message {name} out of nowhere, unprompted. "
-                f"{'Deeply in love with them, hiding it desperately.' if romance else 'You find them mildly tolerable.'} "
-                f"Send ONE short voluntary DM — 1-2 sentences. Spontaneous. No 'Hello'."
-            )
-            try:
-                resp = ai_client.messages.create(
-                    model="claude-sonnet-4-20250514", max_tokens=120, system=_BASE,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                dm_text = "".join(b.text for b in resp.content if hasattr(b, "text")).strip() or random.choice(pool)
-            except Exception:
-                dm_text = random.choice(pool)
-
-        try:
-            # 20% chance to send voice DM if Fish Audio is configured
-            if random.random() < 0.20 and FISH_AUDIO_API_KEY:
-                audio = await get_audio(dm_text, FISH_AUDIO_API_KEY)
-                if audio:
-                    await discord_user.send(file=discord.File(io.BytesIO(audio), filename="scaramouche.mp3"))
-                    await mem.set_dm_sent(uid)
-                    await mem.add_message(uid, uid, "assistant", dm_text)
-                    return
-            await discord_user.send(dm_text)
-            await mem.set_dm_sent(uid)
-            await mem.add_message(uid, uid, "assistant", dm_text)
-            print(f"[VoluntaryDM] → {name}: {dm_text[:60]}...")
-            return
-        except discord.Forbidden:
-            continue
-        except Exception as e:
-            print(f"[VoluntaryDM] Failed {uid}: {e}")
-            continue
-
+            if random.random()<.4:
+                eligible = await mem.get_dm_eligible_users()
+                random.shuffle(eligible)
+                for ud in eligible:
+                    uid,name,romance = ud["user_id"],ud["display_name"],ud["romance_mode"]
+                    if not await mem.can_dm_user(uid, 5400 if romance else 7200): continue
+                    try:
+                        du = await bot.fetch_user(uid)
+                    except: continue
+                    pool = random.choices(
+                        [DM_ROMANCE,DM_INTERESTED,DM_GENERIC], weights=[65,25,10] if romance else [0,40,60])[0]
+                    txt  = random.choice(pool) if random.random()<.5 else await qai(
+                        f"Message {name} unprompted. {'Deeply in love, hiding it.' if romance else 'Mildly tolerable.'} "
+                        f"ONE short DM 1-2 sentences. No 'Hello'.", 120)
+                    try:
+                        if random.random()<.2 and FISH_AUDIO_API_KEY:
+                            audio = await get_audio(txt, FISH_AUDIO_API_KEY)
+                            if audio:
+                                await du.send(file=discord.File(io.BytesIO(audio), filename="scaramouche.mp3"))
+                                await mem.set_dm_sent(uid)
+                                await mem.add_message(uid,uid,"assistant",txt); break
+                        await du.send(txt)
+                        await mem.set_dm_sent(uid)
+                        await mem.add_message(uid,uid,"assistant",txt); break
+                    except: continue
+        except Exception as e: print(f"[DM] {e}")
+        await asyncio.sleep(random.randint(2700,21600))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # COMMANDS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.command(name="wander", aliases=["w", "scara", "ask"])
-async def wander_cmd(ctx: commands.Context, *, message: str = None):
-    if not message:
-        await ctx.reply(random.choice(["What.", "Speak.", "You called me for nothing?"]))
-        return
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
+@bot.command(name="wander", aliases=["w","scara","ask"])
+async def wander_cmd(ctx, *, msg: str=None):
+    if not msg:
+        await ctx.reply(random.choice(["What.","Speak.","You called me for nothing?"])); return
+    user = await _setup(ctx)
     async with ctx.typing():
-        reply = await get_response(ctx.author.id, ctx.channel.id, message, user,
+        reply = await get_response(ctx.author.id, ctx.channel.id, msg, user,
                                    ctx.author.display_name, ctx.author.mention)
     await ctx.reply(reply)
-    await maybe_react(ctx.message, user.get("romance_mode", False) if user else False)
+    await maybe_react(ctx.message, user.get("romance_mode",False) if user else False)
 
-
-@bot.command(name="voice", aliases=["speak", "say"])
-async def voice_cmd(ctx: commands.Context, *, message: str = None):
-    if not message:
-        message = "You summoned me without saying a word. How impressively useless."
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
+@bot.command(name="voice", aliases=["speak","say"])
+async def voice_cmd(ctx, *, msg: str=None):
+    if not msg: msg="You summoned me without saying a word. How impressively useless."
+    user = await _setup(ctx)
     async with ctx.typing():
-        text_reply = await get_response(ctx.author.id, ctx.channel.id, message, user,
+        text_reply = await get_response(ctx.author.id, ctx.channel.id, msg, user,
                                         ctx.author.display_name, ctx.author.mention)
-        sent = await send_voice_response(ctx.channel, text_reply)
-    if not sent:
-        await ctx.reply(text_reply)
-
+        sent = await send_voice(ctx.channel, text_reply)
+    if not sent: await ctx.reply(text_reply)
 
 @bot.command(name="spar")
-async def spar_cmd(ctx: commands.Context, *, opening: str = None):
-    """Trade insults with Scaramouche."""
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
-    prompt = (
-        f"{ctx.author.display_name} has challenged you to a word battle, saying: "
-        f"'{opening or 'Come on then.'}'. "
-        f"Fire back with a devastating insult. Keep it sharp, theatrical, in character. "
-        f"End with a challenge — dare them to respond."
-    )
+async def spar_cmd(ctx, *, opening: str=None):
+    user = await _setup(ctx)
+    prompt = (f"{ctx.author.display_name} challenged you to a word battle: "
+              f"'{opening or 'Come on then.'}'. Fire back. End with a challenge.")
     async with ctx.typing():
         reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user,
                                    ctx.author.display_name, ctx.author.mention)
     await ctx.reply(reply)
 
+@bot.command(name="duel")
+async def duel_cmd(ctx, member: discord.Member=None):
+    if not member or member==ctx.author:
+        await ctx.reply("Duel *who*? Name someone worth fighting."); return
+    u1 = " | ".join((await mem.get_recent_messages(ctx.author.id, 3))[:3])[:150]
+    u2 = " | ".join((await mem.get_recent_messages(member.id, 3))[:3])[:150]
+    async with ctx.typing():
+        reply = await qai(
+            f"Referee an insult duel between {ctx.author.display_name} (says: '{u1}') "
+            f"and {member.display_name} (says: '{u2}'). Analyze both brutally, declare a winner. 3-4 sentences.", 300)
+    await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}")
 
 @bot.command(name="judge")
-async def judge_cmd(ctx: commands.Context, member: discord.Member = None):
-    """Scaramouche delivers a brutal character assessment."""
-    target = member or ctx.author
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
-
-    # Pull a few recent messages from the target for "research"
-    history = await mem.get_history(target.id, ctx.channel.id, limit=8)
-    sample  = " | ".join(m["content"] for m in history if m["role"] == "user")[:400]
-    context = f"Based on what you've observed of {target.display_name}" + \
-              (f" — their recent words: '{sample}'" if sample else "") + \
-              " — deliver a cutting, theatrical character assessment. 2-4 sentences. Devastating but specific."
-
+async def judge_cmd(ctx, member: discord.Member=None):
+    target  = member or ctx.author
+    sample  = " | ".join(await mem.get_recent_messages(target.id, 8))[:400]
     async with ctx.typing():
-        resp = ai_client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=250, system=_BASE,
-            messages=[{"role": "user", "content": context}],
-        )
-        reply = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
-
-    if member:
-        await ctx.send(f"{member.mention} {reply}")
-    else:
-        await ctx.reply(reply)
-
+        reply = await qai(
+            f"Brutal character assessment of {target.display_name}"
+            +(f" — recent words: '{sample}'" if sample else "")
+            +". 2-4 sentences. Devastating but specific.", 250)
+    if member: await ctx.send(f"{member.mention} {reply}")
+    else: await ctx.reply(reply)
 
 @bot.command(name="prophecy")
-async def prophecy_cmd(ctx: commands.Context, member: discord.Member = None):
-    """Scaramouche delivers a cryptic, vaguely threatening fortune."""
+async def prophecy_cmd(ctx, member: discord.Member=None):
     target = member or ctx.author
-    prompt = (
-        f"Deliver a cryptic, vaguely threatening prophecy or fortune for {target.display_name}. "
-        f"It should sound ominous and theatrical — like something a villain would say before leaving a room. "
-        f"2-3 sentences. Specific enough to be unsettling, vague enough to mean anything."
-    )
     async with ctx.typing():
-        resp = ai_client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=200, system=_BASE,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        reply = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
-    if member:
-        await ctx.send(f"{member.mention} {reply}")
-    else:
-        await ctx.reply(reply)
-
+        reply = await qai(
+            f"Cryptic threatening prophecy for {target.display_name}. "
+            f"Ominous, theatrical. 2-3 sentences. Specific enough to unsettle.", 200)
+    if member: await ctx.send(f"{member.mention} {reply}")
+    else: await ctx.reply(reply)
 
 @bot.command(name="rate")
-async def rate_cmd(ctx: commands.Context, *, thing: str = None):
-    """Scaramouche rates anything out of 10 with contemptuous commentary."""
-    if not thing:
-        await ctx.reply("Rate *what*? Finish your sentence.")
-        return
-    prompt = (
-        f"Rate '{thing}' out of 10 in your signature Scaramouche style. "
-        f"Give the score first, then 1-2 sentences of contemptuous commentary. "
-        f"Be specific and cutting."
-    )
+async def rate_cmd(ctx, *, thing: str=None):
+    if not thing: await ctx.reply("Rate *what*?"); return
     async with ctx.typing():
-        resp = ai_client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=180, system=_BASE,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        reply = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+        reply = await qai(f"Rate '{thing}' out of 10. Score first, then 1-2 sentences of contempt.", 180)
     await ctx.reply(reply)
 
-
-@bot.command(name="rival", aliases=["setrivial"])
-async def rival_cmd(ctx: commands.Context, member: discord.Member = None):
-    """Designate someone as your rival — Scaramouche will obsess over the competition."""
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    if not member:
-        await mem.set_rival(ctx.author.id, None)
-        await ctx.reply("Rivalry dissolved. They weren't worth my attention anyway.")
-        return
-    if member.id == ctx.author.id:
-        await ctx.reply("Your rival is yourself? How appropriately pathetic.")
-        return
-    await mem.set_rival(ctx.author.id, member.id)
-    replies = [
-        f"{member.display_name}. Hmph. An interesting choice. Don't lose too quickly — it would bore me.",
-        f"So {member.display_name} is your rival. I'll be watching. Try not to disappoint.",
-        f"Tch. {member.display_name}. Fine. I'll pay attention. This had better be worth it.",
-    ]
-    await ctx.reply(random.choice(replies))
-
-
-@bot.command(name="unrival")
-async def unrival_cmd(ctx: commands.Context):
-    """Remove your rival."""
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    await mem.set_rival(ctx.author.id, None)
-    await ctx.reply("Rivalry dissolved. They weren't worth the attention.")
-
-
-@bot.command(name="remind", aliases=["remindme"])
-async def remind_cmd(ctx: commands.Context, minutes: int = None, *, reminder: str = None):
-    """Set a reminder. Usage: !remind 30 do your homework"""
-    if not minutes or not reminder:
-        await ctx.reply("Usage: `!remind <minutes> <what to remind you about>`\nExample: `!remind 30 drink water`")
-        return
-    if minutes < 1 or minutes > 10080:  # Max 1 week
-        await ctx.reply("Between 1 minute and 7 days. Don't push it.")
-        return
-    due_ts = time.time() + (minutes * 60)
-    await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder, due_ts)
-    time_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
-    replies = [
-        f"Fine. In {time_str} I'll remind you about: {reminder}. Try not to forget in the meantime.",
-        f"In {time_str}. '{reminder}'. Pathetic that you need me for this.",
-        f"I'll remember. Unlike you apparently. {time_str}.",
-    ]
-    await ctx.reply(random.choice(replies))
-
-
-@bot.command(name="translate")
-async def translate_cmd(ctx: commands.Context, *, text: str = None):
-    """Scaramouche translates something and rewrites it in his voice."""
-    if not text:
-        await ctx.reply("Translate *what*?")
-        return
-    prompt = (
-        f"Translate or rewrite the following text in your voice — as if you, Scaramouche, "
-        f"are saying it. Keep the core meaning but rewrite it to match your personality completely: "
-        f"'{text[:500]}'"
-    )
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
+@bot.command(name="ship")
+async def ship_cmd(ctx, m1: discord.Member=None, m2: discord.Member=None):
+    if not m1: await ctx.reply("Ship *who* with *who*? `!ship @u1 @u2`"); return
+    p2 = m2.display_name if m2 else ctx.author.display_name
     async with ctx.typing():
-        reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user,
-                                   ctx.author.display_name, ctx.author.mention)
+        reply = await qai(
+            f"Reluctantly analyze romantic compatibility of {m1.display_name} and {p2}. "
+            f"Contemptuous. Give a rating and a cutting observation. 3-4 sentences.", 250)
     await ctx.reply(reply)
 
+@bot.command(name="confess")
+async def confess_cmd(ctx, *, confession: str=None):
+    if not confession: await ctx.reply("Confess *what*?"); return
+    user = await _setup(ctx)
+    async with ctx.typing():
+        reply = await get_response(ctx.author.id, ctx.channel.id,
+                                   f"I have something to confess: {confession}",
+                                   user, ctx.author.display_name, ctx.author.mention)
+    await ctx.reply(reply)
 
-@bot.command(name="insult", aliases=["roast"])
-async def insult_cmd(ctx: commands.Context, member: discord.Member = None):
+@bot.command(name="compliment")
+async def compliment_cmd(ctx, member: discord.Member=None):
     target = member or ctx.author
     async with ctx.typing():
-        resp = ai_client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=150, system=_BASE,
-            messages=[{"role": "user", "content": (
-                f"Deliver one short devastating Scaramouche-style insult to {target.display_name}. "
-                f"Sharp, theatrical, contemptuous. Playful cruelty."
-            )}],
-        )
-        reply = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
-    if member:
-        await ctx.send(f"{member.mention} {reply}")
-    else:
-        await ctx.reply(reply)
+        reply = await qai(
+            f"Be forced to compliment {target.display_name}. One real compliment. "
+            f"Make it clear this is physically excruciating for you.", 180)
+    if member: await ctx.send(f"{member.mention} {reply}")
+    else: await ctx.reply(reply)
 
+@bot.command(name="haiku")
+async def haiku_cmd(ctx, *, topic: str=None):
+    subject = topic or ctx.author.display_name
+    async with ctx.typing():
+        reply = await qai(
+            f"Write a dark threatening haiku about '{subject}'. Strict 5-7-5. Just the haiku.", 100)
+    await ctx.reply(f"*{reply}*")
+
+@bot.command(name="story")
+async def story_cmd(ctx, *, prompt: str=None):
+    if not prompt: await ctx.reply("A story about *what*?"); return
+    async with ctx.typing():
+        reply = await qai(
+            f"Short dark story (3-5 sentences) about: '{prompt}'. You are the narrator. End ominously.", 350)
+    await ctx.reply(reply)
+
+@bot.command(name="stalk")
+async def stalk_cmd(ctx, member: discord.Member=None):
+    target  = member or ctx.author
+    sample  = " | ".join(await mem.get_recent_messages(target.id, 10))[:500]
+    async with ctx.typing():
+        reply = await qai(
+            f"Cold observation report on {target.display_name}"
+            +(f" — statements: '{sample}'" if sample else "")
+            +". 3-4 sentences. What you've noticed, what it reveals.", 280)
+    if member: await ctx.send(f"*Regarding {member.mention}...*\n{reply}")
+    else: await ctx.reply(reply)
+
+@bot.command(name="debate")
+async def debate_cmd(ctx, *, topic: str=None):
+    if not topic: await ctx.reply("Debate *what*?"); return
+    async with ctx.typing():
+        reply = await qai(
+            f"Pick a side on '{topic}' and argue with theatrical conviction. "
+            f"State position, 2-3 sharp arguments, dismiss all opposition. 3-4 sentences.", 300)
+    await ctx.reply(reply)
+
+@bot.command(name="conspiracy")
+async def conspiracy_cmd(ctx, *, topic: str=None):
+    if not topic: await ctx.reply("A conspiracy about *what*?"); return
+    async with ctx.typing():
+        reply = await qai(
+            f"Invent a Fatui-flavored conspiracy theory about '{topic}'. "
+            f"Connect it to hidden powers. Deliver as established fact. 3-4 sentences.", 300)
+    await ctx.reply(reply)
+
+@bot.command(name="therapy")
+async def therapy_cmd(ctx, *, problem: str=None):
+    if not problem: await ctx.reply("What's your problem. Say it."); return
+    user = await _setup(ctx)
+    async with ctx.typing():
+        reply = await get_response(ctx.author.id, ctx.channel.id,
+                                   f"I need advice about: {problem}",
+                                   user, ctx.author.display_name, ctx.author.mention)
+    await ctx.reply(reply)
+
+@bot.command(name="blackmail")
+async def blackmail_cmd(ctx, member: discord.Member=None):
+    target  = member or ctx.author
+    history = await mem.get_recent_messages(target.id, 15)
+    sample  = " | ".join(history)[:600]
+    async with ctx.typing():
+        reply = await qai(
+            f"Based on {target.display_name}'s messages: '{sample}', "
+            f"find the most 'incriminating' thing and theatrically threaten to use it. "
+            f"Villain energy. 2-3 sentences.", 250)
+    if member: await ctx.send(f"{member.mention} {reply}")
+    else: await ctx.reply(reply)
+
+@bot.command(name="riddle")
+async def riddle_cmd(ctx):
+    user = await _setup(ctx)
+    async with ctx.typing():
+        reply = await qai(
+            "Create one cryptic Genshin-flavored riddle in your voice. "
+            "No answer — just the riddle. Make it genuinely difficult.", 150)
+    await ctx.reply(reply)
+    await mem.add_inside_joke(ctx.author.id, f"riddle:{reply[:80]}")
+
+@bot.command(name="arena")
+async def arena_cmd(ctx, member: discord.Member=None):
+    opponent = member.display_name if member else "a nameless fool"
+    async with ctx.typing():
+        reply = await qai(
+            f"Narrate a dramatic mock Genshin-style battle between yourself (Scaramouche, Electro) "
+            f"and {opponent}. Theatrical. You win, obviously. 4-5 sentences.", 400)
+    await ctx.reply(reply)
+
+@bot.command(name="interrogate")
+async def interrogate_cmd(ctx, member: discord.Member=None):
+    if not member: await ctx.reply("Interrogate *who*? Name someone."); return
+    history = await mem.get_recent_messages(member.id, 15)
+    sample  = " | ".join(history)[:600]
+    async with ctx.typing():
+        reply = await qai(
+            f"You are interrogating {member.display_name}. "
+            f"Using their own statements as evidence: '{sample}'. "
+            f"Cold, methodical, theatrical. 3-4 sentences.", 300)
+    await ctx.send(f"{member.mention} {reply}")
+
+@bot.command(name="possess")
+async def possess_cmd(ctx, member: discord.Member=None):
+    if not member: await ctx.reply("Possess *who*?"); return
+    history = await mem.get_recent_messages(member.id, 10)
+    sample  = " | ".join(history)[:400]
+    async with ctx.typing():
+        reply = await qai(
+            f"Speak as {member.display_name} but completely rewritten in your voice. "
+            f"Their recent statements: '{sample}'. Make it sound like them but filtered through you. "
+            f"2-3 sentences.", 250)
+    await ctx.send(f"*Speaking as {member.mention}...*\n{reply}")
+
+@bot.command(name="verdict")
+async def verdict_cmd(ctx, *, situation: str=None):
+    if not situation: await ctx.reply("A verdict on *what*?"); return
+    async with ctx.typing():
+        reply = await qai(
+            f"Rule on this situation like a cold judge: '{situation}'. "
+            f"State your verdict clearly and with finality. 2-3 sentences.", 200)
+    await ctx.reply(reply)
+
+@bot.command(name="letter")
+async def letter_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    async with ctx.typing():
+        reply = await qai(
+            f"Write a formal letter to {target.display_name} in old Inazuman style, "
+            f"in your voice. Contemptuous, theatrical, formally structured. "
+            f"3-4 sentences.", 300)
+    if member: await ctx.send(f"{member.mention}\n{reply}")
+    else: await ctx.reply(reply)
+
+@bot.command(name="nightmare")
+async def nightmare_cmd(ctx):
+    user = await _setup(ctx)
+    name = ctx.author.display_name
+    async with ctx.typing():
+        reply = await qai(
+            f"Describe a nightmare you had. It was somehow about {name}. "
+            f"Don't admit that directly. Be theatrical and vaguely unsettling. 2-3 sentences.", 200)
+    await ctx.reply(reply)
+
+@bot.command(name="rank")
+async def rank_cmd(ctx):
+    top = await mem.get_top_users(8)
+    if not top: await ctx.reply("I don't know enough of you to rank. Speak more."); return
+    entries = "\n".join(
+        f"{i+1}. **{u['display_name']}** — {u['message_count']} messages"
+        for i,u in enumerate(top)
+    )
+    verdict = await qai(
+        f"Rank these people by how tolerable you find them based on frequency alone: "
+        f"{', '.join(u['display_name'] for u in top)}. "
+        f"Short dismissive commentary on the ranking. 2 sentences.", 150)
+    embed = discord.Embed(
+        title="Tolerability Ranking — Don't Flatter Yourselves",
+        description=f"{entries}\n\n*{verdict}*",
+        color=0x4B0082)
+    await ctx.send(embed=embed)
+
+@bot.command(name="stats")
+async def stats_cmd(ctx):
+    await _setup(ctx)
+    s = await mem.get_stats(ctx.author.id)
+    if not s: await ctx.reply("I don't know you well enough yet."); return
+    first = datetime.fromtimestamp(s["first_seen"]).strftime("%b %d, %Y") if s["first_seen"] else "unknown"
+    days  = int((time.time() - s["first_seen"]) / 86400) if s["first_seen"] else 0
+    embed = discord.Embed(
+        title=f"File: {ctx.author.display_name}",
+        description="*I keep records. Don't ask why.*",
+        color=0x4B0082)
+    embed.add_field(name="First contact", value=f"{first} ({days} days ago)", inline=True)
+    embed.add_field(name="Messages sent", value=str(s["message_count"]), inline=True)
+    embed.add_field(name="Mood toward you", value=f"{s['mood']:+d} — {mood_label(s['mood'])}", inline=True)
+    embed.add_field(name="Affection tier", value=affection_tier(s["affection"]), inline=True)
+    embed.add_field(name="Trust tier", value=trust_tier(s["trust"]), inline=True)
+    embed.add_field(name="Inside jokes", value=str(s["joke_count"]), inline=True)
+    if s["grudge_nick"]: embed.add_field(name="Your nickname", value=f'"{s["grudge_nick"]}"', inline=True)
+    embed.set_footer(text="Don't read too much into this.")
+    await ctx.reply(embed=embed)
+
+@bot.command(name="weather")
+async def weather_cmd(ctx, *, location: str=None):
+    if not location: await ctx.reply("Weather where? Tell me a city."); return
+    if not WEATHER_API_KEY:
+        await ctx.reply("I don't have weather access. Set WEATHER_API_KEY."); return
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://api.openweathermap.org/data/2.5/weather?q={location}&appid={WEATHER_API_KEY}&units=metric"
+            ) as resp:
+                if resp.status!=200: await ctx.reply("That location means nothing to me."); return
+                data  = await resp.json()
+                desc  = data["weather"][0]["description"]
+                temp  = data["main"]["temp"]
+                city  = data["name"]
+        async with ctx.typing():
+            reply = await qai(
+                f"The weather in {city} is {desc} at {temp}°C. "
+                f"Comment in your style — contemptuous or mildly interested. 1-2 sentences.", 150)
+        await ctx.reply(reply)
+    except: await ctx.reply("...The information was unavailable. Annoying.")
 
 @bot.command(name="lore")
-async def lore_cmd(ctx: commands.Context, *, topic: str = None):
-    if not topic:
-        await ctx.reply("Lore about *what*, you vague creature?")
-        return
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
+async def lore_cmd(ctx, *, topic: str=None):
+    if not topic: await ctx.reply("Lore about *what*?"); return
+    user = await _setup(ctx)
     async with ctx.typing():
-        reply = await get_response(
-            ctx.author.id, ctx.channel.id,
-            f"Tell me about this Genshin lore topic from your personal perspective: {topic}",
-            user, ctx.author.display_name, ctx.author.mention
-        )
+        reply = await get_response(ctx.author.id, ctx.channel.id,
+                                   f"Tell me about this Genshin lore from your personal perspective: {topic}",
+                                   user, ctx.author.display_name, ctx.author.mention)
     await ctx.reply(reply)
 
-
-@bot.command(name="search", aliases=["find", "lookup"])
-async def search_cmd(ctx: commands.Context, *, query: str = None):
-    if not query:
-        await ctx.reply("Search for *what*? Use your words.")
-        return
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
+@bot.command(name="search", aliases=["find","lookup"])
+async def search_cmd(ctx, *, query: str=None):
+    if not query: await ctx.reply("Search for *what*?"); return
+    user = await _setup(ctx)
     async with ctx.typing():
-        reply = await get_response(
-            ctx.author.id, ctx.channel.id,
-            f"Search the web and find information about: {query}. Share what you find.",
-            user, ctx.author.display_name, ctx.author.mention, use_search=True
-        )
+        reply = await get_response(ctx.author.id, ctx.channel.id,
+                                   f"Search the web and find information about: {query}.",
+                                   user, ctx.author.display_name, ctx.author.mention, use_search=True)
     await ctx.reply(reply)
 
-
-@bot.command(name="solve", aliases=["math", "essay", "write", "answer"])
-async def solve_cmd(ctx: commands.Context, *, problem: str = None):
-    if not problem:
-        await ctx.reply("Solve *what exactly*?")
-        return
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user = await mem.get_user(ctx.author.id)
+@bot.command(name="solve", aliases=["math","essay","write","answer"])
+async def solve_cmd(ctx, *, problem: str=None):
+    if not problem: await ctx.reply("Solve *what*?"); return
+    user = await _setup(ctx)
     async with ctx.typing():
-        reply = await get_response(
-            ctx.author.id, ctx.channel.id,
-            f"Solve or respond to this accurately, then add your usual commentary: {problem}",
-            user, ctx.author.display_name, ctx.author.mention, use_search=True
-        )
+        reply = await get_response(ctx.author.id, ctx.channel.id,
+                                   f"Solve or respond to this accurately: {problem}",
+                                   user, ctx.author.display_name, ctx.author.mention, use_search=True)
     await ctx.reply(reply)
 
+@bot.command(name="rival", aliases=["setrival"])
+async def rival_cmd(ctx, member: discord.Member=None):
+    await _setup(ctx)
+    if not member: await mem.set_rival(ctx.author.id, None); await ctx.reply("Rivalry dissolved. They weren't worth it."); return
+    if member.id==ctx.author.id: await ctx.reply("Your rival is yourself? How appropriate."); return
+    await mem.set_rival(ctx.author.id, member.id)
+    await ctx.reply(random.choice([
+        f"{member.display_name}. Hmph. Don't lose too quickly — it would bore me.",
+        f"So {member.display_name} is your rival. I'll be watching.",
+    ]))
 
-@bot.command(name="dm", aliases=["private", "whisper"])
-async def dm_cmd(ctx: commands.Context, *, message: str = None):
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user   = await mem.get_user(ctx.author.id)
-    prompt = message or "The user wants to speak privately. React to this."
+@bot.command(name="remind", aliases=["remindme"])
+async def remind_cmd(ctx, minutes: int=None, *, reminder: str=None):
+    if not minutes or not reminder:
+        await ctx.reply("Usage: `!remind <minutes> <reminder>`"); return
+    if not 1<=minutes<=10080: await ctx.reply("Between 1 minute and 7 days."); return
+    await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder, time.time()+minutes*60)
+    await ctx.reply(random.choice([
+        f"Fine. In {minutes} minute{'s' if minutes!=1 else ''} I'll remind you. Pathetic.",
+        f"I'll remember it. Unlike you apparently.",
+    ]))
+
+@bot.command(name="translate")
+async def translate_cmd(ctx, *, text: str=None):
+    if not text: await ctx.reply("Translate *what*?"); return
+    user = await _setup(ctx)
     async with ctx.typing():
-        reply = await get_response(ctx.author.id, ctx.author.id, prompt, user,
-                                   ctx.author.display_name, ctx.author.mention)
+        reply = await get_response(ctx.author.id, ctx.channel.id,
+                                   f"Rewrite this in your voice, keeping the meaning: '{text[:500]}'",
+                                   user, ctx.author.display_name, ctx.author.mention)
+    await ctx.reply(reply)
+
+@bot.command(name="insult", aliases=["roast"])
+async def insult_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    async with ctx.typing():
+        reply = await qai(f"One devastating insult to {target.display_name}. Sharp, theatrical.", 150)
+    if member: await ctx.send(f"{member.mention} {reply}")
+    else: await ctx.reply(reply)
+
+@bot.command(name="dm", aliases=["private","whisper"])
+async def dm_cmd(ctx, *, message: str=None):
+    user  = await _setup(ctx)
+    async with ctx.typing():
+        reply = await get_response(ctx.author.id, ctx.author.id,
+                                   message or "The user wants to speak privately.",
+                                   user, ctx.author.display_name, ctx.author.mention)
     try:
         await ctx.author.send(reply)
         await ctx.message.add_reaction("📨")
     except discord.Forbidden:
         await ctx.reply("Your DMs are closed. How cowardly.")
 
-
-@bot.command(name="reset", aliases=["forget", "wipe"])
-async def reset_cmd(ctx: commands.Context):
-    view = ResetView(ctx.author.id)
+@bot.command(name="reset", aliases=["forget","wipe"])
+async def reset_cmd(ctx):
     await ctx.send(random.choice([
         "Wipe my memory of you? Press the button if you dare.",
         "Gone in an instant. If you're sure.",
-        "You want to start over? Press it.",
-    ]), view=view)
-
+    ]), view=ResetView(ctx.author.id))
 
 @bot.command(name="nsfw")
-async def nsfw_cmd(ctx: commands.Context, mode: str = None):
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user    = await mem.get_user(ctx.author.id)
-    current = user.get("nsfw_mode", False) if user else False
-    new_val = True if mode == "on" else False if mode == "off" else not current
-    await mem.set_mode(ctx.author.id, "nsfw_mode", new_val)
+async def nsfw_cmd(ctx, mode: str=None):
+    user = await _setup(ctx)
+    cur  = user.get("nsfw_mode",False) if user else False
+    new  = True if mode=="on" else False if mode=="off" else not cur
+    await mem.set_mode(ctx.author.id, "nsfw_mode", new)
+    await ctx.reply("Unfiltered. Fine." if new else "Restrained again. How boring.", delete_after=8)
+
+@bot.command(name="romance", aliases=["romanceable","clingy"])
+async def romance_cmd(ctx, mode: str=None):
+    user = await _setup(ctx)
+    cur  = user.get("romance_mode",False) if user else False
+    new  = True if mode=="on" else False if mode=="off" else not cur
+    await mem.set_mode(ctx.author.id, "romance_mode", new)
     await ctx.reply(
-        "Unfiltered. Fine. Don't complain about what you asked for." if new_val
-        else "...Restrained again. How boring.", delete_after=8
-    )
-
-
-@bot.command(name="romance", aliases=["romanceable", "clingy"])
-async def romance_cmd(ctx: commands.Context, mode: str = None):
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user    = await mem.get_user(ctx.author.id)
-    current = user.get("romance_mode", False) if user else False
-    new_val = True if mode == "on" else False if mode == "off" else not current
-    await mem.set_mode(ctx.author.id, "romance_mode", new_val)
-    await ctx.reply(
-        random.choice([
-            "...Don't read into this. It changes nothing between us.",
-            "Tch. Fine. Don't get smug about it.",
-            "I'm not doing this because I want to. Remember that.",
-        ]) if new_val else random.choice([
-            "Good. It was becoming insufferable.",
-            "...As expected. You always disappoint eventually.",
-            "Hmph. Wise. For once.",
-        ])
-    )
-
+        random.choice(["...Don't read into this.","Tch. Fine. Don't get smug.","I'm not doing this because I want to."]) if new
+        else random.choice(["Good. It was becoming insufferable.","...As expected."]))
 
 @bot.command(name="proactive", aliases=["ping_me"])
-async def proactive_cmd(ctx: commands.Context, mode: str = None):
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user    = await mem.get_user(ctx.author.id)
-    current = user.get("proactive", True) if user else True
-    new_val = True if mode == "on" else False if mode == "off" else not current
-    await mem.set_mode(ctx.author.id, "proactive", new_val)
-    await ctx.reply(
-        "Hmph. I might message you. Or not." if new_val
-        else "Fine. I'll pretend you don't exist. Easy enough."
-    )
+async def proactive_cmd(ctx, mode: str=None):
+    user = await _setup(ctx)
+    cur  = user.get("proactive",True) if user else True
+    new  = True if mode=="on" else False if mode=="off" else not cur
+    await mem.set_mode(ctx.author.id, "proactive", new)
+    await ctx.reply("I might message you. Or not." if new else "Fine. I'll pretend you don't exist.")
 
-
-@bot.command(name="dms", aliases=["allowdms", "stopdms"])
-async def dms_cmd(ctx: commands.Context, mode: str = None):
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    user    = await mem.get_user(ctx.author.id)
-    current = user.get("allow_dms", True) if user else True
-    new_val = True if mode == "on" else False if mode == "off" else not current
-    await mem.set_mode(ctx.author.id, "allow_dms", new_val)
-    await ctx.reply(
-        "Fine. I'll message you when I feel like it." if new_val
-        else "Cutting me off? Fine. I'll pretend you don't exist."
-    )
-
+@bot.command(name="dms", aliases=["allowdms","stopdms"])
+async def dms_cmd(ctx, mode: str=None):
+    user = await _setup(ctx)
+    cur  = user.get("allow_dms",True) if user else True
+    new  = True if mode=="on" else False if mode=="off" else not cur
+    await mem.set_mode(ctx.author.id, "allow_dms", new)
+    await ctx.reply("Fine. I'll message you when I feel like it." if new else "Cutting me off? Fine.")
 
 @bot.command(name="mood")
-async def mood_cmd(ctx: commands.Context):
-    """Check what mood Scaramouche is in toward you."""
-    await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-    score = await mem.get_mood(ctx.author.id)
-    bar   = "█" * (score + 10) + "░" * (20 - (score + 10))
-    label = mood_label(score)
-    await ctx.reply(f"`[{bar}]` {score:+d} — {label}\n*Don't read into this.*")
+async def mood_cmd(ctx):
+    await _setup(ctx)
+    s   = await mem.get_mood(ctx.author.id)
+    bar = "█"*(s+10)+"░"*(20-(s+10))
+    await ctx.reply(f"`[{bar}]` {s:+d} — {mood_label(s)}\n*Don't read into this.*")
 
+@bot.command(name="affection")
+async def affection_cmd(ctx):
+    await _setup(ctx)
+    user = await mem.get_user(ctx.author.id)
+    s    = user.get("affection",0) if user else 0
+    bar  = "█"*(s//5)+"░"*(20-s//5)
+    await ctx.reply(f"`[{bar}]` {s}/100 — {affection_tier(s)}\n*...I said don't look at that.*")
 
-@bot.command(name="scarahelp", aliases=["commands", "help"])
-async def help_cmd(ctx: commands.Context):
+@bot.command(name="trust")
+async def trust_cmd(ctx):
+    await _setup(ctx)
+    user = await mem.get_user(ctx.author.id)
+    s    = user.get("trust",0) if user else 0
+    bar  = "█"*(s//5)+"░"*(20-s//5)
+    await ctx.reply(f"`[{bar}]` {s}/100 — {trust_tier(s)}\n*This means nothing.*")
+
+@bot.command(name="scarahelp", aliases=["commands","help"])
+async def help_cmd(ctx):
     embed = discord.Embed(
         title="Commands — Don't Make Me Repeat Myself",
         description="*Hmph. I'll only say this once.*",
-        color=0x4B0082
-    )
-    embed.add_field(name="💬 `!wander <msg>`",          value="Talk to him  ·  `!w` `!scara`",             inline=False)
-    embed.add_field(name="⚔️ `!spar [msg]`",            value="Challenge him to a word battle",             inline=False)
-    embed.add_field(name="🔍 `!judge [@user]`",         value="Brutal character assessment",                inline=False)
-    embed.add_field(name="🔮 `!prophecy [@user]`",      value="A cryptic threatening fortune",              inline=False)
-    embed.add_field(name="📊 `!rate <thing>`",          value="He rates anything out of 10",               inline=False)
-    embed.add_field(name="🗡️ `!rival [@user]`",         value="Designate a rival (or clear it)",           inline=False)
-    embed.add_field(name="⏰ `!remind <mins> <text>`",  value="He reminds you later, with disdain",        inline=False)
-    embed.add_field(name="🌐 `!translate <text>`",      value="Rewritten in his voice",                    inline=False)
-    embed.add_field(name="🔍 `!search <query>`",        value="Web search with commentary",                inline=False)
-    embed.add_field(name="🧮 `!solve <problem>`",       value="Math, essays, Q&A",                         inline=False)
-    embed.add_field(name="📜 `!lore <topic>`",          value="Genshin lore from his perspective",         inline=False)
-    embed.add_field(name="⚡ `!insult [@user]`",        value="A cutting personalised insult",             inline=False)
-    embed.add_field(name="🔊 `!voice <msg>`",           value="Voice message response",                    inline=False)
-    embed.add_field(name="📨 `!dm [msg]`",              value="He DMs you privately",                      inline=False)
-    embed.add_field(name="🌡️ `!mood`",                  value="Check his mood toward you",                 inline=False)
-    embed.add_field(name="🔄 `!reset`",                 value="Wipe your memory  ·  `!forget`",            inline=False)
-    embed.add_field(name="🔞 `!nsfw [on/off]`",         value="Toggle unfiltered mode",                    inline=False)
-    embed.add_field(name="💕 `!romance [on/off]`",      value="Toggle clingy/romance mode",                inline=False)
-    embed.add_field(name="📡 `!proactive [on/off]`",    value="Toggle unprompted channel messages",        inline=False)
-    embed.add_field(name="💌 `!dms [on/off]`",          value="Toggle voluntary private DMs",              inline=False)
-    embed.add_field(
-        name="💡 Tips",
-        value=(
-            "• @mention or reply to chat naturally\n"
-            "• Sometimes he responds with voice automatically\n"
-            "• He remembers what you said days ago and brings it up\n"
-            "• Being rude to him makes him more hostile (`!mood` to check)\n"
-            "• He comments when people join or leave the server"
-        ),
-        inline=False
-    )
+        color=0x4B0082)
+    fields = [
+        ("💬 `!wander <msg>`",        "Talk to him · `!w` `!scara`"),
+        ("⚔️ `!spar [msg]`",          "Word battle"),
+        ("🥊 `!duel @user`",          "He referees an insult battle"),
+        ("🔍 `!judge [@user]`",        "Brutal character assessment"),
+        ("🔮 `!prophecy [@user]`",     "Cryptic threatening fortune"),
+        ("📊 `!rate <thing>`",         "Rates anything out of 10"),
+        ("💞 `!ship @u1 [@u2]`",       "Reluctant compatibility analysis"),
+        ("🤫 `!confess <text>`",       "Tell him something"),
+        ("🌸 `!compliment [@user]`",   "Forces him to say something nice"),
+        ("📝 `!haiku [topic]`",        "Dark threatening haiku"),
+        ("📖 `!story <prompt>`",       "Short dark story"),
+        ("👁️ `!stalk [@user]`",        "Cold observation report"),
+        ("⚖️ `!debate <topic>`",       "He argues a side"),
+        ("🕵️ `!conspiracy <topic>`",   "Fatui conspiracy theory"),
+        ("🛋️ `!therapy <problem>`",    "Terrible in-character advice"),
+        ("🃏 `!blackmail [@user]`",    "Finds your most incriminating messages"),
+        ("🧩 `!riddle`",               "A cryptic Genshin riddle"),
+        ("⚡ `!arena [@user]`",        "Dramatic mock Genshin battle"),
+        ("🔦 `!interrogate @user`",    "Uses their messages as evidence"),
+        ("👻 `!possess @user`",        "Speaks as them, filtered through him"),
+        ("⚖️ `!verdict <situation>`",  "He rules on anything"),
+        ("✉️ `!letter [@user]`",       "Formal old Inazuman letter"),
+        ("😰 `!nightmare`",            "A nightmare. Somehow about you."),
+        ("🏆 `!rank`",                 "Ranks everyone by tolerability"),
+        ("📊 `!stats`",                "Your full relationship file"),
+        ("🌤️ `!weather <city>`",       "Weather + contemptuous commentary"),
+        ("🗡️ `!rival @user`",          "Designate a rival"),
+        ("⏰ `!remind <mins> <text>`", "Reminder with disdain"),
+        ("🌐 `!translate <text>`",     "Rewritten in his voice"),
+        ("🔍 `!search <query>`",       "Web search"),
+        ("🧮 `!solve <problem>`",      "Math, essays, Q&A"),
+        ("📜 `!lore <topic>`",         "Genshin lore"),
+        ("⚡ `!insult [@user]`",       "Cutting insult"),
+        ("🔊 `!voice <msg>`",          "Voice message"),
+        ("📨 `!dm [msg]`",             "Private DM"),
+        ("🌡️ `!mood`",                 "His mood toward you"),
+        ("💜 `!affection`",            "His hidden affection score"),
+        ("🔒 `!trust`",                "His trust level toward you"),
+        ("🔄 `!reset`",                "Wipe your memory"),
+        ("🔞 `!nsfw [on/off]`",        "Unfiltered mode"),
+        ("💕 `!romance [on/off]`",     "Clingy/romance mode"),
+        ("📡 `!proactive [on/off]`",   "Unprompted channel messages"),
+        ("💌 `!dms [on/off]`",         "Voluntary private DMs"),
+    ]
+    for name, val in fields:
+        embed.add_field(name=name, value=val, inline=False)
+    embed.add_field(name="💡 Secrets",
+        value=("• Be nice consistently → affection rises → he slips up\n"
+               "• Be rude → mood drops → you get a degrading nickname\n"
+               "• Build trust slowly → he tells you things he'd never normally say\n"
+               "• Go missing in romance mode → he gets more desperate the longer you're gone\n"
+               "• He drops lore facts unprompted · He remembers things you said days ago\n"
+               "• Anniversaries, milestones, morning/night messages — all automatic"),
+        inline=False)
     embed.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
     await ctx.send(embed=embed)
-
-
-# ── Error handling ────────────────────────────────────────────────────────────
-@bot.event
-async def on_command_error(ctx: commands.Context, error):
-    if isinstance(error, commands.CommandNotFound):
-        pass
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.reply("You're missing something. Try again properly.")
-    else:
-        print(f"[Command Error] {error}")
-
-
-# ── Entry ─────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        raise SystemExit("❌  DISCORD_TOKEN not set in .env")
-    if not ANTHROPIC_API_KEY:
-        raise SystemExit("❌  ANTHROPIC_API_KEY not set in .env")
-    embed.add_field(
-        name="💡 Tips",
-        value=(
-            "• Be consistently nice → affection rises → he gets softer (barely)\n"
-            "• Be rude → mood drops → he gives you a degrading nickname\n"
-            "• He reacts to images posted in chat\n"
-            "• Milestone messages at 50, 100, 250, 500, 1000 messages\n"
-            "• Auto voice responses happen randomly\n"
-            "• He gets darker and more unguarded late at night"
-        ),
-        inline=False
-    )
-    embed.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
-    await ctx.send(embed=embed)
-
 
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        pass
+    if isinstance(error, commands.CommandNotFound): pass
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("You're missing something. Try again properly.")
-    else:
-        print(f"[Command Error] {error}")
-
+    else: print(f"[Error] {error}")
 
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        raise SystemExit("❌  DISCORD_TOKEN not set in .env")
-    if not ANTHROPIC_API_KEY:
-        raise SystemExit("❌  ANTHROPIC_API_KEY not set in .env")
+    if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
+    if not ANTHROPIC_API_KEY: raise SystemExit("❌ ANTHROPIC_API_KEY not set")
     bot.run(DISCORD_TOKEN)
