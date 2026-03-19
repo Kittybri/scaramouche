@@ -504,18 +504,36 @@ async def _do_proactive():
                 member = channel.guild.get_member(uid) if hasattr(channel, "guild") else None
                 if member:
                     msg = random.choice(PROACTIVE_ROMANCE)
-                    await channel.send(f"{member.mention} {msg}")
+                    full_msg = f"{member.mention} {msg}"
+                    await channel.send(full_msg)
+                    # Save so he remembers what he said
+                    await mem.add_message(uid, channel_id, "assistant", msg)
                     await mem.set_proactive_sent(channel_id)
                     return
 
         # Generic proactive — only 25% chance for non-romance channels
         if random.random() < 0.25:
-            await channel.send(random.choice(PROACTIVE_GENERIC))
+            msg = random.choice(PROACTIVE_GENERIC)
+            await channel.send(msg)
+            # Save to all recently active users in this channel
+            async for uid in _get_recent_channel_users(channel_id):
+                await mem.add_message(uid, channel_id, "assistant", msg)
             await mem.set_proactive_sent(channel_id)
             return
 
 
 # ── Voluntary DM loop ─────────────────────────────────────────────────────────
+async def _get_recent_channel_users(channel_id: int):
+    """Yield user IDs who have spoken in this channel recently."""
+    import aiosqlite
+    cutoff = time.time() - 86400 * 3
+    async with aiosqlite.connect("scaramouche.db") as db:
+        async with db.execute(
+            "SELECT DISTINCT user_id FROM messages WHERE channel_id=? AND ts>?",
+            (channel_id, cutoff)
+        ) as cur:
+            async for row in cur:
+                yield row[0]
 async def _voluntary_dm_loop():
     """
     Randomly DMs individual users without being asked.
@@ -607,9 +625,8 @@ async def _do_voluntary_dm():
         try:
             await discord_user.send(dm_text)
             await mem.set_dm_sent(uid)
-            # Save to DM history so he remembers it next time
-            dm_channel_key = uid * -1   # Negative user_id = DM thread key
-            await mem.add_message(uid, dm_channel_key, "assistant", dm_text)
+            # Save to DM history using user_id as channel key so he remembers
+            await mem.add_message(uid, uid, "assistant", dm_text)
             print(f"[VoluntaryDM] Sent to {name} ({uid}): {dm_text[:60]}...")
             return   # Only DM one person per cycle
         except discord.Forbidden:
