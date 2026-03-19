@@ -1178,7 +1178,7 @@ async def search_cmd(ctx,*,query:str=None):
         reply=await get_response(ctx.author.id,ctx.channel.id,f"Search the web for: {query}.",user,ctx.author.display_name,ctx.author.mention,use_search=True)
     await ctx.reply(reply)
 
-@bot.command(name="solve",aliases=["math","essay","write","answer"])
+@bot.command(name="solve",aliases=["math","essay","write"])
 async def solve_cmd(ctx,*,problem:str=None):
     if not problem: await ctx.reply("Solve *what*?"); return
     user=await _setup(ctx)
