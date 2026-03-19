@@ -505,10 +505,17 @@ async def on_message(message):
     try:
         if message.author.bot: return
 
-        # !help intercept
-        if message.content.strip().lower() in ("!help","!commands","!scarahelp"):
-            ctx = await bot.get_context(message)
-            await help_cmd(ctx); return
+        # !help intercept — handle before anything else
+        stripped = message.content.strip().lower()
+        if stripped in ("!help", "!commands", "!scarahelp"):
+            try:
+                ctx = await bot.get_context(message)
+                await help_cmd(ctx)
+            except Exception as e:
+                log_error("help_intercept", e)
+                try: await message.channel.send("Hmph. Something went wrong displaying commands.")
+                except: pass
+            return
 
         await bot.process_commands(message)
         if message.content.startswith("!"): return
@@ -1407,9 +1414,14 @@ async def help_cmd(ctx):
         try: await ctx.send("Hmph. Something went wrong.")
         except: pass
 
-@bot.command(name="scarahelp",aliases=["commands"])
+@bot.command(name="scarahelp", aliases=["commands"])
 async def scarahelp_cmd(ctx):
-    await help_cmd(ctx)
+    try:
+        await help_cmd(ctx)
+    except Exception as e:
+        log_error("scarahelp_cmd", e)
+        try: await ctx.send("Hmph. Something went wrong.")
+        except: pass
 
 @bot.event
 async def on_command_error(ctx,error):
