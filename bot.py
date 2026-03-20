@@ -1149,8 +1149,32 @@ async def _do_tedtalk(ctx, attachment, topic):
                     material_content = file_bytes.decode("utf-8", errors="ignore")[:4000]
                 except Exception as e:
                     await ctx.send(f"Couldn't read the text file: {e}"); return
+
+            elif attachment.filename.lower().endswith((".pptx",".ppt")):
+                try:
+                    from pptx import Presentation as _Prs
+                    prs = _Prs(io.BytesIO(file_bytes))
+                    parts = []
+                    for i, slide in enumerate(prs.slides):
+                        slide_texts = []
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text") and shape.text.strip():
+                                slide_texts.append(shape.text.strip())
+                        if slide_texts:
+                            parts.append(f"[Slide {i+1}]\n" + "\n".join(slide_texts))
+                    material_content = "\n\n".join(parts)[:4000]
+                except Exception as e:
+                    await ctx.send(f"Couldn't read the PowerPoint: {e}"); return
+
+            elif attachment.filename.lower().endswith((".docx",".doc")):
+                try:
+                    import docx as _docx
+                    doc = _docx.Document(io.BytesIO(file_bytes))
+                    material_content = "\n".join(p.text for p in doc.paragraphs if p.text.strip())[:4000]
+                except Exception as e:
+                    await ctx.send(f"Couldn't read the Word document: {e}"); return
             else:
-                await ctx.send("I can read PDFs, images, and text files. Whatever that is, I can't work with it."); return
+                await ctx.send("I can read PDFs, images, PowerPoint files, Word documents, and text files. Whatever that is, I can't work with it."); return
 
         if topic:
             material_content = f"Topic: {topic}\n\n{material_content}".strip()
