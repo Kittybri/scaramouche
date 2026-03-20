@@ -842,13 +842,33 @@ async def on_message(message):
         # Send response
         try:
             mood_val = user.get("mood",0) if user else 0
-            if random.random()<.12 and FISH_AUDIO_API_KEY:
-                sent = await send_voice(message.channel,reply,ref=message,mood=mood_val)
-                if sent: await maybe_react(message,romance); return
+
+            # Check if replying to his own voice message
+            is_reply_to_self_audio = False
+            if message.reference:
+                try:
+                    ref = await message.channel.fetch_message(message.reference.message_id)
+                    if ref.author == bot.user and any(
+                        a.filename.endswith(".mp3") for a in ref.attachments
+                    ):
+                        is_reply_to_self_audio = True
+                except Exception:
+                    pass
+
+            # Voice reply probability:
+            # Normal messages: 12% chance
+            # Replies to his own voice: 35% chance (feels like a voice conversation)
+            # But only if reply text is valid
+            if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
+                voice_prob = 0.35 if is_reply_to_self_audio else 0.12
+                if random.random() < voice_prob:
+                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val)
+                    if sent: await maybe_react(message, romance); return
+
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
-                await send_voice(message.channel,random.choice(["...","Tch.","Hmph."]),mood=mood_val)
+                await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val)
             await message.reply(strip_narration(reply))
-            await maybe_react(message,romance)
+            await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
     except Exception as e:
