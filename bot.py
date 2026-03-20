@@ -670,16 +670,18 @@ async def on_message(message):
 
         # Image reading — look at images in this message OR the message being replied to
         try:
-            # Find image — either in current message or in the message being replied to
+            # Find image in current message first
             img = next((a for a in message.attachments
                        if a.content_type and "image" in a.content_type), None)
 
-            # If no image in current message, check if replying to a message with an image
-            if not img and message.reference and message.reference.resolved:
-                ref_msg = message.reference.resolved
-                if not isinstance(ref_msg, discord.DeletedReferencedMessage):
+            # If no image, fetch the replied-to message fresh (cache strips attachments)
+            if not img and message.reference:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
                     img = next((a for a in ref_msg.attachments
                                if a.content_type and "image" in a.content_type), None)
+                except Exception:
+                    pass
 
             if img:
                 try:
