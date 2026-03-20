@@ -192,6 +192,7 @@ ai  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 _hostages:       dict[int, str] = {}
 _pending_unsent: set[int]       = set()
+_tedtalk_active: set[int]       = set()  # Prevent duplicate tedtalk triggers
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
@@ -1059,27 +1060,22 @@ async def voice_cmd(ctx,*,msg:str=None):
 
 @bot.command(name="tedtalk", aliases=["teach","lecture","explain"])
 async def tedtalk_cmd(ctx, *, topic: str = None):
-    """
-    Upload a file (PDF or image) and Scaramouche teaches you the material
-    as a full voice monologue. He decides length based on complexity.
-    Usage: attach a file to your message and type !tedtalk
-           or !tedtalk <topic> for a topic without a file
-    """
     try:
+        # Prevent duplicate triggers
+        if ctx.author.id in _tedtalk_active:
+            await safe_reply(ctx, "I'm already working on your lecture. Patience.")
+            return
+        _tedtalk_active.add(ctx.author.id)
+
         await _setup(ctx)
 
-        # Check for attachment
-        attachment = None
-        if ctx.message.attachments:
-            attachment = ctx.message.attachments[0]
+        attachment = ctx.message.attachments[0] if ctx.message.attachments else None
 
         if not attachment and not topic:
-            await safe_reply(ctx,
-                "Attach a file or give me a topic. I can't teach you nothing, "
-                "as satisfying as that would be.")
+            _tedtalk_active.discard(ctx.author.id)
+            await safe_reply(ctx, "Attach a file or give me a topic. I can't teach you nothing, as satisfying as that would be.")
             return
 
-        # Acknowledge with rough time estimate based on file size
         file_size = attachment.size if attachment else 0
         if file_size > 500_000 or (attachment and attachment.filename.lower().endswith(".pptx")):
             time_hint = "This will take roughly 2-3 minutes."
@@ -1096,10 +1092,10 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
         ]
         await ctx.reply(random.choice(ack_lines))
 
-        # Run heavy processing in background so Discord doesn't time out
         asyncio.ensure_future(_do_tedtalk(ctx, attachment, topic))
 
     except Exception as e:
+        _tedtalk_active.discard(ctx.author.id)
         log_error("tedtalk_cmd", e)
         await safe_reply(ctx, "...Something went wrong. Annoying.")
 
@@ -1108,6 +1104,14 @@ async def _do_tedtalk(ctx, attachment, topic):
     """Background task for !tedtalk — does all the heavy lifting."""
     try:
         material_content = ""
+
+        # Immediately confirm he's working so user knows it started
+        await ctx.send(random.choice([
+            "...I'm reading it now. Don't interrupt me.",
+            "Hmph. Give me a moment. I'm going through your material.",
+            "I'm working on it. Try not to send me more messages while I'm busy.",
+            "...Processing. I'll tell you when I'm done.",
+        ]))
 
         # ── Extract content from attachment ──────────────────────────────
         if attachment:
@@ -1296,8 +1300,10 @@ async def _do_tedtalk(ctx, attachment, topic):
 
     except Exception as e:
         log_error("_do_tedtalk", e)
-        try: await ctx.send(f"...Something went wrong mid-lecture. Annoying. Error: {e}")
+        try: await ctx.send(f"...Something went wrong mid-lecture. Error: {e}")
         except: pass
+    finally:
+        _tedtalk_active.discard(ctx.author.id)
 
 
 @bot.command(name="dare")
