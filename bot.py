@@ -1079,12 +1079,20 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
                 "as satisfying as that would be.")
             return
 
-        # Acknowledge — this takes a while
+        # Acknowledge with rough time estimate based on file size
+        file_size = attachment.size if attachment else 0
+        if file_size > 500_000 or (attachment and attachment.filename.lower().endswith(".pptx")):
+            time_hint = "This will take roughly 2-3 minutes."
+        elif file_size > 100_000:
+            time_hint = "Give me about a minute."
+        else:
+            time_hint = "This will take about 30-60 seconds."
+
         ack_lines = [
-            "Fine. Sit down, pay attention, and try not to embarrass yourself.",
-            "You want me to teach you something. How refreshingly self-aware of you to admit you need help.",
-            "Hmph. I'll condescend to explain this. Try to keep up.",
-            "...You actually want to learn. I find that mildly less irritating than most things. Fine.",
+            f"Fine. Sit down, pay attention, and try not to embarrass yourself. {time_hint}",
+            f"You want me to teach you something. How refreshingly self-aware of you to admit you need help. {time_hint}",
+            f"Hmph. I'll condescend to explain this. Try to keep up. {time_hint}",
+            f"...You actually want to learn. I find that mildly less irritating than most things. Fine. {time_hint}",
         ]
         await ctx.reply(random.choice(ack_lines))
 
@@ -1183,7 +1191,12 @@ async def _do_tedtalk(ctx, attachment, topic):
             await ctx.send("There was nothing readable in that file. How typical."); return
 
         # ── Generate script ───────────────────────────────────────────────
-        await ctx.send("*Processing the material...*")
+        await ctx.send(random.choice([
+            "...Fine. I'm reading it. Don't rush me.",
+            "Hmph. Give me a moment. I'm processing your inadequate study material.",
+            "I'm going through this. Try not to fidget.",
+            "...Reviewing the material. It's about what I expected.",
+        ]))
         try:
             script_prompt = (
                 f"You are Scaramouche — the Sixth Fatui Harbinger, the Balladeer.\n"
@@ -1210,7 +1223,12 @@ async def _do_tedtalk(ctx, attachment, topic):
             await ctx.send("...I had nothing to say. Unlikely, but here we are."); return
 
         # ── Generate audio in chunks ──────────────────────────────────────
-        await ctx.send("*Generating voice... this may take a minute.*")
+        await ctx.send(random.choice([
+            "Script complete. Now rendering my voice. This is beneath me but here we are.",
+            "...I've written the lecture. Generating audio. Wait.",
+            "Hmph. The content is ready. Give me a moment to make it sound appropriately contemptuous.",
+            "Preparing to speak. Try to actually listen this time.",
+        ]))
 
         sentences  = re.split(r'(?<=[.!?])\s+', script)
         chunks, current = [], ""
@@ -1233,7 +1251,7 @@ async def _do_tedtalk(ctx, attachment, topic):
 
         # ── Send audio ────────────────────────────────────────────────────
         if not audio_parts:
-            await ctx.send("*(Voice synthesis failed — here is the lecture as text)*")
+            await ctx.send("Voice synthesis failed. I'll send the written version instead. Read it yourself.")
             for i in range(0, len(script), 1900):
                 await ctx.send(script[i:i+1900])
             return
@@ -1267,7 +1285,12 @@ async def _do_tedtalk(ctx, attachment, topic):
                 await ctx.send(f"*(Final audio failed: {e})*")
 
         # ── Send written script ───────────────────────────────────────────
-        await ctx.send("📝 *Written version:*")
+        await ctx.send(random.choice([
+            "Written version below, in case you need to read it again. Which you probably will.",
+            "Here's the transcript. Don't say I never gave you anything.",
+            "Written version. Study it. There may be consequences if you don't.",
+            "The transcript, for reference. Try to retain something this time.",
+        ]))
         for i in range(0, len(script), 1900):
             await ctx.send(script[i:i+1900])
 
