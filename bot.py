@@ -1254,19 +1254,34 @@ async def _do_tedtalk(ctx, attachment, topic):
         if current: chunks.append(current)
 
         audio_parts = []
+        total_chunks = len([c for c in chunks if c.strip()])
+        await ctx.send(f"*Generating audio — {total_chunks} segments...*")
+
         for i, chunk in enumerate(chunks):
             if not chunk.strip(): continue
             try:
                 audio = await get_audio_with_mood(tts_safe(chunk, ctx.guild), 0)
-                if audio: audio_parts.append(audio)
+                if audio:
+                    audio_parts.append(audio)
+                else:
+                    print(f"[tedtalk] chunk {i} returned None")
             except Exception as e:
-                log_error(f"tedtalk_chunk_{i}", e)
+                print(f"[tedtalk] chunk {i} error: {e}")
+
+            # Progress update every 5 chunks so user knows it's still working
+            if (i+1) % 5 == 0:
+                try:
+                    await ctx.send(f"*...{i+1}/{total_chunks} segments done...*")
+                except: pass
 
         # ── Send audio ────────────────────────────────────────────────────
+        await ctx.send(f"*Audio complete — {len(audio_parts)}/{total_chunks} segments generated.*")
+
         if not audio_parts:
-            await ctx.send("Voice synthesis failed. I'll send the written version instead. Read it yourself.")
+            await ctx.send("Voice synthesis failed for all segments. Sending written version instead.")
             for i in range(0, len(script), 1900):
-                await ctx.send(script[i:i+1900])
+                try: await ctx.send(script[i:i+1900])
+                except Exception as e: await ctx.send(f"*(text send failed: {e})*")
             return
 
         MAX_BYTES = 7 * 1024 * 1024
