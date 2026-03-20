@@ -617,13 +617,77 @@ async def on_message(message):
                 await mem.save_summary(message.author.id, summary)
         except Exception as e: log_error("on_message/summary", e)
 
-        # Image reaction
+        # Image reading — actually look at the image using Claude vision
         try:
             if message.attachments:
-                img = next((a for a in message.attachments if a.content_type and "image" in a.content_type),None)
-                if img and random.random()<.25:
-                    comment = await qai(f"{message.author.display_name} posted an image. React — dismissive or reluctantly intrigued. 1 sentence.",100)
-                    await message.reply(comment); return
+                img = next((a for a in message.attachments
+                           if a.content_type and "image" in a.content_type), None)
+                if img:
+                    try:
+                        import base64, aiohttp as _aiohttp
+                        async with _aiohttp.ClientSession() as _sess:
+                            async with _sess.get(img.url) as _resp:
+                                img_bytes = await _resp.read()
+                        img_b64    = base64.b64encode(img_bytes).decode()
+                        media_type = img.content_type or "image/jpeg"
+
+                        user     = user or {}
+                        mood     = user.get("mood", 0) if user else 0
+                        system   = build_system(user, message.author.display_name,
+                                               bool(OWNER_ID and message.author.id == OWNER_ID))
+
+                        # Build a vision message — image + instruction
+                        vision_prompt = (
+                            f"{message.author.display_name} sent you this image"
+                            + (f" with the message: '{content}'" if content else "")
+                            + f". React as Scaramouche. You can actually see it — describe what you see "
+                            f"and react in character. Be specific about what's in the image. "
+                            f"MOOD:{mood}. NO asterisk actions. 1-3 sentences."
+                        )
+                        vision_msgs = [{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": img_b64,
+                                    }
+                                },
+                                {"type": "text", "text": vision_prompt}
+                            ]
+                        }]
+
+                        resp  = ai.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=300,
+                            system=system,
+                            messages=vision_msgs,
+                        )
+                        reply = "".join(
+                            b.text for b in resp.content if hasattr(b,"text")
+                        ).strip()
+
+                        if reply:
+                            reply = strip_narration(reply)
+                            await mem.add_message(message.author.id, message.channel.id,
+                                                  "user", f"[image]{' — '+content if content else ''}")
+                            await mem.add_message(message.author.id, message.channel.id,
+                                                  "assistant", reply)
+                            await message.reply(reply)
+                            await maybe_react(message, romance)
+                            return
+
+                    except Exception as e:
+                        log_error("on_message/vision", e)
+                        # Fallback to generic reaction if vision fails
+                        if random.random() < 0.4:
+                            comment = await qai(
+                                f"{message.author.display_name} posted an image. "
+                                f"React — dismissive or reluctantly intrigued. 1 sentence.", 100)
+                            await message.reply(strip_narration(comment))
+                            return
         except Exception as e: log_error("on_message/image", e)
 
         # Special triggers
