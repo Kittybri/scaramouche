@@ -168,18 +168,24 @@ def log_error(location: str, e: Exception):
     print(f"[ERROR:{location}] {type(e).__name__}: {e}")
 
 # ── Channel context ───────────────────────────────────────────────────────────
-async def fetch_channel_context(channel, limit: int = 15) -> str:
+async def fetch_channel_context(channel, limit: int = 25) -> str:
     try:
         if not hasattr(channel, 'history'): return ""
         msgs = []
         async for msg in channel.history(limit=limit):
             if msg.author.bot: continue
-            content = msg.content[:120].strip()
-            if content:
-                msgs.append(f"{msg.author.display_name}: {content}")
+            text = msg.content[:150].strip()
+            if not text: continue
+            if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
+                ref = msg.reference.resolved
+                ref_preview = (ref.content or "")[:50].strip()
+                line = f"{msg.author.display_name} (replying to \"{ref_preview}\"): {text}" if ref_preview else f"{msg.author.display_name}: {text}"
+            else:
+                line = f"{msg.author.display_name}: {text}"
+            msgs.append(line)
         if not msgs: return ""
         msgs.reverse()
-        return "CHANNEL_CONTEXT (recent chat you've been observing):\n" + "\n".join(msgs)
+        return "CHANNEL_CONTEXT:\n" + "\n".join(msgs)
     except Exception as e:
         log_error("fetch_channel_context", e)
         return ""
@@ -189,7 +195,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None):
     try:
-        history   = await mem.get_history(user_id, channel_id)
+        history   = await mem.get_history(user_id, channel_id, limit=35)
         mood      = user.get("mood",0) if user else 0
         affection = user.get("affection",0) if user else 0
         trust     = user.get("trust",0) if user else 0
@@ -224,7 +230,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         history.append({"role":"user","content":context_block})
         system = build_system(user, display_name, is_owner)
 
-        kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=500,
+        kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=800,
                       system=system, messages=history)
         if use_search: kwargs["tools"]=[{"type":"web_search_20250305","name":"web_search"}]
 
