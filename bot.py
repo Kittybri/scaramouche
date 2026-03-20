@@ -654,7 +654,9 @@ async def on_message(message):
             return
 
         await bot.process_commands(message)
-        if message.content.startswith("!"): return
+        # Stop here for ALL command messages — no further processing
+        if message.content.strip().startswith("!"):
+            return
 
         try:
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
@@ -1061,11 +1063,11 @@ async def voice_cmd(ctx,*,msg:str=None):
 @bot.command(name="tedtalk", aliases=["teach","lecture","explain"])
 async def tedtalk_cmd(ctx, *, topic: str = None):
     try:
-        # Prevent duplicate triggers
+        # Atomic check-and-set to prevent any duplicate triggers
         if ctx.author.id in _tedtalk_active:
             await safe_reply(ctx, "I'm already working on your lecture. Patience.")
             return
-        _tedtalk_active.add(ctx.author.id)
+        _tedtalk_active.add(ctx.author.id)  # Add immediately, before any awaits
 
         await _setup(ctx)
 
@@ -1091,7 +1093,6 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
             f"...You actually want to learn. I find that mildly less irritating than most things. Fine. {time_hint}",
         ]
         await ctx.reply(random.choice(ack_lines))
-
         asyncio.ensure_future(_do_tedtalk(ctx, attachment, topic))
 
     except Exception as e:
@@ -1128,15 +1129,18 @@ async def _do_tedtalk(ctx, attachment, topic):
             if "pdf" in ct or attachment.filename.lower().endswith(".pdf"):
                 try:
                     pdf_b64 = base64.b64encode(file_bytes).decode()
-                    extract_resp = ai.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=2000,
-                        messages=[{"role":"user","content":[
-                            {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":pdf_b64}},
-                            {"type":"text","text":"Extract all key educational content from this document. List every important concept, definition, formula, and fact."}
-                        ]}]
-                    )
-                    material_content = "".join(b.text for b in extract_resp.content if hasattr(b,"text")).strip()
+                    def _extract_pdf():
+                        r = ai.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=2000,
+                            messages=[{"role":"user","content":[
+                                {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":pdf_b64}},
+                                {"type":"text","text":"Extract all key educational content from this document. List every important concept, definition, formula, and fact."}
+                            ]}]
+                        )
+                        return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                    extract_resp_text = await asyncio.get_event_loop().run_in_executor(None, _extract_pdf)
+                    material_content = extract_resp_text
                 except Exception as e:
                     await ctx.send(f"Couldn't read the PDF: {e}"); return
 
@@ -1144,15 +1148,18 @@ async def _do_tedtalk(ctx, attachment, topic):
                 try:
                     img_b64 = base64.b64encode(file_bytes).decode()
                     media_type = ct if ct else "image/jpeg"
-                    extract_resp = ai.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=2000,
-                        messages=[{"role":"user","content":[
-                            {"type":"image","source":{"type":"base64","media_type":media_type,"data":img_b64}},
-                            {"type":"text","text":"Extract all educational content visible in this image. Include every concept, formula, definition, and key point."}
-                        ]}]
-                    )
-                    material_content = "".join(b.text for b in extract_resp.content if hasattr(b,"text")).strip()
+                    def _extract_img():
+                        r = ai.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=2000,
+                            messages=[{"role":"user","content":[
+                                {"type":"image","source":{"type":"base64","media_type":media_type,"data":img_b64}},
+                                {"type":"text","text":"Extract all educational content visible in this image. Include every concept, formula, definition, and key point."}
+                            ]}]
+                        )
+                        return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                    extract_resp_text = await asyncio.get_event_loop().run_in_executor(None, _extract_img)
+                    material_content = extract_resp_text
                 except Exception as e:
                     await ctx.send(f"Couldn't read the image: {e}"); return
 
@@ -1213,13 +1220,15 @@ async def _do_tedtalk(ctx, attachment, topic):
                 f"Structure: introduce → explain each concept → examples → summary. "
                 f"NO asterisk actions. Spoken words only."
             )
-            script_resp = ai.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2500,
-                system=_BASE,
-                messages=[{"role":"user","content":script_prompt}]
-            )
-            script = strip_narration("".join(b.text for b in script_resp.content if hasattr(b,"text")).strip())
+            def _gen_script():
+                r = ai.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2500,
+                    system=_BASE,
+                    messages=[{"role":"user","content":script_prompt}]
+                )
+                return strip_narration("".join(b.text for b in r.content if hasattr(b,"text")).strip())
+            script = await asyncio.get_event_loop().run_in_executor(None, _gen_script)
         except Exception as e:
             await ctx.send(f"Failed to generate the lecture: {e}"); return
 
