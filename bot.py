@@ -32,9 +32,31 @@ def strip_narration(text: str) -> str:
         text = re.sub(r'\([^)]+\)','',text)
         text = re.sub(r'\[[^\]]+\]','',text)
         text = re.sub(r'\b(he|she|they|scaramouche|the balladeer)\s+(said|replied|muttered|sneered|scoffed|whispered|snapped|drawled)[,.]?\s*','',text,flags=re.IGNORECASE)
+        text = re.sub(r'<@!?\d+>', '', text)
+        text = re.sub(r'<#\d+>', '', text)
+        text = re.sub(r'<@&\d+>', '', text)
         return re.sub(r'\s{2,}',' ',text).strip().lstrip('.,; ')
     except Exception:
         return text
+
+
+def tts_safe(text: str, guild=None) -> str:
+    """Make text safe for TTS — replace mention IDs with display names."""
+    try:
+        if guild:
+            # Replace <@userid> with display name
+            def replace_mention(m):
+                uid = int(re.search(r'\d+', m.group(0)).group())
+                member = guild.get_member(uid)
+                return member.display_name if member else ""
+            text = re.sub(r'<@!?\d+>', replace_mention, text)
+        else:
+            text = re.sub(r'<@!?\d+>', '', text)
+        text = re.sub(r'<#\d+>', '', text)
+        text = re.sub(r'<@&\d+>', '', text)
+        return strip_narration(text)
+    except Exception:
+        return strip_narration(text)
 
 # ── Keywords ──────────────────────────────────────────────────────────────────
 SCARA_KW     = ["scaramouche","balladeer","kunikuzushi","scara","hat guy","puppet","sixth harbinger","fatui"]
@@ -372,9 +394,9 @@ async def get_audio_with_mood(text: str, mood: int) -> bytes | None:
         try: return await get_audio(strip_narration(text), FISH_AUDIO_API_KEY)
         except Exception as e: log_error("get_audio_with_mood", e); return None
 
-async def send_voice(channel, text, ref=None, mood=0):
+async def send_voice(channel, text, ref=None, mood=0, guild=None):
     try:
-        audio = await get_audio_with_mood(text, mood)
+        audio = await get_audio_with_mood(tts_safe(text, guild), mood)
         if not audio: return False
         f = discord.File(io.BytesIO(audio), filename="scaramouche.mp3")
         kwargs = {"file": f}
@@ -886,11 +908,11 @@ async def on_message(message):
             if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
                 voice_prob = 0.35 if is_reply_to_self_audio else 0.12
                 if random.random() < voice_prob:
-                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val)
+                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild)
                     if sent: await maybe_react(message, romance); return
 
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
-                await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val)
+                await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val, guild=message.guild)
             await message.reply(strip_narration(resolve_mentions(reply, message.guild if message.guild else None)))
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
@@ -1030,7 +1052,7 @@ async def voice_cmd(ctx,*,msg:str=None):
         user=await _setup(ctx); mood_val=user.get("mood",0) if user else 0
         async with ctx.typing():
             text_reply=await get_response(ctx.author.id,ctx.channel.id,msg,user,ctx.author.display_name,ctx.author.mention)
-            sent=await send_voice(ctx.channel,text_reply,mood=mood_val)
+            sent=await send_voice(ctx.channel,text_reply,mood=mood_val,guild=ctx.guild)
         if not sent: await safe_reply(ctx,text_reply)
     except Exception as e: log_error("voice_cmd",e); await safe_reply(ctx,"Hmph.")
 
