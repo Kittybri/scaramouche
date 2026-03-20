@@ -406,7 +406,7 @@ class Memory:
                 return (await cur.fetchone())[0]
 
     # ── Conversation history ──────────────────────────────────────────────────
-    async def get_history(self, user_id: int, channel_id: int, limit: int = 22) -> list[dict]:
+    async def get_history(self, user_id: int, channel_id: int, limit: int = 35) -> list[dict]:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("""
                 SELECT role,content FROM messages WHERE user_id=? AND channel_id=?
