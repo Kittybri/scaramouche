@@ -48,8 +48,22 @@ SLEEP_KW     = [r"\bsleeping\b",r"\btired\b",r"\bbed\b",r"\bnap\b",r"\binsomnia\
 PLAN_KW      = ["going to","planning to","about to","later today","this weekend","next week"]
 VILLAIN_TRIGGER = "you will never win"
 
-SCARA_EMOJIS   = ["⚡","😒","🙄","💜","😤","🌀","👑","💨","✨","😏","❄️","🎭","💀","🫠","😑","🔮"]
-ROMANCE_EMOJIS = ["💕","🥺","😳","💗","💭","😶","🫶","💞","🩷","😣"]
+SCARA_EMOJIS   = [
+    # Cold/contempt
+    "⚡","😒","🙄","😤","😑","❄️","🫠","💀","😶",
+    # Dramatic/villain
+    "👑","🎭","🔮","🌀","💨","✨","🗡️","⚔️","🌩️",
+    # Subtle/unimpressed
+    "😏","💜","🫡","😪","🤨","😮‍💨","🫥","💭","🔇",
+    # Occasionally chaotic
+    "💅","🧊","🕳️","🪄","⚰️","🫀","🩸","🎩","🌑",
+    # Rare and specific
+    "🤡","😵","🫣","🧿","🕶️","🫦","🌪️","🌫️","🎪",
+]
+ROMANCE_EMOJIS = [
+    "💕","🥺","😳","💗","💭","😶","🫶","💞","🩷","😣",
+    "💌","🫀","😰","💘","🥀","😮‍💨","🫂","💔","😖","🌹",
+]
 
 STATUSES = [
     ("watching","fools wander | !help"),  ("watching","you. Don't flatter yourself."),
@@ -349,13 +363,50 @@ async def send_voice(channel, text, ref=None, mood=0):
 # ── Misc helpers ──────────────────────────────────────────────────────────────
 async def maybe_react(message, romance=False):
     try:
-        if random.random()>.35: return
-        pool  = SCARA_EMOJIS+(ROMANCE_EMOJIS if romance else [])
-        count = random.choices([1,2,3],weights=[7,3,1])[0]
-        for e in random.sample(pool,min(count,len(pool))):
-            try: await message.add_reaction(e); await asyncio.sleep(.25)
-            except: pass
-    except Exception as e: log_error("maybe_react", e)
+        if random.random() > .18: return
+        pool = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
+        pool_str = " ".join(pool)
+        content  = message.content[:120] if message.content else "[image or attachment]"
+
+        # Ask Claude to pick the right emoji for the moment
+        prompt = (
+            f"You are Scaramouche. Someone said: '{content}'\n"
+            f"Pick 1 emoji from this list that fits your reaction as Scaramouche — "
+            f"contemptuous, cold, dramatic, or occasionally unhinged. "
+            f"Choose based on the actual content of the message, not randomly.\n"
+            f"Available: {pool_str}\n"
+            f"Reply with ONLY the single emoji. Nothing else."
+        )
+        chosen = await qai(prompt, 10)
+        chosen = chosen.strip()
+
+        # Validate it's actually in our pool, fallback to random if not
+        if chosen not in pool:
+            chosen = random.choice(pool)
+
+        try: await message.add_reaction(chosen)
+        except: pass
+
+        # 15% chance to add a second emoji if romance
+        if romance and random.random() < .15:
+            second = await qai(
+                f"Pick a SECOND different emoji for this romantic reaction to: '{content}'\n"
+                f"Available: {pool_str}\n"
+                f"Reply with ONLY the single emoji.",
+                10
+            )
+            second = second.strip()
+            if second in pool and second != chosen:
+                try: await asyncio.sleep(.3); await message.add_reaction(second)
+                except: pass
+
+    except Exception as e:
+        log_error("maybe_react", e)
+        # Fallback to random if AI call fails
+        try:
+            pool = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
+            await message.add_reaction(random.choice(pool))
+        except: pass
 
 def resp_prob(content, mentioned, is_reply, romance):
     if mentioned or is_reply: return 1.0
