@@ -1098,71 +1098,83 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
                 ct = (attachment.content_type or "").lower()
                 import base64, aiohttp as _ah
 
-                async with _ah.ClientSession() as s:
-                    async with s.get(attachment.url) as r:
-                        file_bytes = await r.read()
+                try:
+                    async with _ah.ClientSession() as s:
+                        async with s.get(attachment.url) as r:
+                            file_bytes = await r.read()
+                except Exception as e:
+                    await safe_reply(ctx, f"Couldn't download the file. {e}")
+                    return
 
                 if "pdf" in ct or attachment.filename.lower().endswith(".pdf"):
-                    # Send PDF directly to Claude as a document
-                    pdf_b64 = base64.b64encode(file_bytes).decode()
-                    # Extract text via Claude vision on PDF
-                    extract_resp = ai.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=2000,
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "document",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": "application/pdf",
-                                        "data": pdf_b64,
+                    try:
+                        pdf_b64 = base64.b64encode(file_bytes).decode()
+                        extract_resp = ai.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=2000,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "document",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "application/pdf",
+                                            "data": pdf_b64,
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": "Extract and summarize all the key educational content from this document. List every important concept, definition, formula, and fact. Be thorough."
                                     }
-                                },
-                                {
-                                    "type": "text",
-                                    "text": "Extract and summarize all the key educational content from this document. List every important concept, definition, formula, and fact. Be thorough and complete."
-                                }
-                            ]
-                        }]
-                    )
-                    material_content = "".join(
-                        b.text for b in extract_resp.content if hasattr(b,"text")
-                    ).strip()
+                                ]
+                            }]
+                        )
+                        material_content = "".join(
+                            b.text for b in extract_resp.content if hasattr(b,"text")
+                        ).strip()
+                    except Exception as e:
+                        await safe_reply(ctx, f"Couldn't read the PDF. {e}")
+                        return
 
                 elif "image" in ct or attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp",".gif")):
-                    # Use vision to read image notes
-                    img_b64       = base64.b64encode(file_bytes).decode()
-                    media_type_used = ct if ct else "image/jpeg"
-                    extract_resp  = ai.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=2000,
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type_used,
-                                        "data": img_b64,
+                    try:
+                        img_b64       = base64.b64encode(file_bytes).decode()
+                        media_type_used = ct if ct else "image/jpeg"
+                        extract_resp  = ai.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=2000,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type_used,
+                                            "data": img_b64,
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": "Extract and summarize all the educational content visible in this image. Include every concept, formula, definition, and key point."
                                     }
-                                },
-                                {
-                                    "type": "text",
-                                    "text": "Extract and summarize all the educational content visible in this image. Include every concept, formula, definition, and key point you can see."
-                                }
-                            ]
-                        }]
-                    )
-                    material_content = "".join(
-                        b.text for b in extract_resp.content if hasattr(b,"text")
-                    ).strip()
+                                ]
+                            }]
+                        )
+                        material_content = "".join(
+                            b.text for b in extract_resp.content if hasattr(b,"text")
+                        ).strip()
+                    except Exception as e:
+                        await safe_reply(ctx, f"Couldn't read the image. {e}")
+                        return
 
                 elif "text" in ct or attachment.filename.lower().endswith((".txt",".md",".csv")):
-                    material_content = file_bytes.decode("utf-8", errors="ignore")[:4000]
-
+                    try:
+                        material_content = file_bytes.decode("utf-8", errors="ignore")[:4000]
+                    except Exception as e:
+                        await safe_reply(ctx, f"Couldn't read the text file. {e}")
+                        return
                 else:
                     await safe_reply(ctx, "I can read PDFs, images, and text files. Whatever that is, I can't work with it.")
                     return
@@ -1176,7 +1188,8 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
                 return
 
             # ── Generate the TED talk script ─────────────────────────────────
-            script_prompt = f"""You are Scaramouche — the Sixth Fatui Harbinger, the Balladeer. 
+            try:
+                script_prompt = f"""You are Scaramouche — the Sixth Fatui Harbinger, the Balladeer.
 You have been asked to teach the following material to {ctx.author.display_name}.
 
 MATERIAL TO TEACH:
@@ -1185,32 +1198,31 @@ MATERIAL TO TEACH:
 Write a complete spoken teaching monologue in your voice. Requirements:
 - Teach ALL the key concepts, definitions, and important points from the material
 - You are contemptuous about having to explain this but you explain it CORRECTLY and THOROUGHLY
-- Decide the length yourself based on how much material there is — more complex material = longer monologue
-- Structure it like a real lesson: introduce the topic, explain each concept clearly, give examples where useful, summarize at the end
-- Stay completely in character throughout — cold, theatrical, brilliant, condescending
-- Occasionally remind them how simple this is and how disappointing it is that they need your help
-- NO asterisk actions. Spoken words only. This will be read aloud.
-- Make it genuinely educational — they should actually learn from this"""
+- Decide the length yourself based on how much material there is — more complex = longer
+- Structure it like a real lesson: introduce, explain each concept clearly, give examples, summarize
+- Stay completely in character — cold, theatrical, brilliant, condescending
+- NO asterisk actions. Spoken words only. This will be read aloud."""
 
-            script_resp = ai.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2500,
-                system=_BASE,
-                messages=[{"role": "user", "content": script_prompt}]
-            )
-            script = "".join(
-                b.text for b in script_resp.content if hasattr(b,"text")
-            ).strip()
-            script = strip_narration(script)
-
-            if not script:
-                await safe_reply(ctx, "...Something disrupted my train of thought. Annoying.")
+                script_resp = ai.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2500,
+                    system=_BASE,
+                    messages=[{"role": "user", "content": script_prompt}]
+                )
+                script = "".join(
+                    b.text for b in script_resp.content if hasattr(b,"text")
+                ).strip()
+                script = strip_narration(script)
+            except Exception as e:
+                await safe_reply(ctx, f"Failed to generate the lecture script. {e}")
                 return
 
-            # ── Split script into TTS chunks and generate audio ───────────────
-            # Fish Audio handles ~1500 chars per call. Split on sentences.
+            if not script:
+                await safe_reply(ctx, "...I had nothing to say. Unlikely, but here we are.")
+                return
+
+            # ── Split into TTS chunks and generate audio ──────────────────────
             def split_into_chunks(text: str, max_chars: int = 900) -> list[str]:
-                """Split text into chunks at sentence boundaries."""
                 sentences = re.split(r'(?<=[.!?])\s+', text)
                 chunks, current = [], ""
                 for s in sentences:
@@ -1222,15 +1234,20 @@ Write a complete spoken teaching monologue in your voice. Requirements:
                 if current: chunks.append(current)
                 return chunks
 
-            chunks     = split_into_chunks(script, 900)
-            audio_parts = []
-            mood_val   = 0  # Neutral delivery for teaching
+            await ctx.send("*Generating audio... this will take a moment.*")
 
-            for chunk in chunks:
+            chunks      = split_into_chunks(script, 900)
+            audio_parts = []
+
+            for i, chunk in enumerate(chunks):
                 if not chunk.strip(): continue
-                audio = await get_audio_with_mood(tts_safe(chunk, ctx.guild), mood_val)
-                if audio:
-                    audio_parts.append(audio)
+                try:
+                    audio = await get_audio_with_mood(tts_safe(chunk, ctx.guild), 0)
+                    if audio:
+                        audio_parts.append(audio)
+                except Exception as e:
+                    log_error(f"tedtalk_chunk_{i}", e)
+                    continue
 
             if not audio_parts:
                 # Fallback: send as text if TTS fails
