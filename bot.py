@@ -190,9 +190,12 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory()
 ai  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-_hostages:       dict[int, str] = {}
-_pending_unsent: set[int]       = set()
-_tedtalk_active: set[int]       = set()  # Prevent duplicate tedtalk triggers
+_hostages:       dict[int, str]   = {}
+_pending_unsent: set[int]         = set()
+_tedtalk_active: set[int]         = set()
+# Cache the extracted material per user so follow-up questions can reference it
+# {user_id: {"material": str, "channel_id": int, "message_ids": set}}
+_tedtalk_cache:  dict[int, dict]  = {}
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
@@ -825,6 +828,35 @@ async def on_message(message):
                      not isinstance(message.reference.resolved,discord.DeletedReferencedMessage) and
                      message.reference.resolved.author==bot.user)
 
+        # ── Tedtalk follow-up detection ───────────────────────────────────
+        # If replying to any of his messages and user has cached lecture material
+        if is_reply and message.author.id in _tedtalk_cache:
+            cache = _tedtalk_cache[message.author.id]
+            if cache.get("channel_id") == message.channel.id:
+                try:
+                    async with message.channel.typing():
+                        def _answer_followup():
+                            r = ai.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=600,
+                                system=_BASE,
+                                messages=[{"role":"user","content":(
+                                    f"You just gave a lecture on this material:\n{cache['material']}\n\n"
+                                    f"{message.author.display_name} is asking a follow-up question: '{content}'\n\n"
+                                    f"Answer using the material. Be accurate and thorough but stay in character. "
+                                    f"Contemptuous that they need clarification, but actually helpful."
+                                )}]
+                            )
+                            return strip_narration("".join(b.text for b in r.content if hasattr(b,"text")).strip())
+                        answer = await asyncio.get_event_loop().run_in_executor(None, _answer_followup)
+                    if answer:
+                        await message.reply(answer)
+                        await mem.add_message(message.author.id, message.channel.id, "user", content)
+                        await mem.add_message(message.author.id, message.channel.id, "assistant", answer)
+                        return
+                except Exception as e:
+                    log_error("tedtalk_followup", e)
+
         if random.random()>resp_prob(content,mentioned,is_reply,romance):
             await maybe_react(message,romance); return
 
@@ -1255,7 +1287,12 @@ async def _do_tedtalk(ctx, attachment, topic):
 
         audio_parts = []
         total_chunks = len([c for c in chunks if c.strip()])
-        await ctx.send(f"*Generating audio — {total_chunks} segments...*")
+        await ctx.send(random.choice([
+            f"*Recording. {total_chunks} segments. Don't touch anything.*",
+            f"*Committing this to voice. {total_chunks} parts. Try not to interrupt.*",
+            f"*{total_chunks} segments to render. I'm working. Be quiet.*",
+            f"*Converting my lecture to audio. {total_chunks} parts. This takes time.*",
+        ]))
 
         for i, chunk in enumerate(chunks):
             if not chunk.strip(): continue
@@ -1268,14 +1305,22 @@ async def _do_tedtalk(ctx, attachment, topic):
             except Exception as e:
                 print(f"[tedtalk] chunk {i} error: {e}")
 
-            # Progress update every 5 chunks so user knows it's still working
             if (i+1) % 5 == 0:
                 try:
-                    await ctx.send(f"*...{i+1}/{total_chunks} segments done...*")
+                    remaining = total_chunks - (i+1)
+                    await ctx.send(random.choice([
+                        f"*{i+1}/{total_chunks} done. {remaining} remaining. Still working.*",
+                        f"*Progress: {i+1} of {total_chunks}. Don't ask how much longer.*",
+                        f"*{remaining} segments left. I said be quiet.*",
+                    ]))
                 except: pass
 
         # ── Send audio ────────────────────────────────────────────────────
-        await ctx.send(f"*Audio complete — {len(audio_parts)}/{total_chunks} segments generated.*")
+        await ctx.send(random.choice([
+            f"*Done. {len(audio_parts)} of {total_chunks} segments rendered. Sending now.*",
+            f"*{len(audio_parts)}/{total_chunks} segments complete. Here.*",
+            f"*Finished. {len(audio_parts)} parts. Pay attention this time.*",
+        ]))
 
         if not audio_parts:
             await ctx.send("Voice synthesis failed for all segments. Sending written version instead.")
@@ -1311,6 +1356,12 @@ async def _do_tedtalk(ctx, attachment, topic):
                 )
             except Exception as e:
                 await ctx.send(f"*(Final audio failed: {e})*")
+
+        # ── Cache material for follow-up questions ────────────────────────
+        _tedtalk_cache[ctx.author.id] = {
+            "material":   material_content[:3000],
+            "channel_id": ctx.channel.id,
+        }
 
         # ── Send notes (not transcript) ───────────────────────────────────
         try:
