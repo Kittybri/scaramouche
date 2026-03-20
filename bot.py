@@ -1297,15 +1297,27 @@ async def _do_tedtalk(ctx, attachment, topic):
             except Exception as e:
                 await ctx.send(f"*(Final audio failed: {e})*")
 
-        # ── Send written script ───────────────────────────────────────────
-        await ctx.send(random.choice([
-            "Written version below, in case you need to read it again. Which you probably will.",
-            "Here's the transcript. Don't say I never gave you anything.",
-            "Written version. Study it. There may be consequences if you don't.",
-            "The transcript, for reference. Try to retain something this time.",
-        ]))
-        for i in range(0, len(script), 1900):
-            await ctx.send(script[i:i+1900])
+        # ── Send notes (not transcript) ───────────────────────────────────
+        try:
+            def _gen_notes():
+                r = ai.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=800,
+                    system=_BASE,
+                    messages=[{"role":"user","content":(
+                        f"You just gave a lecture on this material:\n{material_content[:2000]}\n\n"
+                        f"Write concise study notes for {ctx.author.display_name}. "
+                        f"Key terms, important concepts, things to remember. "
+                        f"Bullet points are fine. Keep it short — this is a reference, not a repeat of the lecture. "
+                        f"Stay in character but be genuinely useful."
+                    )}]
+                )
+                return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+            notes = await asyncio.get_event_loop().run_in_executor(None, _gen_notes)
+            if notes:
+                await ctx.send(f"📋 *Notes:*\n{notes[:1900]}")
+        except Exception as e:
+            log_error("tedtalk_notes", e)
 
     except Exception as e:
         log_error("_do_tedtalk", e)
