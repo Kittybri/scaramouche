@@ -192,9 +192,7 @@ ai  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
-_tedtalk_active: set[int]         = set()
-# Cache the extracted material per user so follow-up questions can reference it
-# {user_id: {"material": str, "channel_id": int, "message_ids": set}}
+_tedtalk_active: set[int]         = set()  # message IDs currently being processed
 _tedtalk_cache:  dict[int, dict]  = {}
 
 # ── Logging helper ────────────────────────────────────────────────────────────
@@ -1095,11 +1093,11 @@ async def voice_cmd(ctx,*,msg:str=None):
 @bot.command(name="tedtalk", aliases=["teach","lecture","explain"])
 async def tedtalk_cmd(ctx, *, topic: str = None):
     try:
-        # Atomic check-and-set to prevent any duplicate triggers
-        if ctx.author.id in _tedtalk_active:
-            await safe_reply(ctx, "I'm already working on your lecture. Patience.")
-            return
-        _tedtalk_active.add(ctx.author.id)  # Add immediately, before any awaits
+        # Lock on message ID — prevents duplicate fires from Discord edit events
+        msg_id = ctx.message.id
+        if msg_id in _tedtalk_active:
+            return  # Silent — same message, just ignore
+        _tedtalk_active.add(msg_id)
 
         await _setup(ctx)
 
@@ -1125,15 +1123,15 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
             f"...You actually want to learn. I find that mildly less irritating than most things. Fine. {time_hint}",
         ]
         await ctx.reply(random.choice(ack_lines))
-        asyncio.ensure_future(_do_tedtalk(ctx, attachment, topic))
+        asyncio.ensure_future(_do_tedtalk(ctx, attachment, topic, msg_id))
 
     except Exception as e:
-        _tedtalk_active.discard(ctx.author.id)
+        _tedtalk_active.discard(ctx.message.id)
         log_error("tedtalk_cmd", e)
         await safe_reply(ctx, "...Something went wrong. Annoying.")
 
 
-async def _do_tedtalk(ctx, attachment, topic):
+async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
     """Background task for !tedtalk — does all the heavy lifting."""
     try:
         material_content = ""
@@ -1221,7 +1219,22 @@ async def _do_tedtalk(ctx, attachment, topic):
                 try:
                     import docx as _docx
                     doc = _docx.Document(io.BytesIO(file_bytes))
-                    material_content = "\n".join(p.text for p in doc.paragraphs if p.text.strip())[:4000]
+                    parts = []
+                    # Paragraphs
+                    for p in doc.paragraphs:
+                        if p.text.strip():
+                            parts.append(p.text.strip())
+                    # Tables (cheat sheets often use tables)
+                    for table in doc.tables:
+                        for row in table.rows:
+                            row_text = " | ".join(
+                                cell.text.strip() for cell in row.cells if cell.text.strip()
+                            )
+                            if row_text:
+                                parts.append(row_text)
+                    material_content = "\n".join(parts)[:4000]
+                    if not material_content:
+                        await ctx.send("The Word document appears to be empty or uses unsupported formatting."); return
                 except Exception as e:
                     await ctx.send(f"Couldn't read the Word document: {e}"); return
             else:
@@ -1390,7 +1403,7 @@ async def _do_tedtalk(ctx, attachment, topic):
         try: await ctx.send(f"...Something went wrong mid-lecture. Error: {e}")
         except: pass
     finally:
-        _tedtalk_active.discard(ctx.author.id)
+        if msg_id: _tedtalk_active.discard(msg_id)
 
 
 @bot.command(name="dare")
