@@ -594,7 +594,9 @@ async def on_message(message):
             if VILLAIN_TRIGGER in content.lower():
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
                 await message.reply(strip_narration(m)); return
-            if any(re.search(k, content.lower()) for k in HAT_KW):
+            # Hat trigger — only exact standalone words, never substrings
+            content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
+            if content_words & {"hat","headwear","headpiece"}:
                 m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
                 await message.reply(strip_narration(m)); return
             if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35:
