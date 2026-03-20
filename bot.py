@@ -827,33 +827,50 @@ async def on_message(message):
                      message.reference.resolved.author==bot.user)
 
         # ── Tedtalk follow-up detection ───────────────────────────────────
-        # If replying to any of his messages and user has cached lecture material
+        # Only trigger if: replying to his message AND has cached material
+        # AND the question seems to be about the material (not just chatting)
         if is_reply and message.author.id in _tedtalk_cache:
             cache = _tedtalk_cache[message.author.id]
-            if cache.get("channel_id") == message.channel.id:
-                try:
-                    async with message.channel.typing():
-                        def _answer_followup():
-                            r = ai.messages.create(
-                                model="claude-sonnet-4-20250514",
-                                max_tokens=600,
-                                system=_BASE,
-                                messages=[{"role":"user","content":(
-                                    f"You just gave a lecture on this material:\n{cache['material']}\n\n"
-                                    f"{message.author.display_name} is asking a follow-up question: '{content}'\n\n"
-                                    f"Answer using the material. Be accurate and thorough but stay in character. "
-                                    f"Contemptuous that they need clarification, but actually helpful."
-                                )}]
-                            )
-                            return strip_narration("".join(b.text for b in r.content if hasattr(b,"text")).strip())
-                        answer = await asyncio.get_event_loop().run_in_executor(None, _answer_followup)
-                    if answer:
-                        await message.reply(answer)
-                        await mem.add_message(message.author.id, message.channel.id, "user", content)
-                        await mem.add_message(message.author.id, message.channel.id, "assistant", answer)
-                        return
-                except Exception as e:
-                    log_error("tedtalk_followup", e)
+            # Expire cache after 2 hours
+            if time.time() - cache.get("ts", 0) > 7200:
+                del _tedtalk_cache[message.author.id]
+            elif cache.get("channel_id") == message.channel.id:
+                # Only use cache if message looks like a question about material
+                cl = content.lower()
+                is_material_question = (
+                    content.endswith("?") or
+                    any(k in cl for k in [
+                        "what is","what are","what does","what do","explain",
+                        "confused","don't understand","don't get","clarify",
+                        "how does","how do","why does","why do","can you",
+                        "what about","tell me more","elaborate","example",
+                        "mean","define","difference between","what was"
+                    ])
+                )
+                if is_material_question:
+                    try:
+                        async with message.channel.typing():
+                            def _answer_followup():
+                                r = ai.messages.create(
+                                    model="claude-sonnet-4-20250514",
+                                    max_tokens=600,
+                                    system=_BASE,
+                                    messages=[{"role":"user","content":(
+                                        f"You gave a lecture on this material:\n{cache['material']}\n\n"
+                                        f"{message.author.display_name} has a follow-up question: '{content}'\n\n"
+                                        f"Answer using the material. Be accurate and thorough but stay in character. "
+                                        f"Contemptuous that they need clarification, but actually helpful."
+                                    )}]
+                                )
+                                return strip_narration("".join(b.text for b in r.content if hasattr(b,"text")).strip())
+                            answer = await asyncio.get_event_loop().run_in_executor(None, _answer_followup)
+                        if answer:
+                            await message.reply(answer)
+                            await mem.add_message(message.author.id, message.channel.id, "user", content)
+                            await mem.add_message(message.author.id, message.channel.id, "assistant", answer)
+                            return
+                    except Exception as e:
+                        log_error("tedtalk_followup", e)
 
         if random.random()>resp_prob(content,mentioned,is_reply,romance):
             await maybe_react(message,romance); return
@@ -1374,6 +1391,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
         _tedtalk_cache[ctx.author.id] = {
             "material":   material_content[:3000],
             "channel_id": ctx.channel.id,
+            "ts":         time.time(),
         }
 
         # ── Send notes (not transcript) ───────────────────────────────────
