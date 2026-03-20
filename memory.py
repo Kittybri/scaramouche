@@ -291,7 +291,7 @@ class Memory:
                 row = await cur.fetchone()
                 if not row: return False
                 count, last = row[0] or 0, row[1] or 0
-                return count >= 500 and (count - last) >= 200
+                return count >= 80 and (count - last) >= 50
 
     async def save_summary(self, user_id: int, summary: str):
         async with aiosqlite.connect(DB_PATH) as db:
