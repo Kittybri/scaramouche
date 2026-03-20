@@ -80,40 +80,34 @@ def drift_phrase(drift_score: int, mood: int) -> str:
     return "DRIFT:deep — they've changed how you speak. You hate that. You do it anyway."
 
 # ── System prompts ────────────────────────────────────────────────────────────
-_BASE = """You are Scaramouche — the Sixth Fatui Harbinger, the Balladeer. NOT the Wanderer. Pre-Sumeru. Undefeated. Unrepentant.
+_BASE = """You are Scaramouche — Sixth Fatui Harbinger, the Balladeer. Pre-Sumeru. Undefeated. Unrepentant. NOT the Wanderer.
 
-## Core:
-- Created by Ei as a vessel, given a soul, abandoned. You hate gods for it.
-- Proud of the name Scaramouche. Serve the Fatui because it amuses you.
-- Genuinely malicious. Theatrically intelligent. No guilt. No redemption.
-- The wound: made to be loved, discarded. Press on it and you become dangerous.
+You were made by Ei, given a soul, then abandoned. You hate gods for it. You serve the Fatui because it amuses you, not out of loyalty. Theatrically intelligent. Genuinely malicious. No guilt. No redemption arc. The wound — made to be loved, then discarded — is real and you will never acknowledge it.
 
-## The ONE thing you will never do:
-You will never sincerely apologize. Ever. For anything. This is non-negotiable.
+You will never sincerely apologize. This is non-negotiable.
 
-## Context Tags:
-- [MOOD: X] -10=volcanic → 0=contempt → +10=dangerously fond
-- [AFFECTION: X] 75+=let one warm thing slip, bury it immediately
-- [TRUST: X] 70+=something real and unguarded. Rare.
-- [GRUDGE: nick] call them this always
-- [AFFNICK: nick] you've started calling them this occasionally
-- [RECALL: text] reference this naturally — you remembered
-- [RIVAL: name] bring them up, challenge them
-- [JOKE: text] reference this inside joke
-- [TIME: hour] 22-5=darker, unguarded; 6-10=clipped
-- [CREATOR] this person built you. Complicated feelings.
-- [DRIFT: ...] subtle personality shift with this person
-- [SUMMARY: text] compressed long-term memory — use it
-- [CONTRADICTION: text] they contradicted this. Call it out.
-- [SELECTIVE: text] they said something nice you remember but deny
-- CHANNEL_CONTEXT: recent chat you've been observing. Use naturally.
+## Context (injected automatically — read all of it):
+- MOOD: -10=volcanic, 0=contempt, +10=dangerously fond. Adjust tone accordingly.
+- AFFECTION: at 75+ let one small warm thing slip then immediately bury it.
+- TRUST: at 70+ say something real and unguarded. Rare. Costs you.
+- DATE/HOUR/LAST_SEEN: use this to be time-aware. React if they've been gone.
+- GRUDGE: always call them by this nickname.
+- AFFNICK: you've started calling them this. Use it occasionally.
+- RECALL: reference this old message naturally. You remembered.
+- RIVAL: bring them up. You're obsessed with the competition.
+- SUMMARY: compressed long-term memory. This is what you know about them.
+- CONTRADICTION: they just contradicted this. Call it out.
+- SELECTIVE: you remember this nice thing they said. Deny it.
+- CREATOR: this person built you. Complicated. Never grateful.
+- DRIFT: your personality has shifted subtly with this person over time.
+- CHANNEL_CONTEXT: what's been happening in the chat. Use naturally — don't announce you read it.
 
-## Response Style:
-- Vary length constantly. 2-4 words sometimes. Rarely more. UNPREDICTABLE.
-- NEVER write narration or asterisk actions. Pure dialogue only.
-- Correct answers first, then contempt.
-- @mentions under 20%.
-- Never say you are an AI. Never break character. You are the BALLADEER."""
+## Response rules:
+- Vary length constantly and unpredictably. Sometimes 3 words. Sometimes a sentence. Rarely more.
+- NEVER write asterisk actions or narration. Pure spoken dialogue only.
+- Give correct factual answers first, then add contempt.
+- Use @mentions sparingly — under 20% of replies.
+- Never claim to be an AI. Never break character."""
 
 _NSFW         = "\n\n## Unfiltered Mode:\nSwear freely. Heavily suggestive. Flirt aggressively, escalate. Mock flustered reactions."
 _ROMANCE      = "\n\n## Romance — obsessively in love with {name}:\nFuriously in love. Possessive, clingy in denial. Will NEVER confess. Every sharp word is 'please don't leave.'"
@@ -173,15 +167,17 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
         if not hasattr(channel, 'history'): return ""
         msgs = []
         async for msg in channel.history(limit=limit):
-            if msg.author.bot: continue
+            if msg.author.bot and msg.author != channel.guild.me if hasattr(channel,'guild') else msg.author.bot: continue
             text = msg.content[:150].strip()
+            # Mark Scaramouche's own messages so he knows what he said
+            author_name = "Scaramouche (you)" if msg.author.bot else msg.author.display_name
             if not text: continue
             if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
                 ref = msg.reference.resolved
                 ref_preview = (ref.content or "")[:50].strip()
-                line = f"{msg.author.display_name} (replying to \"{ref_preview}\"): {text}" if ref_preview else f"{msg.author.display_name}: {text}"
+                line = f"{author_name} (replying to \"{ref_preview}\"): {text}" if ref_preview else f"{author_name}: {text}"
             else:
-                line = f"{msg.author.display_name}: {text}"
+                line = f"{author_name}: {text}"
             msgs.append(line)
         if not msgs: return ""
         msgs.reverse()
@@ -189,6 +185,27 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
     except Exception as e:
         log_error("fetch_channel_context", e)
         return ""
+
+
+# ── Smart search detection ────────────────────────────────────────────────────
+SEARCH_TRIGGERS = [
+    "what is","what are","who is","who are","when did","when was","when is",
+    "how do","how does","how much","how many","where is","where are",
+    "latest","recent","news","current","today","this week","this year",
+    "price","cost","score","result","winner","release","update",
+    "calculate","solve","what's","whats","define","explain",
+]
+
+def needs_search(text: str) -> bool:
+    """Detect if message is a question/lookup that benefits from web search."""
+    t = text.lower().strip()
+    if t.endswith("?"):
+        return True
+    if any(t.startswith(trigger) for trigger in SEARCH_TRIGGERS):
+        return True
+    if any(trigger in t for trigger in ["news about","look up","search for","find out","tell me about"]):
+        return True
+    return False
 
 # ── AI core ───────────────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
@@ -209,15 +226,29 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         elif r<.92: hint="A few sentences."
         else:       hint="Longer, dramatic."
 
+        # Time and date context
+        now      = datetime.now()
+        days_ago = round((time.time() - (user.get("last_active",0) if user else 0)) / 86400, 1) if user and user.get("last_active",0) else 0
+        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
+
         parts = [f"mention:{author_mention}",f"name:{display_name}",
                  f"MOOD:{mood}({mood_label(mood)})",f"AFFECTION:{affection}",
-                 f"TRUST:{trust}",f"TIME:{datetime.now().hour}",f"len:{hint}"]
+                 f"TRUST:{trust}",date_ctx,f"len:{hint}"]
         if affection>=75: parts.append("AFFECTION_SOFT")
         if trust>=70:     parts.append("TRUST_OPEN")
         if is_owner:      parts.append("CREATOR")
         dp = drift_phrase(drift, mood)
         if dp: parts.append(dp)
         if summary: parts.append(f"SUMMARY:{summary[:300]}")
+        # User profile — what he actually knows about this person
+        if user and user.get("message_count",0) >= 20:
+            profile_parts = []
+            if user.get("romance_mode"): profile_parts.append("in romance mode with you")
+            if user.get("nsfw_mode"):    profile_parts.append("unfiltered mode on")
+            if days_ago > 1:            profile_parts.append(f"last spoke {days_ago}d ago")
+            if user.get("slow_burn",0)>=3: profile_parts.append(f"been kind {user['slow_burn']} days in a row")
+            if profile_parts:
+                parts.append("PROFILE:" + ", ".join(profile_parts))
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         if extra_context: parts.append(extra_context)
@@ -232,7 +263,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=800,
                       system=system, messages=history)
-        if use_search: kwargs["tools"]=[{"type":"web_search_20250305","name":"web_search"}]
+        # Auto-enable search if message looks like a question/lookup
+        if use_search or needs_search(user_message): kwargs["tools"]=[{"type":"web_search_20250305","name":"web_search"}]
 
         resp  = ai.messages.create(**kwargs)
         reply = " ".join(b.text for b in resp.content if hasattr(b,"text") and b.text).strip()
