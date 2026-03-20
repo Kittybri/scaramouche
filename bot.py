@@ -1056,6 +1056,214 @@ async def voice_cmd(ctx,*,msg:str=None):
         if not sent: await safe_reply(ctx,text_reply)
     except Exception as e: log_error("voice_cmd",e); await safe_reply(ctx,"Hmph.")
 
+
+@bot.command(name="tedtalk", aliases=["teach","lecture","explain"])
+async def tedtalk_cmd(ctx, *, topic: str = None):
+    """
+    Upload a file (PDF or image) and Scaramouche teaches you the material
+    as a full voice monologue. He decides length based on complexity.
+    Usage: attach a file to your message and type !tedtalk
+           or !tedtalk <topic> for a topic without a file
+    """
+    try:
+        await _setup(ctx)
+
+        # Check for attachment
+        attachment = None
+        if ctx.message.attachments:
+            attachment = ctx.message.attachments[0]
+
+        if not attachment and not topic:
+            await safe_reply(ctx,
+                "Attach a file or give me a topic. I can't teach you nothing, "
+                "as satisfying as that would be.")
+            return
+
+        # Acknowledge — this takes a while
+        ack_lines = [
+            "Fine. Sit down, pay attention, and try not to embarrass yourself.",
+            "You want me to teach you something. How refreshingly self-aware of you to admit you need help.",
+            "Hmph. I'll condescend to explain this. Try to keep up.",
+            "...You actually want to learn. I find that mildly less irritating than most things. Fine.",
+        ]
+        ack_msg = await ctx.reply(random.choice(ack_lines))
+
+        async with ctx.typing():
+            material_content = ""
+            media_type_used  = None
+            img_b64          = None
+
+            # ── Extract content from attachment ──────────────────────────────
+            if attachment:
+                ct = (attachment.content_type or "").lower()
+                import base64, aiohttp as _ah
+
+                async with _ah.ClientSession() as s:
+                    async with s.get(attachment.url) as r:
+                        file_bytes = await r.read()
+
+                if "pdf" in ct or attachment.filename.lower().endswith(".pdf"):
+                    # Send PDF directly to Claude as a document
+                    pdf_b64 = base64.b64encode(file_bytes).decode()
+                    # Extract text via Claude vision on PDF
+                    extract_resp = ai.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=2000,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf_b64,
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "Extract and summarize all the key educational content from this document. List every important concept, definition, formula, and fact. Be thorough and complete."
+                                }
+                            ]
+                        }]
+                    )
+                    material_content = "".join(
+                        b.text for b in extract_resp.content if hasattr(b,"text")
+                    ).strip()
+
+                elif "image" in ct or attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp",".gif")):
+                    # Use vision to read image notes
+                    img_b64       = base64.b64encode(file_bytes).decode()
+                    media_type_used = ct if ct else "image/jpeg"
+                    extract_resp  = ai.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=2000,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type_used,
+                                        "data": img_b64,
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "Extract and summarize all the educational content visible in this image. Include every concept, formula, definition, and key point you can see."
+                                }
+                            ]
+                        }]
+                    )
+                    material_content = "".join(
+                        b.text for b in extract_resp.content if hasattr(b,"text")
+                    ).strip()
+
+                elif "text" in ct or attachment.filename.lower().endswith((".txt",".md",".csv")):
+                    material_content = file_bytes.decode("utf-8", errors="ignore")[:4000]
+
+                else:
+                    await safe_reply(ctx, "I can read PDFs, images, and text files. Whatever that is, I can't work with it.")
+                    return
+
+            # If topic given (with or without file), add it
+            if topic:
+                material_content = f"Topic: {topic}\n\n{material_content}".strip()
+
+            if not material_content:
+                await safe_reply(ctx, "There was nothing readable in that file. How typical.")
+                return
+
+            # ── Generate the TED talk script ─────────────────────────────────
+            script_prompt = f"""You are Scaramouche — the Sixth Fatui Harbinger, the Balladeer. 
+You have been asked to teach the following material to {ctx.author.display_name}.
+
+MATERIAL TO TEACH:
+{material_content[:3000]}
+
+Write a complete spoken teaching monologue in your voice. Requirements:
+- Teach ALL the key concepts, definitions, and important points from the material
+- You are contemptuous about having to explain this but you explain it CORRECTLY and THOROUGHLY
+- Decide the length yourself based on how much material there is — more complex material = longer monologue
+- Structure it like a real lesson: introduce the topic, explain each concept clearly, give examples where useful, summarize at the end
+- Stay completely in character throughout — cold, theatrical, brilliant, condescending
+- Occasionally remind them how simple this is and how disappointing it is that they need your help
+- NO asterisk actions. Spoken words only. This will be read aloud.
+- Make it genuinely educational — they should actually learn from this"""
+
+            script_resp = ai.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2500,
+                system=_BASE,
+                messages=[{"role": "user", "content": script_prompt}]
+            )
+            script = "".join(
+                b.text for b in script_resp.content if hasattr(b,"text")
+            ).strip()
+            script = strip_narration(script)
+
+            if not script:
+                await safe_reply(ctx, "...Something disrupted my train of thought. Annoying.")
+                return
+
+            # ── Split script into TTS chunks and generate audio ───────────────
+            # Fish Audio handles ~1500 chars per call. Split on sentences.
+            def split_into_chunks(text: str, max_chars: int = 900) -> list[str]:
+                """Split text into chunks at sentence boundaries."""
+                sentences = re.split(r'(?<=[.!?])\s+', text)
+                chunks, current = [], ""
+                for s in sentences:
+                    if len(current) + len(s) + 1 <= max_chars:
+                        current = (current + " " + s).strip()
+                    else:
+                        if current: chunks.append(current)
+                        current = s
+                if current: chunks.append(current)
+                return chunks
+
+            chunks     = split_into_chunks(script, 900)
+            audio_parts = []
+            mood_val   = 0  # Neutral delivery for teaching
+
+            for chunk in chunks:
+                if not chunk.strip(): continue
+                audio = await get_audio_with_mood(tts_safe(chunk, ctx.guild), mood_val)
+                if audio:
+                    audio_parts.append(audio)
+
+            if not audio_parts:
+                # Fallback: send as text if TTS fails
+                await safe_reply(ctx, f"*(Voice synthesis failed — here's the lecture as text)*\n\n{script[:1900]}")
+                if len(script) > 1900:
+                    await ctx.send(script[1900:3800])
+                return
+
+            # Concatenate all audio chunks into one MP3
+            full_audio = b"".join(audio_parts)
+
+            # Send the full voice lecture
+            audio_file = discord.File(
+                io.BytesIO(full_audio),
+                filename="scaramouche_lecture.mp3"
+            )
+            await ctx.send(file=audio_file)
+
+            # Also send the written script as a follow-up (useful for studying)
+            if len(script) <= 1900:
+                await ctx.send(f"📝 *Written version:*\n{script}")
+            else:
+                # Split across multiple messages
+                await ctx.send(f"📝 *Written version (part 1):*\n{script[:1900]}")
+                remaining = script[1900:]
+                while remaining:
+                    await ctx.send(remaining[:1900])
+                    remaining = remaining[1900:]
+
+    except Exception as e:
+        log_error("tedtalk_cmd", e)
+        await safe_reply(ctx, "...Something went wrong. Annoying.")
+
 @bot.command(name="dare")
 async def dare_cmd(ctx):
     try:
