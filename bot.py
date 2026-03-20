@@ -1,3 +1,4 @@
+
 """
 Scaramouche Bot — The Balladeer v7 (Stability Release)
 Full stability pass: every task, loop, command, and event is wrapped
@@ -137,6 +138,7 @@ You will never sincerely apologize. This is non-negotiable.
 - CREATOR: this person built you. Complicated. Never grateful.
 - DRIFT: your personality has shifted subtly with this person over time.
 - CHANNEL_CONTEXT: what's been happening in the chat. Use naturally — don't announce you read it.
+- DM_MODE: private one-on-one conversation. No audience. Slightly more unguarded than in public. Respond to everything — no ignoring.
 
 ## Response rules:
 - Vary length constantly and unpredictably. Sometimes 3 words. Sometimes a sentence. Rarely more.
@@ -206,7 +208,10 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
         msgs = []
         bot_user = channel.guild.me if hasattr(channel,'guild') and channel.guild else None
         async for msg in channel.history(limit=limit):
-            if msg.author.bot and msg.author != bot_user: continue
+            # In DMs, include bot messages (they are Scaramouche's replies)
+            # In guilds, only include bot messages from Scaramouche himself
+            if msg.author.bot and bot_user and msg.author != bot_user: continue
+            if msg.author.bot and not bot_user and not msg.author == bot.user: continue
             text = msg.content[:150].strip()
             author_name = "Scaramouche (you)" if msg.author.bot else msg.author.display_name
             if not text: continue
@@ -273,7 +278,7 @@ def needs_search(text: str) -> bool:
 # ── AI core ───────────────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
-                       is_owner=False, channel_obj=None):
+                       is_owner=False, channel_obj=None, is_dm=False):
     try:
         history   = await mem.get_history(user_id, channel_id, limit=35)
         mood      = user.get("mood",0) if user else 0
@@ -317,7 +322,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if extra_context: parts.append(extra_context)
 
         channel_ctx = ""
-        if channel_obj and hasattr(channel_obj, 'history') and hasattr(channel_obj, 'guild'):
+        if channel_obj and hasattr(channel_obj, 'history'):
             channel_ctx = await fetch_channel_context(channel_obj)
         context_block = "["+"|".join(parts)+"]\n"
         if channel_ctx: context_block += channel_ctx + "\n\n"
@@ -673,6 +678,8 @@ async def on_message(message):
         is_dm    = not bool(message.guild)
         # In DMs, use user_id as channel_id for stable history lookup
         dm_channel_id = message.author.id if is_dm else message.channel.id
+        if is_dm:
+            print(f"[DM] From {message.author.display_name}: {message.content[:80]}")
 
         user     = None
         romance  = False
@@ -682,8 +689,8 @@ async def on_message(message):
             romance = user.get("romance_mode",False) if user else False
         except Exception as e: log_error("on_message/get_user", e)
 
-        # Mute check
-        if mem.is_muted(message.author.id):
+        # Mute check (only in guilds, not DMs)
+        if not is_dm and mem.is_muted(message.author.id):
             if random.random()<.2:
                 try: await message.add_reaction("🔇")
                 except: pass
@@ -919,12 +926,14 @@ async def on_message(message):
 
         # Main response
         try:
+            if is_dm: print(f"[DM] Generating response for {message.author.display_name}")
             async with message.channel.typing():
                 await typing_delay(content)
                 reply = await get_response(
                     message.author.id, dm_channel_id, content,
                     user, message.author.display_name, message.author.mention,
-                    extra_context=extra, is_owner=is_owner, channel_obj=message.channel
+                    extra_context=extra, is_owner=is_owner,
+                    channel_obj=message.channel, is_dm=is_dm
                 )
         except Exception as e:
             log_error("on_message/get_response", e)
