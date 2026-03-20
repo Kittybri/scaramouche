@@ -204,8 +204,9 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
     try:
         if not hasattr(channel, 'history'): return ""
         msgs = []
+        bot_user = channel.guild.me if hasattr(channel,'guild') and channel.guild else None
         async for msg in channel.history(limit=limit):
-            if msg.author.bot and msg.author != channel.guild.me if hasattr(channel,'guild') else msg.author.bot: continue
+            if msg.author.bot and msg.author != bot_user: continue
             text = msg.content[:150].strip()
             author_name = "Scaramouche (you)" if msg.author.bot else msg.author.display_name
             if not text: continue
@@ -219,13 +220,13 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
         if not msgs: return ""
         msgs.reverse()
         # Include a mention map so Claude can use real Discord mentions
+        context = "CHANNEL_CONTEXT:\n" + "\n".join(msgs)
         if hasattr(channel, 'guild') and channel.guild:
-            mention_map = {m.display_name: m.mention
-                          for m in channel.guild.members if not m.bot}
-            mention_hint = "MENTION_MAP (use these exact strings to @mention people): " + \
-                           ", ".join(f"{name}={mention}" for name, mention in list(mention_map.items())[:20])
-            return f"CHANNEL_CONTEXT:\n{chr(10).join(msgs)}\n{mention_hint}"
-        return "CHANNEL_CONTEXT:\n" + "\n".join(msgs)
+            mention_map = {m.display_name: m.mention for m in channel.guild.members if not m.bot}
+            if mention_map:
+                mention_hint = "MENTION_MAP: " + ", ".join(f"{n}={v}" for n,v in list(mention_map.items())[:20])
+                context += "\n" + mention_hint
+        return context
     except Exception as e:
         log_error("fetch_channel_context", e)
         return ""
@@ -315,7 +316,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         if extra_context: parts.append(extra_context)
 
-        channel_ctx = await fetch_channel_context(channel_obj) if channel_obj else ""
+        channel_ctx = ""
+        if channel_obj and hasattr(channel_obj, 'history') and hasattr(channel_obj, 'guild'):
+            channel_ctx = await fetch_channel_context(channel_obj)
         context_block = "["+"|".join(parts)+"]\n"
         if channel_ctx: context_block += channel_ctx + "\n\n"
         context_block += f"{display_name}: {user_message}"
@@ -456,7 +459,8 @@ async def maybe_react(message, romance=False):
             await message.add_reaction(random.choice(pool))
         except: pass
 
-def resp_prob(content, mentioned, is_reply, romance):
+def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
+    if is_dm: return 1.0  # Always respond in DMs
     if mentioned or is_reply: return 1.0
     t = content.lower()
     if any(k in t for k in SCARA_KW):  return .88
@@ -661,8 +665,14 @@ async def on_message(message):
 
         try:
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
-            if message.guild: await mem.track_channel(message.channel.id, message.guild.id)
+            if message.guild:
+                await mem.track_channel(message.channel.id, message.guild.id)
+            # DMs: don't track channel, use user_id as stable channel key for history
         except Exception as e: log_error("on_message/upsert", e)
+
+        is_dm    = not bool(message.guild)
+        # In DMs, use user_id as channel_id for stable history lookup
+        dm_channel_id = message.author.id if is_dm else message.channel.id
 
         user     = None
         romance  = False
@@ -781,9 +791,9 @@ async def on_message(message):
 
                     if reply:
                         reply = strip_narration(reply)
-                        await mem.add_message(message.author.id, message.channel.id,
+                        await mem.add_message(message.author.id, dm_channel_id,
                                               "user", f"[image]{' — '+content if content else ''}")
-                        await mem.add_message(message.author.id, message.channel.id,
+                        await mem.add_message(message.author.id, dm_channel_id,
                                               "assistant", reply)
                         await message.reply(reply)
                         await maybe_react(message, romance)
@@ -834,7 +844,7 @@ async def on_message(message):
             # Expire cache after 2 hours
             if time.time() - cache.get("ts", 0) > 7200:
                 del _tedtalk_cache[message.author.id]
-            elif cache.get("channel_id") == message.channel.id:
+            elif cache.get("channel_id") == message.channel.id or is_dm:
                 # Only use cache if message looks like a question about material
                 cl = content.lower()
                 is_material_question = (
@@ -866,13 +876,14 @@ async def on_message(message):
                             answer = await asyncio.get_event_loop().run_in_executor(None, _answer_followup)
                         if answer:
                             await message.reply(answer)
-                            await mem.add_message(message.author.id, message.channel.id, "user", content)
-                            await mem.add_message(message.author.id, message.channel.id, "assistant", answer)
+                            await mem.add_message(message.author.id, dm_channel_id, "user", content)
+                            await mem.add_message(message.author.id, dm_channel_id, "assistant", answer)
                             return
                     except Exception as e:
                         log_error("tedtalk_followup", e)
 
-        if random.random()>resp_prob(content,mentioned,is_reply,romance):
+        if random.random()>resp_prob(content, mentioned, is_reply, romance,
+                                      is_dm=not bool(message.guild)):
             await maybe_react(message,romance); return
 
         # Build extra context
@@ -911,7 +922,7 @@ async def on_message(message):
             async with message.channel.typing():
                 await typing_delay(content)
                 reply = await get_response(
-                    message.author.id, message.channel.id, content,
+                    message.author.id, dm_channel_id, content,
                     user, message.author.display_name, message.author.mention,
                     extra_context=extra, is_owner=is_owner, channel_obj=message.channel
                 )
