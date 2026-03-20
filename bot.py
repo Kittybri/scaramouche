@@ -183,7 +183,6 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
         async for msg in channel.history(limit=limit):
             if msg.author.bot and msg.author != channel.guild.me if hasattr(channel,'guild') else msg.author.bot: continue
             text = msg.content[:150].strip()
-            # Mark Scaramouche's own messages so he knows what he said
             author_name = "Scaramouche (you)" if msg.author.bot else msg.author.display_name
             if not text: continue
             if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
@@ -195,10 +194,35 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
             msgs.append(line)
         if not msgs: return ""
         msgs.reverse()
+        # Include a mention map so Claude can use real Discord mentions
+        if hasattr(channel, 'guild') and channel.guild:
+            mention_map = {m.display_name: m.mention
+                          for m in channel.guild.members if not m.bot}
+            mention_hint = "MENTION_MAP (use these exact strings to @mention people): " + \
+                           ", ".join(f"{name}={mention}" for name, mention in list(mention_map.items())[:20])
+            return f"CHANNEL_CONTEXT:\n{chr(10).join(msgs)}\n{mention_hint}"
         return "CHANNEL_CONTEXT:\n" + "\n".join(msgs)
     except Exception as e:
         log_error("fetch_channel_context", e)
         return ""
+
+
+def resolve_mentions(text: str, guild) -> str:
+    """Replace @displayname patterns with real Discord mention strings."""
+    if not guild or not text: return text
+    try:
+        for member in guild.members:
+            if member.bot: continue
+            # Replace @DisplayName and @displayname (case insensitive)
+            pattern = re.compile(r'@' + re.escape(member.display_name), re.IGNORECASE)
+            text = pattern.sub(member.mention, text)
+            # Also try username without discriminator
+            pattern2 = re.compile(r'@' + re.escape(member.name), re.IGNORECASE)
+            text = pattern2.sub(member.mention, text)
+        return text
+    except Exception as e:
+        log_error("resolve_mentions", e)
+        return text
 
 
 # ── Smart search detection ────────────────────────────────────────────────────
@@ -867,7 +891,7 @@ async def on_message(message):
 
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
                 await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val)
-            await message.reply(strip_narration(reply))
+            await message.reply(strip_narration(resolve_mentions(reply, message.guild if message.guild else None)))
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
