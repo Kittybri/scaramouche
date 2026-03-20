@@ -42,10 +42,10 @@ GENSHIN_KW   = ["genshin","teyvat","mondstadt","liyue","inazuma","sumeru","fonta
 RUDE_KW      = ["shut up","stupid","dumb","idiot","hate you","annoying","shut it","go away","you suck","useless"]
 NICE_KW      = ["thank you","thanks","appreciate","you're great","love you","good job","amazing","i like you","i love you"]
 OTHER_BOT_KW = ["other bot","different bot","better bot","prefer","switch to"]
-HAT_KW       = ["hat","headwear","headpiece","that thing on your head","your hat"]
-FOOD_KW      = ["eating","food","hungry","dinner","lunch","breakfast","snack","cook","restaurant","pizza","ramen"]
-SLEEP_KW     = ["sleeping","tired","bed","nap","insomnia","exhausted","staying up","going to sleep","wake up"]
-PLAN_KW      = ["going to","planning to","about to","later today","tomorrow","this weekend","next week"]
+HAT_KW       = [r"\bhat\b", r"\bheadwear\b", r"\bheadpiece\b", r"that thing on your head", r"your hat"]
+FOOD_KW      = [r"\beating\b",r"\bfood\b",r"\bhungry\b",r"\bdinner\b",r"\blunch\b",r"\bbreakfast\b",r"\bsnack\b",r"\bcooking\b",r"\brestaurant\b",r"\bpizza\b",r"\bramen\b"]
+SLEEP_KW     = [r"\bsleeping\b",r"\btired\b",r"\bbed\b",r"\bnap\b",r"\binsomnia\b",r"\bexhausted\b","staying up","going to sleep","wake up"]
+PLAN_KW      = ["going to","planning to","about to","later today","this weekend","next week"]
 VILLAIN_TRIGGER = "you will never win"
 
 SCARA_EMOJIS   = ["⚡","😒","🙄","💜","😤","🌀","👑","💨","✨","😏","❄️","🎭","💀","🫠","😑","🔮"]
@@ -591,15 +591,15 @@ async def on_message(message):
         # Special triggers
         try:
             cl = content.lower()
-            if VILLAIN_TRIGGER in cl:
-                m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences.",400)
-                await message.reply(m); return
-            if any(k in cl for k in HAT_KW):
-                m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be normal about it. 1-2 sentences.",150)
-                await message.reply(m); return
-            if any(k in cl for k in FOOD_KW) and random.random()<.35:
+            if VILLAIN_TRIGGER in content.lower():
+                m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
+                await message.reply(strip_narration(m)); return
+            if any(re.search(k, content.lower()) for k in HAT_KW):
+                m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
+                await message.reply(strip_narration(m)); return
+            if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35:
                 await message.channel.send(random.choice(UNSOLICITED_FOOD)); return
-            if any(k in cl for k in SLEEP_KW) and random.random()<.35:
+            if any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35:
                 await message.channel.send(random.choice(UNSOLICITED_SLEEP)); return
             if any(k in cl for k in PLAN_KW) and random.random()<.25:
                 await message.channel.send(random.choice(UNSOLICITED_PLANS)); return
@@ -684,7 +684,7 @@ async def on_message(message):
                 if sent: await maybe_react(message,romance); return
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
                 await send_voice(message.channel,random.choice(["...","Tch.","Hmph."]),mood=mood_val)
-            await message.reply(reply)
+            await message.reply(strip_narration(reply))
             await maybe_react(message,romance)
         except Exception as e: log_error("on_message/send", e)
 
