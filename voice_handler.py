@@ -134,3 +134,4 @@ async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0) -> byt
     except Exception as e:
         print(f"[Fish Audio Mooded] {e}")
         return await generate_tts_gtts(text)
+
