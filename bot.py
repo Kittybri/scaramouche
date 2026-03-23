@@ -1,4 +1,3 @@
-
 """
 Scaramouche Bot — The Balladeer v7 (Stability Release)
 Full stability pass: every task, loop, command, and event is wrapped
@@ -95,7 +94,23 @@ STATUSES = [
     ("playing","villain. Convincingly."),  ("watching","you struggle. Amusing."),
     ("listening","to nothing worth hearing"), ("playing","with everyone's patience"),
 ]
-PROACTIVE_GENERIC = ["...How dreadfully quiet. Not that it concerns me.","Hmph. You're all still here. How unfortunate.","Don't mistake my silence for patience.","I had a thought. It was unpleasant.","Tch. Boring. All of you."]
+PROACTIVE_GENERIC = [
+    "...How dreadfully quiet. Not that it concerns me.",
+    "Hmph. You're all still here. How unfortunate.",
+    "Don't mistake my silence for patience.",
+    "I had a thought. It was unpleasant.",
+    "Tch. Boring. All of you.",
+    "...The silence is almost tolerable. Almost.",
+    "You've all gone quiet. I didn't say you could do that.",
+    "...Still here. Still watching. Don't mind me.",
+    "Hmph. I've been thinking. You probably haven't been.",
+    "The quiet is either peaceful or ominous. I haven't decided which.",
+    "...Something is on my mind. It's none of your business what.",
+    "Tch. I've had more stimulating conversations with walls.",
+    "Are any of you still conscious or did you all just give up.",
+    "...I'm bored. Don't flatter yourselves — it has nothing to do with you.",
+    "The Fatui runs itself. I have time to notice how uninteresting you all are.",
+]
 PROACTIVE_ROMANCE = ["...You went quiet. I noticed. I wish I hadn't.","Are you ignoring me? Brave. Stupid, but brave.","Don't disappear without a word. It's irritating.","...Where did you go."]
 DM_GENERIC    = ["You crossed my mind. An unfortunate occurrence.","Still alive, I assume. How tedious.","...Boredom brought me here.","I had nothing better to do."]
 DM_INTERESTED = ["What you said before was wrong. I've been thinking about how wrong it was.","Tell me something. I'm in a strange mood.","Are you sleeping enough."]
@@ -1037,7 +1052,31 @@ async def _proactive_loop():
                                     await mem.set_proactive_sent(cid); sent=True; break
                         except: pass
                     if not sent and random.random()<.25:
-                        msg=random.choice(PROACTIVE_GENERIC)
+                        # 40% chance: generate a context-aware message referencing recent chat
+                        if random.random() < .4:
+                            try:
+                                recent = await mem.get_channel_recent(cid, 8)
+                                if recent and len(recent) >= 2:
+                                    sample = "\n".join(
+                                        f"{m['name']}: {m['content'][:80]}"
+                                        for m in recent[-6:]
+                                    )
+                                    msg = await qai(
+                                        f"You've been watching this conversation and decided to interrupt unprompted:\n"
+                                        f"{sample}\n\n"
+                                        f"Make one short remark about something that was said — contemptuous, pointed, "
+                                        f"or darkly curious. Reference the actual content. 1-2 sentences. "
+                                        f"No greeting. Just jump in.",
+                                        150
+                                    )
+                                    if msg and len(msg) > 5:
+                                        await ch.send(msg)
+                                        await mem.set_proactive_sent(cid)
+                                        break
+                            except Exception as e:
+                                log_error("proactive_context", e)
+                        # Fallback to canned line
+                        msg = random.choice(PROACTIVE_GENERIC)
                         await ch.send(msg); await mem.set_proactive_sent(cid)
                     break
                 except Exception as e: log_error("proactive_channel", e)
