@@ -363,16 +363,51 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         await mem.add_message(user_id, channel_id, "user", user_message)
         await mem.add_message(user_id, channel_id, "assistant", reply)
         msg_l = user_message.lower()
+
+        # Strong keyword triggers
         if any(k in msg_l for k in RUDE_KW):
-            await mem.update_mood(user_id,-2); await mem.update_trust(user_id,-1)
+            await mem.update_mood(user_id, -2)
+            await mem.update_trust(user_id, -1)
         elif any(k in msg_l for k in NICE_KW):
-            await mem.update_mood(user_id,+1); await mem.update_affection(user_id,+2)
-            await mem.update_trust(user_id,+1); await mem.update_drift(user_id,+1)
+            await mem.update_mood(user_id, +1)
+            await mem.update_affection(user_id, +2)
+            await mem.update_trust(user_id, +1)
+            await mem.update_drift(user_id, +1)
             _, threshold = await mem.increment_slow_burn(user_id)
             if threshold:
                 asyncio.ensure_future(_fire_slow_burn(user_id, channel_id, display_name))
             await mem.update_last_statement(user_id, user_message[:200])
-        if random.random()<.05: await mem.update_drift(user_id,+1)
+        else:
+            # Sentiment nudges for normal conversation — small but add up over time
+            positive = sum([
+                any(w in msg_l for w in ["haha","lol","lmao","hehe","cute","nice","cool","fun",
+                                          "good","great","enjoy","happy","excited","interesting",
+                                          "wow","omg","yes","yay","please","😂","😭","❤","💜","🥺"]),
+                msg_l.endswith("!") and len(user_message) > 8,
+                "?" in user_message and len(user_message) > 15,  # asking = engaged
+                len(user_message) > 100,                          # long = invested
+            ])
+            negative = sum([
+                any(w in msg_l for w in ["ugh","ew","boring","whatever","idc","nope",
+                                          "wrong","bad","hate","worst","terrible","awful",
+                                          "seriously","really","😒","🙄"]),
+                user_message.count("...") > 1,
+            ])
+
+            if positive >= 2:
+                await mem.update_affection(user_id, +1)
+                await mem.update_mood(user_id, +1)
+                await mem.update_trust(user_id, +1)
+                await mem.update_drift(user_id, +1)
+            elif positive == 1:
+                await mem.update_affection(user_id, +1)
+            elif negative >= 2:
+                await mem.update_mood(user_id, -1)
+                await mem.update_trust(user_id, -1)
+            elif negative == 1:
+                await mem.update_mood(user_id, -1)
+
+        if random.random() < .05: await mem.update_drift(user_id, +1)
     except Exception as e:
         log_error("get_response/post", e)
 
