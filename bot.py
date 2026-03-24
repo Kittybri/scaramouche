@@ -20,6 +20,7 @@ ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY","")
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY","")
 WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
+PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID","0") or "0")  # Wanderer bot ID
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -225,8 +226,10 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
         async for msg in channel.history(limit=limit):
             # In DMs, include bot messages (they are Scaramouche's replies)
             # In guilds, only include bot messages from Scaramouche himself
-            if msg.author.bot and bot_user and msg.author != bot_user: continue
-            if msg.author.bot and not bot_user and not msg.author == bot.user: continue
+            if msg.author.bot:
+                is_self = (bot_user and msg.author == bot_user) or msg.author == bot.user
+                is_partner = PARTNER_BOT_ID and msg.author.id == PARTNER_BOT_ID
+                if not is_self and not is_partner: continue
             text = msg.content[:150].strip()
             author_name = "Scaramouche (you)" if msg.author.bot else msg.author.display_name
             if not text: continue
@@ -699,7 +702,10 @@ async def on_member_remove(member):
 @bot.event
 async def on_message(message):
     try:
-        if message.author.bot: return
+        if message.author.bot:
+            # Allow partner (Wanderer) bot messages through for cross-bot interaction
+            if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
+                return
 
         # !help intercept — handle before anything else
         stripped = message.content.strip().lower()
@@ -711,6 +717,28 @@ async def on_message(message):
                 log_error("help_intercept", e)
                 try: await message.channel.send("Hmph. Something went wrong displaying commands.")
                 except: pass
+            return
+
+        # Cross-bot: if message is from Wanderer bot
+        if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
+            try:
+                if message.guild and random.random() < .25:
+                    ru = await mem.get_romance_users()
+                    for uid in ru:
+                        if await mem.get_user_last_channel(uid) == message.channel.id:
+                            member = message.guild.get_member(uid)
+                            if member:
+                                msg = await qai(
+                                    f"The Wanderer just said something to {member.display_name}: '{message.content[:80]}'. "
+                                    "React as Scaramouche — jealous, possessive, won't admit it. 1 sentence.", 100)
+                                await message.channel.send(strip_narration(msg))
+                                break
+                elif random.random() < .2:
+                    msg = await qai(
+                        f"The Wanderer just said: '{message.content[:100]}'. "
+                        "Respond as Scaramouche — complicated history with his former self. 1-2 sentences.", 150)
+                    await message.reply(strip_narration(msg))
+            except Exception as e: log_error("cross_bot_scara", e)
             return
 
         await bot.process_commands(message)
@@ -872,6 +900,13 @@ async def on_message(message):
             if VILLAIN_TRIGGER in content.lower():
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
                 await message.reply(strip_narration(m)); return
+            # If someone says "wanderer" — check if Wanderer bot is in server
+            if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
+                partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
+                if not partner_present and random.random() < .5:
+                    msg = await qai("Someone mentioned 'wanderer' to Scaramouche. He has thoughts about this name. 1 sentence. Sharp.", 80)
+                    await message.channel.send(strip_narration(msg))
+
             # Hat trigger — only exact standalone words, never substrings
             content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
             if content_words & {"hat","headwear","headpiece"}:
