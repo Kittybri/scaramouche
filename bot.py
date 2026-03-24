@@ -789,7 +789,10 @@ async def on_message(message):
                 del _pending_cmd[message.author.id]
             else:
                 cl_check = content.lower().strip()
-                if any(n in cl_check for n in MY_NAMES):
+                # Only treat as a disambiguation answer if it's short (≤5 words)
+                # Longer messages are normal conversation that happen to contain the name
+                is_short_answer = len(cl_check.split()) <= 5
+                if is_short_answer and any(n in cl_check for n in MY_NAMES):
                     stored_ctx = pending["ctx"]
                     del _pending_cmd[message.author.id]
                     _executing_now.add(message.author.id)
@@ -798,7 +801,7 @@ async def on_message(message):
                     except Exception as e: log_error("pending_reinvoke", e)
                     finally: _executing_now.discard(message.author.id)
                     return
-                elif any(n in cl_check for n in PARTNER_NAMES):
+                elif is_short_answer and any(n in cl_check for n in PARTNER_NAMES):
                     del _pending_cmd[message.author.id]
                     return
 
