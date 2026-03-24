@@ -71,19 +71,6 @@ SLEEP_KW     = [r"\bsleeping\b",r"\btired\b",r"\bbed\b",r"\bnap\b",r"\binsomnia\
 PLAN_KW      = ["going to","planning to","about to","later today","this weekend","next week"]
 VILLAIN_TRIGGER = "you will never win"
 
-SHARED_COMMANDS = {
-    "voice","dare","fortune","trivia","answer","roast","spar","duel","judge","prophecy",
-    "rate","ship","confess","compliment","haiku","story","stalk","debate","conspiracy",
-    "therapy","riddle","arena","possess","verdict","letter","nightmare","rank","stats",
-    "weather","lore","search","solve","insult","dm","reset","nsfw","romance","proactive",
-    "dms","mood","affection","trust","summarize","mute","unmute","translate","poll",
-    "opinion","tedtalk","remind","whoami","speak","say","teach","lecture","explain",
-    "recap","silence","ignore","unsilence","math","essay","write","find","lookup",
-    "roastbattle","fortunecookie","remindme","ping_me","allowdms","stopdms","romanceable",
-}
-MY_NAMES      = {"scaramouche","scara","balladeer","the balladeer"}
-PARTNER_NAMES = {"wanderer","the wanderer","kuni"}
-
 SCARA_EMOJIS   = [
     # Cold/contempt
     "⚡","😒","🙄","😤","😑","❄️","🫠","💀","😶",
@@ -225,8 +212,6 @@ _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
 _tedtalk_cache:  dict[int, dict]  = {}
-_pending_cmd:    dict[int, dict]  = {}     # disambiguation: user_id -> {ctx, ts}
-_executing_now:  set[int]         = set()  # user IDs currently executing a stored command
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
@@ -570,24 +555,7 @@ class ResetView(discord.ui.View):
 
 
 
-@bot.before_invoke
-async def coordination_check(ctx):
-    if ctx.command is None: return
-    if ctx.command.name not in SHARED_COMMANDS: return
-    if not PARTNER_BOT_ID or not ctx.guild: return
-    if ctx.author.id in _executing_now: return
-    # Check member cache first, then try fetch if not found
-    partner = ctx.guild.get_member(PARTNER_BOT_ID)
-    if not partner:
-        try:
-            partner = await ctx.guild.fetch_member(PARTNER_BOT_ID)
-        except Exception:
-            partner = None
-    if not partner: return
-    # Scaramouche always asks when partner is present
-    _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
-    await ctx.send(f"{ctx.author.mention} Who are you asking: Scaramouche or Wanderer?", delete_after=30)
-    raise commands.CommandError("awaiting_disambiguation")
+# Cross-bot: no command coordination needed — each bot responds independently
 
 
 @bot.event
@@ -794,29 +762,7 @@ async def on_message(message):
             # DMs: don't track channel, use user_id as stable channel key for history
         except Exception as e: log_error("on_message/upsert", e)
 
-        # ── Pending command resolution ───────────────────────────────────
-        if message.author.id in _pending_cmd:
-            pending = _pending_cmd[message.author.id]
-            if time.time() - pending["ts"] > 30:
-                del _pending_cmd[message.author.id]
-            else:
-                cl_check = message.content.strip().lower()
-                # Strip mention from start if present
-                cl_check = re.sub(r'^<@!?\d+>\s*', '', cl_check).strip()
-                # Only treat as disambiguation if the message IS a bot name and nothing else
-                is_name_only = cl_check in MY_NAMES or cl_check in PARTNER_NAMES
-                if is_name_only and cl_check in MY_NAMES:
-                    stored_ctx = pending["ctx"]
-                    del _pending_cmd[message.author.id]
-                    _executing_now.add(message.author.id)
-                    try:
-                        await bot.invoke(stored_ctx)
-                    except Exception as e: log_error("pending_reinvoke", e)
-                    finally: _executing_now.discard(message.author.id)
-                    return
-                elif is_name_only and cl_check in PARTNER_NAMES:
-                    del _pending_cmd[message.author.id]
-                    return
+        # (cross-bot coordination removed for stability)
 
         is_dm    = not bool(message.guild)
         # In DMs, use user_id as channel_id for stable history lookup
