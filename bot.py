@@ -738,6 +738,7 @@ async def on_member_remove(member):
 @bot.event
 async def on_message(message):
     try:
+        print(f"[MSG] from={message.author} bot={message.author.bot} content={message.content[:40]!r}")
         if message.author.bot:
             # Allow partner (Wanderer) bot messages through for cross-bot interaction
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
@@ -778,8 +779,10 @@ async def on_message(message):
             return
 
         await bot.process_commands(message)
+        print(f"[MSG] after process_commands")
         # Stop here for ALL command messages — no further processing
         if message.content.strip().startswith("!"):
+            print(f"[MSG] command prefix — returning")
             return
 
         try:
@@ -1034,8 +1037,9 @@ async def on_message(message):
                     except Exception as e:
                         log_error("tedtalk_followup", e)
 
-        if random.random()>resp_prob(content, mentioned, is_reply, romance,
-                                      is_dm=not bool(message.guild)):
+        rp = resp_prob(content, mentioned, is_reply, romance, is_dm=not bool(message.guild))
+        print(f"[MSG] resp_prob={rp:.2f} mentioned={mentioned} is_reply={is_reply}")
+        if random.random()>rp:
             await maybe_react(message,romance); return
 
         # Build extra context
