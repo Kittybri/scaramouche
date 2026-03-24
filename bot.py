@@ -575,10 +575,10 @@ async def coordination_check(ctx):
     if not PARTNER_BOT_ID or not ctx.guild: return
     if not ctx.guild.get_member(PARTNER_BOT_ID): return
     if ctx.author.id in _executing_now: return
-    if bot.user.id < PARTNER_BOT_ID:
-        _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
-        await ctx.send(f"{ctx.author.mention} Who are you asking: Scaramouche or Wanderer?", delete_after=30)
-        raise commands.CommandError("awaiting_disambiguation")
+    # Scaramouche always asks when partner is present
+    _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
+    await ctx.send(f"{ctx.author.mention} Who are you asking: Scaramouche or Wanderer?", delete_after=30)
+    raise commands.CommandError("awaiting_disambiguation")
 
 
 @bot.event
