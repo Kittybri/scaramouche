@@ -71,6 +71,19 @@ SLEEP_KW     = [r"\bsleeping\b",r"\btired\b",r"\bbed\b",r"\bnap\b",r"\binsomnia\
 PLAN_KW      = ["going to","planning to","about to","later today","this weekend","next week"]
 VILLAIN_TRIGGER = "you will never win"
 
+SHARED_COMMANDS = {
+    "voice","dare","fortune","trivia","answer","roast","spar","duel","judge","prophecy",
+    "rate","ship","confess","compliment","haiku","story","stalk","debate","conspiracy",
+    "therapy","riddle","arena","possess","verdict","letter","nightmare","rank","stats",
+    "weather","lore","search","solve","insult","dm","reset","nsfw","romance","proactive",
+    "dms","mood","affection","trust","summarize","mute","unmute","translate","poll",
+    "opinion","tedtalk","remind","whoami","speak","say","teach","lecture","explain",
+    "recap","silence","ignore","unsilence","math","essay","write","find","lookup",
+    "roastbattle","fortunecookie","remindme","ping_me","allowdms","stopdms","romanceable",
+}
+MY_NAMES      = {"scaramouche","scara","balladeer","the balladeer"}
+PARTNER_NAMES = {"wanderer","the wanderer","kuni"}
+
 SCARA_EMOJIS   = [
     # Cold/contempt
     "⚡","😒","🙄","😤","😑","❄️","🫠","💀","😶",
@@ -553,25 +566,20 @@ class ResetView(discord.ui.View):
 
 # ── on_ready ──────────────────────────────────────────────────────────────────
 
+
+
 @bot.before_invoke
 async def coordination_check(ctx):
-    """Before any shared command, check if partner bot is present and ask who to use."""
     if ctx.command is None: return
     if ctx.command.name not in SHARED_COMMANDS: return
     if not PARTNER_BOT_ID or not ctx.guild: return
-    partner = ctx.guild.get_member(PARTNER_BOT_ID)
-    if not partner: return
-
-    _pending_cmd[ctx.author.id] = {"ts": time.time()}
-
-    # Only bot with lower ID asks
+    if not ctx.guild.get_member(PARTNER_BOT_ID): return
+    if ctx.author.id in _executing_now: return
     if bot.user.id < PARTNER_BOT_ID:
-        await ctx.send(
-            f"{ctx.author.mention} Who are you asking — **Scaramouche** or **Wanderer**?",
-            delete_after=30
-        )
+        _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
+        await ctx.send(f"{ctx.author.mention} Who are you asking: Scaramouche or Wanderer?", delete_after=30)
+        raise commands.CommandError("awaiting_disambiguation")
 
-    raise commands.CommandError("awaiting_disambiguation")
 
 @bot.event
 async def on_ready():
@@ -782,13 +790,13 @@ async def on_message(message):
             else:
                 cl_check = content.lower().strip()
                 if any(n in cl_check for n in MY_NAMES):
+                    stored_ctx = pending["ctx"]
                     del _pending_cmd[message.author.id]
-                    # Re-invoke the original command by re-processing the original message
-                    # We don't have the original ctx here — just clear and let user retry
-                    await message.channel.send(
-                        f"{message.author.mention} Got it — please type your command again and I'll answer.", 
-                        delete_after=10
-                    )
+                    _executing_now.add(message.author.id)
+                    try:
+                        await bot.invoke(stored_ctx)
+                    except Exception as e: log_error("pending_reinvoke", e)
+                    finally: _executing_now.discard(message.author.id)
                     return
                 elif any(n in cl_check for n in PARTNER_NAMES):
                     del _pending_cmd[message.author.id]
