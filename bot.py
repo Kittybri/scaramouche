@@ -573,8 +573,15 @@ async def coordination_check(ctx):
     if ctx.command is None: return
     if ctx.command.name not in SHARED_COMMANDS: return
     if not PARTNER_BOT_ID or not ctx.guild: return
-    if not ctx.guild.get_member(PARTNER_BOT_ID): return
     if ctx.author.id in _executing_now: return
+    # Check member cache first, then try fetch if not found
+    partner = ctx.guild.get_member(PARTNER_BOT_ID)
+    if not partner:
+        try:
+            partner = await ctx.guild.fetch_member(PARTNER_BOT_ID)
+        except Exception:
+            partner = None
+    if not partner: return
     # Scaramouche always asks when partner is present
     _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
     await ctx.send(f"{ctx.author.mention} Who are you asking: Scaramouche or Wanderer?", delete_after=30)
