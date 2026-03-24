@@ -552,6 +552,27 @@ class ResetView(discord.ui.View):
         except Exception as e: log_error("ResetView", e)
 
 # ── on_ready ──────────────────────────────────────────────────────────────────
+
+@bot.before_invoke
+async def coordination_check(ctx):
+    """Before any shared command, check if partner bot is present and ask who to use."""
+    if ctx.command is None: return
+    if ctx.command.name not in SHARED_COMMANDS: return
+    if not PARTNER_BOT_ID or not ctx.guild: return
+    partner = ctx.guild.get_member(PARTNER_BOT_ID)
+    if not partner: return
+
+    _pending_cmd[ctx.author.id] = {"ts": time.time()}
+
+    # Only bot with lower ID asks
+    if bot.user.id < PARTNER_BOT_ID:
+        await ctx.send(
+            f"{ctx.author.mention} Who are you asking — **Scaramouche** or **Wanderer**?",
+            delete_after=30
+        )
+
+    raise commands.CommandError("awaiting_disambiguation")
+
 @bot.event
 async def on_ready():
     try:
@@ -709,7 +730,7 @@ async def on_message(message):
 
         # !help intercept — handle before anything else
         stripped = message.content.strip().lower()
-        if stripped in ("!help", "!commands", "!scarahelp"):
+        if stripped in ("!scarahelp", "!commands"):
             try:
                 ctx = await bot.get_context(message)
                 await help_cmd(ctx)
@@ -752,6 +773,26 @@ async def on_message(message):
                 await mem.track_channel(message.channel.id, message.guild.id)
             # DMs: don't track channel, use user_id as stable channel key for history
         except Exception as e: log_error("on_message/upsert", e)
+
+        # ── Pending command resolution ───────────────────────────────────
+        if message.author.id in _pending_cmd:
+            pending = _pending_cmd[message.author.id]
+            if time.time() - pending["ts"] > 30:
+                del _pending_cmd[message.author.id]
+            else:
+                cl_check = content.lower().strip()
+                if any(n in cl_check for n in MY_NAMES):
+                    del _pending_cmd[message.author.id]
+                    # Re-invoke the original command by re-processing the original message
+                    # We don't have the original ctx here — just clear and let user retry
+                    await message.channel.send(
+                        f"{message.author.mention} Got it — please type your command again and I'll answer.", 
+                        delete_after=10
+                    )
+                    return
+                elif any(n in cl_check for n in PARTNER_NAMES):
+                    del _pending_cmd[message.author.id]
+                    return
 
         is_dm    = not bool(message.guild)
         # In DMs, use user_id as channel_id for stable history lookup
@@ -2151,7 +2192,7 @@ async def help_cmd(ctx):
                   "Mention his hat: disproportionate response\n"
                   "He reads the channel — knows what everyone has been saying",
             inline=False)
-        e3.set_footer(text="Scaramouche — The Balladeer | Claude AI + Fish Audio")
+        e3.set_footer(text="Scaramouche — The Balladeer | !scarahelp for commands")
         await ctx.send(embed=e1)
         await ctx.send(embed=e2)
         await ctx.send(embed=e3)
