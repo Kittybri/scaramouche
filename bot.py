@@ -225,6 +225,8 @@ _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
 _tedtalk_cache:  dict[int, dict]  = {}
+_pending_cmd:    dict[int, dict]  = {}     # disambiguation: user_id -> {ctx, ts}
+_executing_now:  set[int]         = set()  # user IDs currently executing a stored command
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
