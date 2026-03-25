@@ -1260,17 +1260,6 @@ async def safe_send(ctx, text):
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
 
-@bot.command(name="wander",aliases=["w","scara","ask"])
-async def wander_cmd(ctx,*,msg:str=None):
-    try:
-        if not msg: await safe_reply(ctx,random.choice(["What.","Speak.","You called me for nothing?"])); return
-        user=await _setup(ctx); is_owner=bool(OWNER_ID and ctx.author.id==OWNER_ID)
-        async with ctx.typing():
-            reply=await get_response(ctx.author.id,ctx.channel.id,msg,user,ctx.author.display_name,ctx.author.mention,is_owner=is_owner,channel_obj=ctx.channel)
-        await safe_reply(ctx,reply)
-        await maybe_react(ctx.message,user.get("romance_mode",False) if user else False)
-    except Exception as e: log_error("wander_cmd",e); await safe_reply(ctx,"Hmph.")
-
 @bot.command(name="voice",aliases=["speak","say"])
 async def voice_cmd(ctx,*,msg:str=None):
     try:
@@ -2124,7 +2113,6 @@ async def help_cmd(ctx):
         e1 = discord.Embed(title="Commands (1/3) — Talk & Fight",
                            description="Hmph. Only saying this once.", color=c)
         for n,v in [
-            ("💬 !wander <msg>","Talk to him — !w !scara"),
             ("🔊 !voice <msg>","Voice message — !speak !say"),
             ("📨 !dm [msg]","He DMs you privately"),
             ("🤫 !confess <text>","Tell him something"),
