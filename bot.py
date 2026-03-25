@@ -1,3 +1,4 @@
+
 """
 Scaramouche Bot — The Balladeer v7 (Stability Release)
 Full stability pass: every task, loop, command, and event is wrapped
@@ -724,7 +725,7 @@ async def mood_swing_loop():
     try:
         if random.random()>.3: return
         import aiosqlite
-        async with aiosqlite.connect("scaramouche.db") as db:
+        async with aiosqlite.connect(mem.db_path) as db:
             async with db.execute("SELECT user_id FROM users WHERE last_seen>? ORDER BY RANDOM() LIMIT 3",
                                   (time.time()-86400*2,)) as cur:
                 rows = await cur.fetchall()
