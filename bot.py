@@ -1,4 +1,3 @@
-
 """
 Scaramouche Bot — The Balladeer v7 (Stability Release)
 Full stability pass: every task, loop, command, and event is wrapped
@@ -262,7 +261,7 @@ def log_error(location: str, e: Exception):
     print(f"[ERROR:{location}] {type(e).__name__}: {e}")
 
 # ── Channel context ───────────────────────────────────────────────────────────
-async def fetch_channel_context(channel, limit: int = 25) -> str:
+async def fetch_channel_context(channel, limit: int = 100) -> str:
     try:
         if not hasattr(channel, 'history'): return ""
         msgs = []
@@ -351,7 +350,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False):
     try:
-        history   = await mem.get_history(user_id, channel_id, limit=35)
+        history   = await mem.get_history(user_id, channel_id, limit=200)
         mood      = user.get("mood",0) if user else 0
         affection = user.get("affection",0) if user else 0
         trust     = user.get("trust",0) if user else 0
