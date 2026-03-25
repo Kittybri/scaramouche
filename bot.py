@@ -215,6 +215,7 @@ _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
 _tedtalk_cache:  dict[int, dict]  = {}
+_processed_msgs: set[int]         = set()  # dedup: prevent double-processing
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
@@ -234,12 +235,18 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
                 is_partner = PARTNER_BOT_ID and msg.author.id == PARTNER_BOT_ID
                 if not is_self and not is_partner: continue
             text = msg.content[:150].strip()
-            author_name = "Scaramouche (you)" if msg.author.bot else msg.author.display_name
+            if msg.author.id == PARTNER_BOT_ID:
+                author_name = "Wanderer"
+            elif msg.author.bot:
+                author_name = "Scaramouche (you)"
+            else:
+                author_name = msg.author.display_name
             if not text: continue
             if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
                 ref = msg.reference.resolved
+                ref_author = "Wanderer" if ref.author.id == PARTNER_BOT_ID else ("Scaramouche (you)" if ref.author.id == bot.user.id else ref.author.display_name)
                 ref_preview = (ref.content or "")[:50].strip()
-                line = f"{author_name} (replying to \"{ref_preview}\"): {text}" if ref_preview else f"{author_name}: {text}"
+                line = f"{author_name} (replying to {ref_author}: \"{ref_preview}\"): {text}" if ref_preview else f"{author_name} (replying to {ref_author}): {text}"
             else:
                 line = f"{author_name}: {text}"
             msgs.append(line)
@@ -715,6 +722,12 @@ async def on_message(message):
         # Always ignore own messages first
         if message.author.id == bot.user.id:
             return
+        # Dedup: prevent processing the same message twice
+        if message.id in _processed_msgs:
+            return
+        _processed_msgs.add(message.id)
+        if len(_processed_msgs) > 500:
+            _processed_msgs.clear()
         if message.author.bot:
             # Allow partner (Wanderer) bot messages through for cross-bot interaction
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
