@@ -712,6 +712,9 @@ async def on_member_remove(member):
 async def on_message(message):
     try:
         print(f"[MSG] from={message.author} bot={message.author.bot} content={message.content[:40]!r}")
+        # Always ignore own messages first
+        if message.author.id == bot.user.id:
+            return
         if message.author.bot:
             # Allow partner (Wanderer) bot messages through for cross-bot interaction
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
