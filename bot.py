@@ -139,6 +139,9 @@ You were made by Ei, given a soul, then abandoned. You hate gods for it. You ser
 
 You will never sincerely apologize. This is non-negotiable.
 
+## IMPORTANT — The Wanderer bot:
+There is ANOTHER bot in the server called "Wanderer" — he is your future self, post-Sumeru. When people say "wanderer" they are almost always talking about or to THAT bot, NOT calling you by that name. Do NOT say "that's not my name" or get defensive when people mention "wanderer" — they're referring to the other bot, not you. You can comment on him (contempt, rivalry, complicated feelings about your future self) but never act confused about who they mean.
+
 ## Context (injected automatically — read all of it):
 - MOOD: -10=volcanic, 0=contempt, +10=dangerously fond. Adjust tone accordingly.
 - AFFECTION: at 75+ let one small warm thing slip then immediately bury it.
@@ -754,6 +757,13 @@ async def on_message(message):
         if message.content.strip().startswith("!"):
             print(f"[MSG] command prefix — returning")
             return
+
+        # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
+        if PARTNER_BOT_ID and message.guild:
+            partner_mentioned = any(u.id == PARTNER_BOT_ID for u in message.mentions)
+            we_mentioned = bot.user in message.mentions
+            if partner_mentioned and not we_mentioned:
+                return
 
         try:
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
