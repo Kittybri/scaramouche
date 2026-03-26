@@ -817,8 +817,9 @@ async def on_message(message):
 
         await bot.process_commands(message)
         print(f"[MSG] after process_commands")
-        # Stop here for ALL command messages — no further processing
-        if message.content.strip().startswith("!"):
+        # Stop here for actual command messages — not just exclamation marks
+        stripped_msg = message.content.strip()
+        if re.match(r'^![a-zA-Z]', stripped_msg):
             print(f"[MSG] command prefix — returning")
             return
 
