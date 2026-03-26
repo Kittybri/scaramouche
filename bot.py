@@ -63,6 +63,19 @@ def tts_safe(text: str, guild=None) -> str:
 VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/mpeg"}
 VIDEO_EXTS  = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".mpeg"}
 
+SCARA_VIDEO_WATCHING = [
+    "Tch. Let me watch this first. Don't rush me.",
+    "You sent me a video. How bold. Give me a moment.",
+    "Fine. I'll watch your little video. Be quiet.",
+    "A video? This better be worth my time.",
+    "Hold on. I'm watching whatever this is you sent me.",
+    "Don't say anything. I'm watching.",
+    "You expect me to sit through this? ...Fine. Watching.",
+    "I'll look at your video. Not because you asked. Because I'm curious.",
+    "What is this. Hold on, let me see.",
+    "Watching. Don't interrupt me.",
+]
+
 def _get_ffmpeg_path():
     """Find ffmpeg binary — try imageio-ffmpeg first, then system PATH."""
     try:
@@ -970,7 +983,7 @@ async def on_message(message):
             if vid:
                 try:
                     import base64, aiohttp as _aiohttp
-                    await message.add_reaction("🎬")
+                    await message.reply(random.choice(SCARA_VIDEO_WATCHING))
                     async with _aiohttp.ClientSession() as _sess:
                         async with _sess.get(vid.url) as _resp:
                             video_bytes = await _resp.read()
