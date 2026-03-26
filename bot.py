@@ -560,12 +560,18 @@ async def get_audio_with_mood(text: str, mood: int) -> bytes | None:
 
 async def send_voice(channel, text, ref=None, mood=0, guild=None):
     try:
-        audio = await get_audio_with_mood(tts_safe(text, guild), mood)
-        if not audio: return False
+        safe_text = tts_safe(text, guild)
+        print(f"[VOICE] Getting audio for: {safe_text[:60]}...")
+        audio = await get_audio_with_mood(safe_text, mood)
+        if not audio:
+            print(f"[VOICE] get_audio returned None/empty")
+            return False
+        print(f"[VOICE] Got {len(audio)} bytes of audio")
         f = discord.File(io.BytesIO(audio), filename="scaramouche.mp3")
         kwargs = {"file": f}
         if ref: kwargs["reference"] = ref
         await channel.send(**kwargs)
+        print(f"[VOICE] Sent successfully")
         return True
     except Exception as e:
         log_error("send_voice", e); return False
@@ -1288,15 +1294,27 @@ async def on_message(message):
             # Normal messages: 12% chance
             VOICE_REQUEST_KW = ["voice message", "send me a voice", "voice msg", "tell me in voice",
                                 "say it out loud", "speak to me", "wanna hear your voice", "want to hear your voice",
-                                "use your voice", "talk to me", "send audio", "voice note", "send a voice"]
+                                "use your voice", "talk to me", "send audio", "voice note", "send a voice",
+                                "as a voice", "in voice", "say it in voice", "bedtime story"]
             asked_for_voice = any(k in content.lower() for k in VOICE_REQUEST_KW)
-            if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
-                voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
-                if random.random() < voice_prob:
+            print(f"[VOICE] asked={asked_for_voice} fish_key={'YES' if FISH_AUDIO_API_KEY else 'NO'} reply_len={len(reply.strip()) if reply else 0}")
+            if reply and len(reply.strip()) > 2:
+                voice_prob = 0.0
+                if FISH_AUDIO_API_KEY:
+                    voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
+                elif asked_for_voice:
+                    print(f"[VOICE] Voice requested but FISH_AUDIO_API_KEY not set!")
+
+                if voice_prob > 0 and random.random() < voice_prob:
+                    print(f"[VOICE] Attempting voice send (prob={voice_prob})")
                     sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild)
+                    print(f"[VOICE] send_voice returned: {sent}")
                     if sent:
                         await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
                         await maybe_react(message, romance); return
+                    elif asked_for_voice:
+                        # Voice was requested but failed — send as text with the reply
+                        print(f"[VOICE] Voice failed, sending as text fallback")
 
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
                 await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val, guild=message.guild)
