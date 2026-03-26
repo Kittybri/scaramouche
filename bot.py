@@ -6,7 +6,7 @@ in try/except. Nothing can crash the bot. Errors are logged and ignored.
 
 import discord
 from discord.ext import commands, tasks
-import anthropic
+from groq import Groq
 import os, re, random, asyncio, io, time, json, traceback
 from datetime import datetime
 from dotenv import load_dotenv
@@ -16,7 +16,7 @@ from voice_handler import get_audio
 load_dotenv()
 
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN","")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY","")
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY","")
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY","")
 WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
@@ -294,7 +294,9 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory()
-ai  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+ai  = Groq(api_key=GROQ_API_KEY)
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_VISION_MODEL = "llama-3.2-90b-vision-preview"
 
 _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
@@ -462,13 +464,14 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         history.append({"role":"user","content":context_block})
         system = build_system(user, display_name, is_owner)
 
-        kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=800,
-                      system=system, messages=history)
-        # Auto-enable search if message looks like a question/lookup
-        if use_search or needs_search(user_message): kwargs["tools"]=[{"type":"web_search_20250305","name":"web_search"}]
-
-        resp  = ai.messages.create(**kwargs)
-        reply = " ".join(b.text for b in resp.content if hasattr(b,"text") and b.text).strip()
+        msgs = [{"role":"system","content":system}] + history
+        def _blocking():
+            return ai.chat.completions.create(
+                model=GROQ_MODEL, max_tokens=800, messages=msgs,
+                temperature=0.85, frequency_penalty=0.5, presence_penalty=0.4
+            )
+        resp = await asyncio.get_event_loop().run_in_executor(None, _blocking)
+        reply = resp.choices[0].message.content.strip() if resp.choices else ""
         if not reply: reply = random.choice(["Hmph.","...","Tch."])
 
     except Exception as e:
@@ -557,10 +560,12 @@ async def _fire_slow_burn(user_id, channel_id, display_name):
 
 def _qai_blocking(prompt, max_tokens=200):
     try:
-        resp = ai.messages.create(model="claude-sonnet-4-20250514",
-            max_tokens=max_tokens, system=_BASE,
-            messages=[{"role":"user","content":prompt}])
-        return "".join(b.text for b in resp.content if hasattr(b,"text")).strip() or "Hmph."
+        resp = ai.chat.completions.create(
+            model=GROQ_MODEL, max_tokens=max_tokens,
+            messages=[{"role":"system","content":_BASE},
+                      {"role":"user","content":prompt}],
+            temperature=0.85, frequency_penalty=0.5, presence_penalty=0.4)
+        return resp.choices[0].message.content.strip() or "Hmph."
     except Exception as e:
         log_error("qai", e); return "Hmph."
 
@@ -1048,8 +1053,8 @@ async def on_message(message):
                         vision_content = []
                         for fb, mt in frames:
                             vision_content.append({
-                                "type": "image",
-                                "source": {"type": "base64", "media_type": mt, "data": base64.b64encode(fb).decode()}
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mt};base64,{base64.b64encode(fb).decode()}"}
                             })
                         vision_content.append({
                             "type": "text",
@@ -1060,12 +1065,13 @@ async def on_message(message):
                                 f"Be specific about what you see. MOOD:{mood}. NO asterisk actions. 2-4 sentences."
                             )
                         })
-                        resp = ai.messages.create(
-                            model="claude-sonnet-4-20250514", max_tokens=400,
-                            system=system,
-                            messages=[{"role": "user", "content": vision_content}]
-                        )
-                        reply = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+                        def _video_vision():
+                            return ai.chat.completions.create(
+                                model=GROQ_VISION_MODEL, max_tokens=400,
+                                messages=[{"role":"system","content":system},
+                                          {"role":"user","content":vision_content}])
+                        resp = await asyncio.get_event_loop().run_in_executor(None, _video_vision)
+                        reply = resp.choices[0].message.content.strip() if resp.choices else ""
                         if reply:
                             reply = strip_narration(reply)
                             await mem.add_message(message.author.id, dm_channel_id,
@@ -1110,26 +1116,19 @@ async def on_message(message):
                         "role": "user",
                         "content": [
                             {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": img_b64,
-                                }
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{media_type};base64,{img_b64}"}
                             },
                             {"type": "text", "text": vision_prompt}
                         ]
                     }]
 
-                    resp  = ai.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=300,
-                        system=system,
-                        messages=vision_msgs,
-                    )
-                    reply = "".join(
-                        b.text for b in resp.content if hasattr(b,"text")
-                    ).strip()
+                    def _img_vision():
+                        return ai.chat.completions.create(
+                            model=GROQ_VISION_MODEL, max_tokens=300,
+                            messages=[{"role":"system","content":system}] + vision_msgs)
+                    resp = await asyncio.get_event_loop().run_in_executor(None, _img_vision)
+                    reply = resp.choices[0].message.content.strip() if resp.choices else ""
 
                     if reply:
                         reply = strip_narration(reply)
@@ -1210,18 +1209,17 @@ async def on_message(message):
                     try:
                         async with message.channel.typing():
                             def _answer_followup():
-                                r = ai.messages.create(
-                                    model="claude-sonnet-4-20250514",
-                                    max_tokens=600,
-                                    system=_BASE,
-                                    messages=[{"role":"user","content":(
+                                r = ai.chat.completions.create(
+                                    model=GROQ_MODEL, max_tokens=600,
+                                    messages=[{"role":"system","content":_BASE},
+                                              {"role":"user","content":(
                                         f"You gave a lecture on this material:\n{cache['material']}\n\n"
                                         f"{message.author.display_name} has a follow-up question: '{content}'\n\n"
                                         f"Answer using the material. Be accurate and thorough but stay in character. "
                                         f"Contemptuous that they need clarification, but actually helpful."
                                     )}]
                                 )
-                                return strip_narration("".join(b.text for b in r.content if hasattr(b,"text")).strip())
+                                return strip_narration(r.choices[0].message.content.strip() if r.choices else "")
                             answer = await asyncio.get_event_loop().run_in_executor(None, _answer_followup)
                         if answer:
                             await message.reply(answer)
@@ -1460,10 +1458,11 @@ async def _voluntary_dm_loop():
                                     loop = asyncio.get_event_loop()
                                     sys = build_system(ud, name)
                                     def _dm_ai():
-                                        r = ai.messages.create(model="claude-sonnet-4-20250514",
-                                            max_tokens=120, system=sys,
-                                            messages=[{"role":"user","content":dm_prompt}])
-                                        return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                                        r = ai.chat.completions.create(model=GROQ_MODEL,
+                                            max_tokens=120,
+                                            messages=[{"role":"system","content":sys},
+                                                      {"role":"user","content":dm_prompt}])
+                                        return r.choices[0].message.content.strip() if r.choices else ""
                                     txt = await loop.run_in_executor(None, _dm_ai) or random.choice(pool)
                                 except Exception:
                                     txt = random.choice(pool)
@@ -1576,15 +1575,13 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                 try:
                     pdf_b64 = base64.b64encode(file_bytes).decode()
                     def _extract_pdf():
-                        r = ai.messages.create(
-                            model="claude-sonnet-4-20250514",
+                        r = ai.chat.completions.create(
+                            model=GROQ_MODEL,
                             max_tokens=2000,
-                            messages=[{"role":"user","content":[
-                                {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":pdf_b64}},
-                                {"type":"text","text":"Extract all key educational content from this document. List every important concept, definition, formula, and fact."}
-                            ]}]
+                            messages=[{"role":"user","content":
+                                "Extract all key educational content from this document text. List every important concept, definition, formula, and fact.\n\n" + (material_content[:8000] if material_content else "No text extracted.")}]
                         )
-                        return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                        return r.choices[0].message.content.strip() if r.choices else ""
                     extract_resp_text = await asyncio.get_event_loop().run_in_executor(None, _extract_pdf)
                     material_content = extract_resp_text
                 except Exception as e:
@@ -1595,15 +1592,15 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                     img_b64 = base64.b64encode(file_bytes).decode()
                     media_type = ct if ct else "image/jpeg"
                     def _extract_img():
-                        r = ai.messages.create(
-                            model="claude-sonnet-4-20250514",
+                        r = ai.chat.completions.create(
+                            model=GROQ_VISION_MODEL,
                             max_tokens=2000,
                             messages=[{"role":"user","content":[
-                                {"type":"image","source":{"type":"base64","media_type":media_type,"data":img_b64}},
+                                {"type":"image_url","image_url":{"url":f"data:{media_type};base64,{img_b64}"}},
                                 {"type":"text","text":"Extract all educational content visible in this image. Include every concept, formula, definition, and key point."}
                             ]}]
                         )
-                        return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                        return r.choices[0].message.content.strip() if r.choices else ""
                     extract_resp_text = await asyncio.get_event_loop().run_in_executor(None, _extract_img)
                     material_content = extract_resp_text
                 except Exception as e:
@@ -1682,13 +1679,13 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                 f"NO asterisk actions. Spoken words only."
             )
             def _gen_script():
-                r = ai.messages.create(
-                    model="claude-sonnet-4-20250514",
+                r = ai.chat.completions.create(
+                    model=GROQ_MODEL,
                     max_tokens=2500,
-                    system=_BASE,
-                    messages=[{"role":"user","content":script_prompt}]
+                    messages=[{"role":"system","content":_BASE},
+                              {"role":"user","content":script_prompt}]
                 )
-                return strip_narration("".join(b.text for b in r.content if hasattr(b,"text")).strip())
+                return strip_narration(r.choices[0].message.content.strip() if r.choices else "")
             script = await asyncio.get_event_loop().run_in_executor(None, _gen_script)
         except Exception as e:
             await ctx.send(f"Failed to generate the lecture: {e}"); return
@@ -1796,11 +1793,11 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
         # ── Send notes (not transcript) ───────────────────────────────────
         try:
             def _gen_notes():
-                r = ai.messages.create(
-                    model="claude-sonnet-4-20250514",
+                r = ai.chat.completions.create(
+                    model=GROQ_MODEL,
                     max_tokens=800,
-                    system=_BASE,
-                    messages=[{"role":"user","content":(
+                    messages=[{"role":"system","content":_BASE},
+                              {"role":"user","content":(
                         f"You just gave a lecture on this material:\n{material_content[:2000]}\n\n"
                         f"Write concise study notes for {ctx.author.display_name}. "
                         f"Key terms, important concepts, things to remember. "
@@ -1808,7 +1805,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                         f"Stay in character but be genuinely useful."
                     )}]
                 )
-                return "".join(b.text for b in r.content if hasattr(b,"text")).strip()
+                return r.choices[0].message.content.strip() if r.choices else ""
             notes = await asyncio.get_event_loop().run_in_executor(None, _gen_notes)
             if notes:
                 await ctx.send(f"📋 *Notes:*\n{notes[:1900]}")
@@ -2439,5 +2436,5 @@ async def on_command_error(ctx,error):
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
-    if not ANTHROPIC_API_KEY: raise SystemExit("❌ ANTHROPIC_API_KEY not set")
+    if not GROQ_API_KEY: raise SystemExit("❌ GROQ_API_KEY not set")
     bot.run(DISCORD_TOKEN)
