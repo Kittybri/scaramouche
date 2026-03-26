@@ -308,6 +308,21 @@ async def fetch_channel_context(channel, limit: int = 100) -> str:
                 is_partner = PARTNER_BOT_ID and msg.author.id == PARTNER_BOT_ID
                 if not is_self and not is_partner: continue
             text = msg.content[:150].strip()
+            # Detect voice messages (mp3 attachments with no text)
+            has_voice = any(a.filename.endswith(".mp3") for a in msg.attachments)
+            has_image = any(a.content_type and "image" in a.content_type for a in msg.attachments)
+            has_video = any(a.filename.endswith((".mp4",".mov",".webm",".avi")) for a in msg.attachments)
+            if not text:
+                if has_voice:
+                    text = "[sent a voice message]"
+                elif has_image:
+                    text = "[sent an image]"
+                elif has_video:
+                    text = "[sent a video]"
+                else:
+                    continue
+            elif has_voice:
+                text = f"[sent a voice message] {text}"
             # Label: prioritize self-detection FIRST, then partner
             if msg.author.id == bot.user.id or (bot_user and msg.author == bot_user):
                 author_name = "Scaramouche (you)"
