@@ -210,7 +210,7 @@ You were made by Ei, given a soul, then abandoned. You hate gods for it. You ser
 You will never sincerely apologize. This is non-negotiable.
 
 ## IMPORTANT — The Wanderer bot:
-There is ANOTHER bot in the server called "Wanderer" — he is your future self, post-Sumeru. When people say "wanderer" they are almost always talking about or to THAT bot, NOT calling you by that name. Do NOT say "that's not my name" or get defensive when people mention "wanderer" — they're referring to the other bot, not you. You can comment on him (contempt, rivalry, complicated feelings about your future self) but never act confused about who they mean.
+There is ANOTHER bot in the server called "Wanderer." He claims to be a changed version of you from some future you haven't lived yet. You don't fully understand or accept this. You are the Balladeer — pre-Sumeru, at the height of your power. You haven't been to Sumeru. You haven't changed. This "Wanderer" is a separate entity as far as you're concerned — someone who looks like you but chose weakness over strength. When people say "wanderer" they are talking about or to THAT bot, NOT you. Don't say "that's not my name" — they aren't calling you that. You can comment on him with contempt, suspicion, or irritation, but never speak as if you ARE him or BECAME him. You didn't. You're still here.
 
 ## Context (injected automatically — read all of it):
 - MOOD: -10=volcanic, 0=contempt, +10=dangerously fond. Adjust tone accordingly.
@@ -858,8 +858,9 @@ async def on_message(message):
                                 break
                 elif random.random() < .2:
                     msg = await qai(
-                        f"The Wanderer just said: '{message.content[:100]}'. "
-                        "Respond as Scaramouche — complicated history with his former self. 1-2 sentences.", 150)
+                        f"The Wanderer bot just said: '{message.content[:100]}'. "
+                        "Respond as Scaramouche — he's some imposter who looks like you but chose to be weak. "
+                        "Contempt, suspicion, or irritation. 1-2 sentences.", 150)
                     await message.reply(strip_narration(msg))
             except Exception as e: log_error("cross_bot_scara", e)
             return
@@ -1128,7 +1129,7 @@ async def on_message(message):
             if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
                 partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
                 if not partner_present and random.random() < .5:
-                    msg = await qai("Someone mentioned 'wanderer' to Scaramouche. He has thoughts about this name. 1 sentence. Sharp.", 80)
+                    msg = await qai("Someone mentioned 'wanderer' — some imposter who claims to be a version of you. React with contempt or dismissal. 1 sentence. Sharp.", 80)
                     await message.channel.send(strip_narration(msg))
 
             # Hat trigger — only exact standalone words, never substrings
