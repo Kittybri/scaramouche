@@ -29,6 +29,7 @@ _mmod.random = _rmod
 # ── Narration stripper ────────────────────────────────────────────────────────
 def strip_narration(text: str) -> str:
     try:
+        original = text
         text = re.sub(r'\*[^*]+\*','',text)
         text = re.sub(r'\([^)]+\)','',text)
         text = re.sub(r'\[[^\]]+\]','',text)
@@ -36,7 +37,13 @@ def strip_narration(text: str) -> str:
         text = re.sub(r'<@!?\d+>', '', text)
         text = re.sub(r'<#\d+>', '', text)
         text = re.sub(r'<@&\d+>', '', text)
-        return re.sub(r'\s{2,}',' ',text).strip().lstrip('.,; ')
+        text = re.sub(r'\s{2,}',' ',text).strip().lstrip('.,; ')
+        # If stripping removed everything, just remove asterisks/brackets but keep the words
+        if not text or len(text) < 3:
+            text = original.replace('*','').replace('[','').replace(']','').replace('(','').replace(')','')
+            text = re.sub(r'<@!?\d+>', '', text)
+            text = re.sub(r'\s{2,}',' ',text).strip().lstrip('.,; ')
+        return text
     except Exception:
         return text
 
@@ -576,7 +583,11 @@ async def get_audio_with_mood(text: str, mood: int) -> bytes | None:
 async def send_voice(channel, text, ref=None, mood=0, guild=None):
     try:
         safe_text = tts_safe(text, guild)
-        print(f"[VOICE] Getting audio for: {safe_text[:60]}...")
+        print(f"[VOICE] Original: {text[:80]!r}")
+        print(f"[VOICE] After tts_safe: {safe_text[:80]!r}")
+        if not safe_text or len(safe_text.strip()) < 3:
+            print(f"[VOICE] Text too short after processing, skipping voice")
+            return False
         audio = await get_audio_with_mood(safe_text, mood)
         if not audio:
             print(f"[VOICE] get_audio returned None/empty")
