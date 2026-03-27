@@ -17,6 +17,8 @@ load_dotenv()
 
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN","")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY","")
+GROQ_API_KEY_2     = os.getenv("GROQ_API_KEY_2","")
+GROQ_API_KEY_3     = os.getenv("GROQ_API_KEY_3","")
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY","")
 WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
@@ -294,7 +296,45 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory()
-ai  = Groq(api_key=GROQ_API_KEY)
+_groq_keys = [k for k in [GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3] if k]
+_groq_key_idx = 0
+
+class RotatingGroq:
+    """Groq client that rotates API keys on rate limit errors."""
+    def __init__(self):
+        self._clients = [Groq(api_key=k) for k in _groq_keys]
+        self._idx = 0
+        print(f"[GROQ] Loaded {len(self._clients)} API key(s)")
+
+    @property
+    def _client(self):
+        return self._clients[self._idx % len(self._clients)]
+
+    def _rotate(self):
+        old = self._idx
+        self._idx = (self._idx + 1) % len(self._clients)
+        print(f"[GROQ] Key {old+1} rate-limited, rotating to key {self._idx+1}")
+
+    @property
+    def chat(self):
+        return self._client.chat
+
+    def call_with_retry(self, **kwargs):
+        """Try current key, rotate on rate limit, try remaining keys."""
+        last_err = None
+        for _ in range(len(self._clients)):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except Exception as e:
+                err_str = str(e)
+                if "rate_limit" in err_str.lower() or "429" in err_str:
+                    last_err = e
+                    self._rotate()
+                else:
+                    raise
+        raise last_err  # All keys exhausted
+
+ai = RotatingGroq()
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_VISION_MODEL = "llama-3.2-90b-vision-preview"
 
@@ -466,7 +506,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         msgs = [{"role":"system","content":system}] + history
         def _blocking():
-            return ai.chat.completions.create(
+            return ai.call_with_retry(
                 model=GROQ_MODEL, max_tokens=800, messages=msgs,
                 temperature=0.85, frequency_penalty=0.5, presence_penalty=0.4
             )
@@ -560,7 +600,7 @@ async def _fire_slow_burn(user_id, channel_id, display_name):
 
 def _qai_blocking(prompt, max_tokens=200):
     try:
-        resp = ai.chat.completions.create(
+        resp = ai.call_with_retry(
             model=GROQ_MODEL, max_tokens=max_tokens,
             messages=[{"role":"system","content":_BASE},
                       {"role":"user","content":prompt}],
@@ -1066,7 +1106,7 @@ async def on_message(message):
                             )
                         })
                         def _video_vision():
-                            return ai.chat.completions.create(
+                            return ai.call_with_retry(
                                 model=GROQ_VISION_MODEL, max_tokens=400,
                                 messages=[{"role":"system","content":system},
                                           {"role":"user","content":vision_content}])
@@ -1124,7 +1164,7 @@ async def on_message(message):
                     }]
 
                     def _img_vision():
-                        return ai.chat.completions.create(
+                        return ai.call_with_retry(
                             model=GROQ_VISION_MODEL, max_tokens=300,
                             messages=[{"role":"system","content":system}] + vision_msgs)
                     resp = await asyncio.get_event_loop().run_in_executor(None, _img_vision)
@@ -1209,7 +1249,7 @@ async def on_message(message):
                     try:
                         async with message.channel.typing():
                             def _answer_followup():
-                                r = ai.chat.completions.create(
+                                r = ai.call_with_retry(
                                     model=GROQ_MODEL, max_tokens=600,
                                     messages=[{"role":"system","content":_BASE},
                                               {"role":"user","content":(
@@ -1458,7 +1498,7 @@ async def _voluntary_dm_loop():
                                     loop = asyncio.get_event_loop()
                                     sys = build_system(ud, name)
                                     def _dm_ai():
-                                        r = ai.chat.completions.create(model=GROQ_MODEL,
+                                        r = ai.call_with_retry(model=GROQ_MODEL,
                                             max_tokens=120,
                                             messages=[{"role":"system","content":sys},
                                                       {"role":"user","content":dm_prompt}])
@@ -1575,7 +1615,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                 try:
                     pdf_b64 = base64.b64encode(file_bytes).decode()
                     def _extract_pdf():
-                        r = ai.chat.completions.create(
+                        r = ai.call_with_retry(
                             model=GROQ_MODEL,
                             max_tokens=2000,
                             messages=[{"role":"user","content":
@@ -1592,7 +1632,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                     img_b64 = base64.b64encode(file_bytes).decode()
                     media_type = ct if ct else "image/jpeg"
                     def _extract_img():
-                        r = ai.chat.completions.create(
+                        r = ai.call_with_retry(
                             model=GROQ_VISION_MODEL,
                             max_tokens=2000,
                             messages=[{"role":"user","content":[
@@ -1679,7 +1719,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                 f"NO asterisk actions. Spoken words only."
             )
             def _gen_script():
-                r = ai.chat.completions.create(
+                r = ai.call_with_retry(
                     model=GROQ_MODEL,
                     max_tokens=2500,
                     messages=[{"role":"system","content":_BASE},
@@ -1793,7 +1833,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
         # ── Send notes (not transcript) ───────────────────────────────────
         try:
             def _gen_notes():
-                r = ai.chat.completions.create(
+                r = ai.call_with_retry(
                     model=GROQ_MODEL,
                     max_tokens=800,
                     messages=[{"role":"system","content":_BASE},
@@ -2436,5 +2476,5 @@ async def on_command_error(ctx,error):
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
-    if not GROQ_API_KEY: raise SystemExit("❌ GROQ_API_KEY not set")
+    if not _groq_keys: raise SystemExit("❌ No GROQ_API_KEY set (need at least GROQ_API_KEY)")
     bot.run(DISCORD_TOKEN)
