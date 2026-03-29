@@ -12,6 +12,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio
+from character_vision import ask_character_bot
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -391,6 +392,34 @@ def log_error(location: str, e: Exception):
     print(f"[ERROR:{location}] {type(e).__name__}: {e}")
 
 
+def debug_event(tag: str, detail: str):
+    print(f"[DEBUG:{tag}] {detail}")
+
+
+async def _vision_image_reply(
+    *,
+    prompt: str,
+    system: str,
+    image_bytes: bytes,
+    mime_type: str,
+    max_chars: int = 900,
+) -> str:
+    loop = asyncio.get_event_loop()
+
+    def _run():
+        return ask_character_bot(
+            BOT_NAME,
+            prompt,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            system_prompt=system,
+            temperature=0.35,
+        )
+
+    reply = await loop.run_in_executor(None, _run)
+    return strip_narration((reply or "").strip())[:max_chars]
+
+
 async def _recent_reply_samples(channel_id: int | None = None, user_id: int | None = None) -> list[str]:
     try:
         channel_recent = await mem.get_recent_assistant_messages(limit=18, channel_id=channel_id) if channel_id is not None else []
@@ -430,13 +459,21 @@ async def _apply_phrase_policy(
     if not rule:
         return updated
 
-    scope = f"{BOT_NAME}:user:{user_id}" if user_id is not None else f"{BOT_NAME}:global"
+    scopes = [f"{BOT_NAME}:global"]
+    if user_id is not None:
+        scopes.insert(0, f"{BOT_NAME}:user:{user_id}")
     cooldown = int(rule.get("cooldown", 0))
     allowed = True
     if cooldown > 0:
-        allowed = await mem.consume_phrase(scope, f"{BOT_NAME}:{opening}", cooldown)
+        for scope in scopes:
+            allowed, remaining = await mem.consume_phrase_with_status(scope, f"{BOT_NAME}:{opening}", cooldown)
+            if not allowed:
+                debug_event("phrase", f"{BOT_NAME} blocked '{opening}' scope={scope} remaining={remaining}s")
+                break
     if allowed:
+        debug_event("phrase", f"{BOT_NAME} allowed '{opening}' scopes={','.join(scopes)}")
         return updated
+    debug_event("phrase", f"{BOT_NAME} diversified opener '{opening}'")
     return replace_opening_phrase(BOT_NAME, updated, recent_messages)
 
 
@@ -447,20 +484,25 @@ async def _learn_user_state(user_id: int, user_message: str):
             return
         profile = apply_style_deltas(current.get("style_profile"), analyze_style_deltas(user_message))
         await mem.set_style_profile(user_id, profile)
+        debug_event("memory", f"{BOT_NAME} style_profile user={user_id} traits={','.join(sorted([k for k, v in profile.items() if v >= 8])[:3]) or 'none'}")
 
         callback_memory = extract_callback_candidate(user_message)
         if callback_memory:
             await mem.set_callback_memory(user_id, callback_memory)
+            debug_event("memory", f"{BOT_NAME} callback user={user_id} text={callback_memory[:80]}")
         for topic in detect_topics(user_message):
             await mem.record_topic(user_id, topic)
+            debug_event("memory", f"{BOT_NAME} topic user={user_id} topic={topic}")
 
         if detect_repair_signal(user_message) and current.get("conflict_open"):
             await mem.resolve_conflict(user_id)
             await mem.update_trust(user_id, +2)
             await mem.update_affection(user_id, +1)
             await mem.set_callback_memory(user_id, f"They tried to repair things: {user_message[:180]}")
+            debug_event("memory", f"{BOT_NAME} conflict_resolved user={user_id}")
         elif detect_conflict_signal(user_message) and (current.get("romance_mode") or current.get("affection", 0) >= 30):
             await mem.open_conflict(user_id, user_message[:180])
+            debug_event("memory", f"{BOT_NAME} conflict_opened user={user_id} text={user_message[:80]}")
 
         refreshed = await mem.get_user(user_id)
         if not refreshed:
@@ -473,6 +515,7 @@ async def _learn_user_state(user_id: int, user_message: str):
             refreshed.get("repair_count", 0),
         )
         await mem.set_emotional_arc(user_id, arc)
+        debug_event("memory", f"{BOT_NAME} arc user={user_id} arc={arc}")
     except Exception as e:
         log_error("learn_user_state", e)
 
@@ -503,6 +546,8 @@ async def _observe_partner_message(content: str) -> tuple[dict, list[dict], str]
     marker = f"pair:{stage}"
     if milestone_note and not await mem.has_milestone(PARTNER_PAIR_KEY, marker):
         await mem.add_milestone(PARTNER_PAIR_KEY, marker, milestone_note)
+        debug_event("relationship", f"{BOT_NAME} milestone marker={marker} note={milestone_note[:90]}")
+    debug_event("relationship", f"{BOT_NAME} partner stage={relation.get('stage')} respect={relation.get('respect')} tension={relation.get('tension')} theme={theme}")
     return relation, recent, theme
 
 
@@ -1447,11 +1492,10 @@ async def on_message(message):
             # ── Image handling ──
             if img:
                 try:
-                    import base64, aiohttp as _aiohttp
+                    import aiohttp as _aiohttp
                     async with _aiohttp.ClientSession() as _sess:
                         async with _sess.get(img.url) as _resp:
                             img_bytes = await _resp.read()
-                    img_b64    = base64.b64encode(img_bytes).decode()
                     media_type = img.content_type or "image/jpeg"
 
                     user     = user or {}
@@ -1466,26 +1510,14 @@ async def on_message(message):
                         f"and react in character. Be specific about what's in the image. "
                         f"MOOD:{mood}. NO asterisk actions. 1-3 sentences."
                     )
-                    vision_msgs = [{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{media_type};base64,{img_b64}"}
-                            },
-                            {"type": "text", "text": vision_prompt}
-                        ]
-                    }]
-
-                    def _img_vision():
-                        return ai.call_with_retry(
-                            model=GROQ_VISION_MODEL, max_tokens=300,
-                            messages=[{"role":"system","content":system}] + vision_msgs)
-                    resp = await asyncio.get_event_loop().run_in_executor(None, _img_vision)
-                    reply = resp.choices[0].message.content.strip() if resp.choices else ""
+                    reply = await _vision_image_reply(
+                        prompt=vision_prompt,
+                        system=system,
+                        image_bytes=img_bytes,
+                        mime_type=media_type,
+                    )
 
                     if reply:
-                        reply = strip_narration(reply)
                         await mem.add_message(message.author.id, dm_channel_id,
                                               "user", f"[image]{' — '+content if content else ''}")
                         await mem.add_message(message.author.id, dm_channel_id,
@@ -1650,8 +1682,10 @@ async def on_message(message):
                 if "YES" in check.upper():
                     await mem.add_inside_joke(message.author.id,content[:100])
                     await mem.add_shared_inside_joke(message.author.id, content[:100], BOT_NAME)
+                    debug_event("memory", f"{BOT_NAME} shared_joke user={message.author.id} text={content[:80]}")
             if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < .1:
                 await mem.set_callback_memory(message.author.id, f"Unresolved tension still matters: {user['conflict_summary'][:180]}")
+                debug_event("memory", f"{BOT_NAME} conflict_followup user={message.author.id}")
         except Exception as e: log_error("on_message/post_effects", e)
 
         # Send response
@@ -1734,6 +1768,9 @@ async def _proactive_loop():
                 try:
                     ch = bot.get_channel(cid)
                     if not ch or not await mem.can_proactive(cid,3600): continue
+                    perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
+                    if perms and (not perms.view_channel or not perms.send_messages):
+                        continue
                     if OWNER_ID and random.random()<.3:
                         try:
                             m = ch.guild.get_member(OWNER_ID) if hasattr(ch,"guild") else None
@@ -1782,6 +1819,8 @@ async def _proactive_loop():
                         msg = await _pick_fresh_pool_line(PROACTIVE_GENERIC, channel_id=cid)
                         await ch.send(msg); await mem.set_proactive_sent(cid)
                     break
+                except discord.Forbidden:
+                    continue
                 except Exception as e: log_error("proactive_channel", e)
         except Exception as e: log_error("proactive_loop", e)
         await asyncio.sleep(random.randint(5400,14400))
@@ -1830,6 +1869,9 @@ async def _voluntary_dm_loop():
                                     await du.send(file=discord.File(io.BytesIO(audio),filename="scaramouche.mp3"))
                                     await mem.set_dm_sent(uid); await mem.add_message(uid,uid,"assistant",f"[voice message] {txt}"); break
                             await du.send(txt); await mem.set_dm_sent(uid); await mem.add_message(uid,uid,"assistant",txt); break
+                        except discord.Forbidden:
+                            await mem.set_mode(uid, "allow_dms", False)
+                            debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden")
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
         await asyncio.sleep(random.randint(2700,21600))
@@ -2787,6 +2829,7 @@ async def scarahelp_cmd(ctx):
 async def on_command_error(ctx,error):
     try:
         if isinstance(error,commands.CommandNotFound): pass
+        elif isinstance(error,commands.MemberNotFound): pass
         elif isinstance(error,commands.MissingRequiredArgument):
             await safe_reply(ctx,"You're missing something.")
         else: log_error("on_command_error",error)
