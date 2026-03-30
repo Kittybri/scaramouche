@@ -64,7 +64,22 @@ async def get_audio(text: str, fish_audio_key: str) -> bytes | None:
     return await generate_tts_gtts(text)
 
 
-async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0) -> bytes | None:
+def _style_tts_text(text: str, style: str = "guarded") -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    if style == "soft":
+        return cleaned.replace("...", ".  ").replace("—", ". ")
+    if style == "tense":
+        return cleaned.replace(",", ". ").replace(";", ". ")
+    if style in {"cutting", "distant"}:
+        return cleaned.replace(" and ", ". ").replace(" but ", ". ")
+    if style in {"measured", "curious"}:
+        return cleaned.replace("...", ", ")
+    return cleaned
+
+
+async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0, style: str = "guarded") -> bytes | None:
     if not fish_audio_key:
         return await generate_tts_gtts(text)
     # Mood affects pacing
@@ -72,9 +87,18 @@ async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0) -> byt
     elif mood <= -1: chunk = 190
     elif mood <= 5:  chunk = 220
     else:            chunk = 260
+    if style == "soft":
+        chunk += 35
+    elif style == "tense":
+        chunk = max(120, chunk - 30)
+    elif style in {"cutting", "distant"}:
+        chunk = max(130, chunk - 20)
+    elif style in {"measured", "curious"}:
+        chunk += 10
+    styled_text = _style_tts_text(text, style)
 
     def _blocking():
-        return _fish_tts_blocking(text, fish_audio_key, chunk)
+        return _fish_tts_blocking(styled_text, fish_audio_key, chunk)
 
     try:
         audio = await asyncio.get_event_loop().run_in_executor(None, _blocking)
