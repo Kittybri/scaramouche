@@ -2839,12 +2839,6 @@ async def on_message(message):
         # Special triggers
         try:
             cl = content.lower()
-            if direct_to_me and _is_partner_invite_request(content):
-                reply, invite_view = _handle_partner_invite_pressure(message, user)
-                await mem.add_message(message.author.id, dm_channel_id, "user", content)
-                await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-                await message.reply(reply, view=invite_view)
-                return
             if VILLAIN_TRIGGER in content.lower():
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
                 await message.reply(strip_narration(m)); return
@@ -2888,6 +2882,12 @@ async def on_message(message):
                 except Exception as e:
                     log_error("partner_direct", e)
         direct_to_me = bool(is_dm or mentioned or is_reply)
+        if direct_to_me and _is_partner_invite_request(content):
+            reply, invite_view = _handle_partner_invite_pressure(message, user)
+            await mem.add_message(message.author.id, dm_channel_id, "user", content)
+            await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+            await message.reply(reply, view=invite_view)
+            return
         triangle = None
         try:
             await mem.record_bot_attention(
