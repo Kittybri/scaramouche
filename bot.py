@@ -450,6 +450,21 @@ def _is_partner_invite_request(text: str) -> bool:
     return any(token in lowered for token in ["invite", "add", "bring", "summon", "join", "come here"])
 
 
+def _looks_like_direct_invite_request(text: str) -> bool:
+    lowered = " ".join(((text or "").lower()).split())
+    if not _is_partner_invite_request(lowered):
+        return False
+    patterns = [
+        r"^(?:scaramouche[\s,!?-]+)?(?:please\s+)?(?:invite|add|bring|summon)\s+(?:the\s+)?(?:wanderer|other bot)\b",
+        r"\b(?:can|could|will|would|won't)\s+you\s+(?:please\s+)?(?:invite|add|bring|summon)\s+(?:the\s+)?(?:wanderer|other bot)\b",
+        r"\byou agreed\b",
+        r"\buse your (?:administrator|admin) rights\b",
+        r"\bi need (?:him|wanderer|the other bot) here\b",
+        r"(?:^|[.!?]\s+)(?:now\s+)?(?:invite|add|bring|summon)\s+(?:the\s+)?(?:wanderer|other bot)\b",
+    ]
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
 def _partner_invite_reply(message: discord.Message) -> str:
     guild = message.guild
     if guild and PARTNER_BOT_ID and guild.get_member(PARTNER_BOT_ID):
@@ -2882,7 +2897,7 @@ async def on_message(message):
                 except Exception as e:
                     log_error("partner_direct", e)
         direct_to_me = bool(is_dm or mentioned or is_reply)
-        if direct_to_me and _is_partner_invite_request(content):
+        if _is_partner_invite_request(content) and (direct_to_me or _looks_like_direct_invite_request(content)):
             reply, invite_view = _handle_partner_invite_pressure(message, user)
             await mem.add_message(message.author.id, dm_channel_id, "user", content)
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
