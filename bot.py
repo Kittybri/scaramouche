@@ -472,6 +472,20 @@ def _partner_invite_reply(message: discord.Message) -> str:
         "then ask again and I'll hand you the proper OAuth2 invite."
     )
 
+
+def _partner_invite_url_from_message(message: discord.Message) -> str:
+    guild = message.guild
+    provided_oauth = _extract_oauth_link(message.content)
+    return provided_oauth or _build_partner_invite_url(guild.id if guild else None)
+
+
+def _partner_invite_view(invite_url: str) -> discord.ui.View | None:
+    if not invite_url:
+        return None
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Invite Wanderer", url=invite_url))
+    return view
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
@@ -2744,9 +2758,11 @@ async def on_message(message):
             cl = content.lower()
             if direct_to_me and _is_partner_invite_request(content):
                 reply = _partner_invite_reply(message)
+                invite_url = _partner_invite_url_from_message(message)
+                invite_view = _partner_invite_view(invite_url)
                 await mem.add_message(message.author.id, dm_channel_id, "user", content)
                 await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-                await message.reply(reply)
+                await message.reply(reply, view=invite_view)
                 return
             if VILLAIN_TRIGGER in content.lower():
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
@@ -3300,14 +3316,14 @@ async def safe_send(ctx, text):
     except Exception as e: log_error("safe_send", e)
 
 
-async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False):
+async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False, view: discord.ui.View | None = None):
     try:
         if thinking and not interaction.response.is_done():
             await interaction.response.defer(thinking=True)
         if interaction.response.is_done():
-            await interaction.followup.send(text)
+            await interaction.followup.send(text, view=view)
         else:
-            await interaction.response.send_message(text)
+            await interaction.response.send_message(text, view=view)
     except Exception as e:
         log_error("interaction_reply", e)
 
@@ -4365,7 +4381,9 @@ async def speaker_cmd(ctx, mode: str = None):
 @bot.command(name="invitewanderer", aliases=["bringwanderer"])
 async def invitewanderer_cmd(ctx):
     try:
-        await safe_reply(ctx, _partner_invite_reply(ctx.message))
+        reply = _partner_invite_reply(ctx.message)
+        invite_view = _partner_invite_view(_partner_invite_url_from_message(ctx.message))
+        await ctx.reply(reply, view=invite_view)
     except Exception as e: log_error("invitewanderer_cmd", e)
 
 @bot.command(name="both")
@@ -5136,6 +5154,7 @@ async def slash_duo_invite(interaction: discord.Interaction):
             interaction,
             "Discord still requires a human to authorize the install. Use this Wanderer invite link:\n"
             f"{invite_url}",
+            view=_partner_invite_view(invite_url),
         )
     except Exception as e:
         log_error("slash_duo_invite", e)
