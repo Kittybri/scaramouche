@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from groq import Groq
 import os, re, random, asyncio, io, time, json, traceback
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -78,6 +78,9 @@ WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
 NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT","scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID","0") or "0")  # Wanderer bot ID
+PARTNER_INVITE_PERMISSIONS = int(os.getenv("PARTNER_BOT_PERMISSIONS", "8") or "8")
+PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.commands").strip() or "bot applications.commands"
+PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("WANDERER_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -381,6 +384,94 @@ def trust_tier(t):
     if t<80:  return "kept close"
     return "dangerously trusted"
 
+
+def _load_groq_keys() -> list[str]:
+    keys: list[str] = []
+
+    def _remember(value: str):
+        cleaned = (value or "").strip()
+        if cleaned and cleaned not in keys:
+            keys.append(cleaned)
+
+    packed = os.getenv("GROQ_API_KEYS", "")
+    if packed:
+        for piece in re.split(r"[\n,;]+", packed):
+            _remember(piece)
+
+    numbered: list[tuple[int, str]] = []
+    for env_name, env_value in os.environ.items():
+        if env_name == "GROQ_API_KEY":
+            numbered.append((0, env_value))
+            continue
+        match = re.fullmatch(r"GROQ_API_KEY_(\d+)", env_name)
+        if match:
+            numbered.append((int(match.group(1)), env_value))
+    for _, env_value in sorted(numbered, key=lambda item: item[0]):
+        _remember(env_value)
+    return keys
+
+
+_DISCORD_OAUTH_RE = re.compile(r"https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/oauth2/authorize\?[^\s>]+", re.IGNORECASE)
+_DISCORD_SERVER_INVITE_RE = re.compile(r"https?://(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/[^\s>]+", re.IGNORECASE)
+
+
+def _partner_install_client_id() -> str:
+    if PARTNER_CLIENT_ID_OVERRIDE:
+        return PARTNER_CLIENT_ID_OVERRIDE
+    if PARTNER_BOT_ID:
+        return str(PARTNER_BOT_ID)
+    return ""
+
+
+def _build_partner_invite_url(guild_id: int | None = None) -> str:
+    client_id = _partner_install_client_id()
+    if not client_id:
+        return ""
+    params = {
+        "client_id": client_id,
+        "permissions": str(PARTNER_INVITE_PERMISSIONS),
+        "scope": PARTNER_INVITE_SCOPES,
+    }
+    if guild_id:
+        params["guild_id"] = str(guild_id)
+        params["disable_guild_select"] = "true"
+    return f"https://discord.com/oauth2/authorize?{urlencode(params)}"
+
+
+def _extract_oauth_link(text: str) -> str:
+    match = _DISCORD_OAUTH_RE.search(text or "")
+    return match.group(0) if match else ""
+
+
+def _is_partner_invite_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    if "wanderer" not in lowered and "other bot" not in lowered and "the other bot" not in lowered:
+        return False
+    return any(token in lowered for token in ["invite", "add", "bring", "summon", "join", "come here"])
+
+
+def _partner_invite_reply(message: discord.Message) -> str:
+    guild = message.guild
+    if guild and PARTNER_BOT_ID and guild.get_member(PARTNER_BOT_ID):
+        return "He's already in this server. Try opening your eyes before dragging me into it."
+
+    provided_oauth = _extract_oauth_link(message.content)
+    invite_url = provided_oauth or _build_partner_invite_url(guild.id if guild else None)
+    if invite_url:
+        return (
+            "I can't authorize another bot myself. Discord requires a human to click the install link. "
+            f"Use this for Wanderer: {invite_url}"
+        )
+    if _DISCORD_SERVER_INVITE_RE.search(message.content or ""):
+        return (
+            "A server invite won't add a bot. Use Wanderer's OAuth2 install link instead. "
+            "Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID` on Railway if you want me to hand you the correct one."
+        )
+    return (
+        "I can't conjure his install link out of thin air. Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID`, "
+        "then ask again and I'll hand you the proper OAuth2 invite."
+    )
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
@@ -392,7 +483,7 @@ PARTNER_NAME = "wanderer"
 PARTNER_PAIR_KEY = "scaramouche::wanderer"
 BOT_RARE_PHRASES = RARE_PHRASES[BOT_NAME]
 _TREE_SYNCED = False
-_groq_keys = [k for k in [GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3] if k]
+_groq_keys = _load_groq_keys()
 _groq_key_idx = 0
 
 class RotatingGroq:
@@ -1597,6 +1688,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                        is_owner=False, channel_obj=None, is_dm=False):
     recent_replies: list[str] = []
     search_sources = ""
+    rate_limited = False
     try:
         history   = await mem.get_history(user_id, channel_id, limit=200)
         mood      = user.get("mood",0) if user else 0
@@ -1779,18 +1871,21 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         if not reply:
             reply = fallback_reply(BOT_NAME, recent_replies)
-        reply = await _maybe_self_edit_reply(
-            reply,
-            recent_replies=recent_replies,
-            user_message=user_message,
-            user=user,
-            max_tokens=240,
-        )
+        if not rate_limited:
+            reply = await _maybe_self_edit_reply(
+                reply,
+                recent_replies=recent_replies,
+                user_message=user_message,
+                user=user,
+                max_tokens=240,
+            )
         if search_sources:
             reply = f"{reply}\n\n{search_sources}"
 
     except Exception as e:
         log_error("get_response", e)
+        if "429" in str(e) or "rate limit" in str(e).lower():
+            rate_limited = True
         reply = fallback_reply(BOT_NAME, recent_replies)
 
     try:
@@ -1933,13 +2028,14 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         mood=(refreshed_user or user or {}).get("mood", 0),
         conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
     )
-    reply = await _maybe_self_edit_reply(
-        reply,
-        recent_replies=recent_replies,
-        user_message=user_message,
-        user=(refreshed_user or user),
-        max_tokens=240,
-    )
+    if not rate_limited:
+        reply = await _maybe_self_edit_reply(
+            reply,
+            recent_replies=recent_replies,
+            user_message=user_message,
+            user=(refreshed_user or user),
+            max_tokens=240,
+        )
     if not reply:
         reply = fallback_reply(BOT_NAME, recent_replies)
     remember_output(BOT_NAME, reply)
@@ -2646,6 +2742,12 @@ async def on_message(message):
         # Special triggers
         try:
             cl = content.lower()
+            if direct_to_me and _is_partner_invite_request(content):
+                reply = _partner_invite_reply(message)
+                await mem.add_message(message.author.id, dm_channel_id, "user", content)
+                await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+                await message.reply(reply)
+                return
             if VILLAIN_TRIGGER in content.lower():
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
                 await message.reply(strip_narration(m)); return
@@ -4260,6 +4362,12 @@ async def speaker_cmd(ctx, mode: str = None):
         await safe_reply(ctx, f"Fine. This channel is now set to `{mapping[normalized]}` mode.")
     except Exception as e: log_error("speaker_cmd", e)
 
+@bot.command(name="invitewanderer", aliases=["bringwanderer"])
+async def invitewanderer_cmd(ctx):
+    try:
+        await safe_reply(ctx, _partner_invite_reply(ctx.message))
+    except Exception as e: log_error("invitewanderer_cmd", e)
+
 @bot.command(name="both")
 async def both_cmd(ctx,*,prompt:str=None):
     try:
@@ -5012,6 +5120,26 @@ async def slash_duo_start(interaction: discord.Interaction, mode: app_commands.C
             await interaction.followup.send("Something went wrong starting the duo scene.")
         else:
             await interaction.response.send_message("Something went wrong starting the duo scene.")
+
+
+@duo_group.command(name="invite", description="Get Wanderer's OAuth2 install link for this server.")
+async def slash_duo_invite(interaction: discord.Interaction):
+    try:
+        if interaction.guild and PARTNER_BOT_ID and interaction.guild.get_member(PARTNER_BOT_ID):
+            await _interaction_reply(interaction, "He's already in this server. Try looking around first.")
+            return
+        invite_url = _build_partner_invite_url(interaction.guild_id)
+        if not invite_url:
+            await _interaction_reply(interaction, "I can't build Wanderer's install link yet. Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID` on Railway.")
+            return
+        await _interaction_reply(
+            interaction,
+            "Discord still requires a human to authorize the install. Use this Wanderer invite link:\n"
+            f"{invite_url}",
+        )
+    except Exception as e:
+        log_error("slash_duo_invite", e)
+        await _interaction_reply(interaction, "Something went wrong building Wanderer's invite link.")
 
 
 @duo_group.command(name="state", description="Show current duo mode and world-case carryover.")
