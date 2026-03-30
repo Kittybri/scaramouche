@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands, tasks
 from groq import Groq
 import os, re, random, asyncio, io, time, json, traceback
+from urllib.parse import quote_plus
 from datetime import datetime
 from dotenv import load_dotenv
 from memory import Memory
@@ -66,6 +67,7 @@ GROQ_API_KEY_2     = os.getenv("GROQ_API_KEY_2","")
 GROQ_API_KEY_3     = os.getenv("GROQ_API_KEY_3","")
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY","")
 WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
+NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT","scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID","0") or "0")  # Wanderer bot ID
 
@@ -790,6 +792,114 @@ def needs_search(text: str) -> bool:
         return True
     return False
 
+
+async def _web_search_groq(query: str) -> str:
+    """Simple web search via DuckDuckGo for factual questions."""
+    try:
+        import aiohttp
+
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                "https://api.duckduckgo.com/",
+                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                data = await r.json(content_type=None)
+                abstract = data.get("AbstractText", "")
+                if abstract:
+                    return abstract[:400]
+                topics = data.get("RelatedTopics", [])
+                if topics and isinstance(topics[0], dict):
+                    return topics[0].get("Text", "")[:400]
+    except Exception as e:
+        log_error("web_search", e)
+    return ""
+
+
+def _memory_weight_for(kind: str) -> int:
+    boosts = {
+        "betrayal": 5,
+        "slight": 5,
+        "fight": 4,
+        "promise": 3,
+        "confession": 4,
+        "comfort": 2,
+        "repair": 2,
+        "inside_joke": 2,
+    }
+    return boosts.get((kind or "").lower(), 3)
+
+
+async def _resolve_weather_location(location: str) -> tuple[float, float] | None:
+    text = (location or "").strip()
+    coord_match = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", text)
+    if coord_match:
+        return float(coord_match.group(1)), float(coord_match.group(2))
+
+    import aiohttp
+
+    headers = {"User-Agent": NWS_USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
+    lookup_url = f"https://forecast.weather.gov/zipcity.php?inputstring={quote_plus(text)}"
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(lookup_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            final_url = str(resp.url)
+            body = await resp.text()
+    for source in (final_url, body):
+        match = re.search(r"[?&]lat=(-?\d+(?:\.\d+)?)[^\\d-]+lon=(-?\d+(?:\.\d+)?)", source, re.IGNORECASE)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+    return None
+
+
+async def _fetch_nws_weather(location: str) -> dict | None:
+    coords = await _resolve_weather_location(location)
+    if not coords:
+        return None
+
+    lat, lon = coords
+    import aiohttp
+
+    headers = {"User-Agent": NWS_USER_AGENT, "Accept": "application/geo+json"}
+    timeout = aiohttp.ClientTimeout(total=12)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+        async with session.get(f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}") as resp:
+            if resp.status != 200:
+                return None
+            points = await resp.json()
+
+        props = points.get("properties", {})
+        forecast_url = props.get("forecast")
+        hourly_url = props.get("forecastHourly")
+        relative = props.get("relativeLocation", {}).get("properties", {})
+        city = relative.get("city") or location
+        state = relative.get("state") or ""
+
+        forecast_data = {}
+        hourly_data = {}
+        if forecast_url:
+            async with session.get(forecast_url) as resp:
+                if resp.status == 200:
+                    forecast_data = await resp.json()
+        if hourly_url:
+            async with session.get(hourly_url) as resp:
+                if resp.status == 200:
+                    hourly_data = await resp.json()
+
+    forecast_periods = forecast_data.get("properties", {}).get("periods", [])
+    hourly_periods = hourly_data.get("properties", {}).get("periods", [])
+    forecast_period = forecast_periods[0] if forecast_periods else {}
+    hourly_period = hourly_periods[0] if hourly_periods else {}
+    precip = hourly_period.get("probabilityOfPrecipitation", {}) or {}
+    return {
+        "place": f"{city}, {state}".strip(", "),
+        "forecast": forecast_period.get("shortForecast") or hourly_period.get("shortForecast") or "forecast unavailable",
+        "temperature": hourly_period.get("temperature"),
+        "temperature_unit": hourly_period.get("temperatureUnit") or forecast_period.get("temperatureUnit") or "F",
+        "wind_speed": hourly_period.get("windSpeed") or forecast_period.get("windSpeed") or "",
+        "wind_direction": hourly_period.get("windDirection") or forecast_period.get("windDirection") or "",
+        "precipitation": precip.get("value"),
+    }
+
 # ── AI core ───────────────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
@@ -827,6 +937,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if affection>=75: parts.append("AFFECTION_SOFT")
         if trust>=70:     parts.append("TRUST_OPEN")
         if is_owner:      parts.append("CREATOR")
+        if is_dm:         parts.append("DM_MODE")
         dp = drift_phrase(drift, mood)
         if dp: parts.append(dp)
         if summary: parts.append(f"SUMMARY:{summary[:300]}")
@@ -875,6 +986,12 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         if extra_context: parts.append(extra_context)
         parts.extend(await _user_memory_context(user_id, user))
+        if use_search or needs_search(user_message):
+            search_result = await _web_search_groq(user_message)
+            if search_result:
+                parts.append("FACT_MODE: answer accurately first, then add personality")
+                parts.append(f"SEARCH_RESULT:{search_result[:500]}")
+                debug_event("search", f"{BOT_NAME} injected web context for user={user_id}")
 
         partner_context = await _partner_prompt_context(user_message)
         channel_ctx = ""
@@ -1005,7 +1122,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if random.random() < .05: await mem.update_drift(user_id, +1)
         await _learn_user_state(user_id, user_message)
         for kind, memory_text, weight in extract_memory_events(user_message):
-            await mem.add_memory_event(user_id, kind, memory_text, weight)
+            await mem.add_memory_event(user_id, kind, memory_text, max(weight, _memory_weight_for(kind)))
             debug_event("memory", f"{BOT_NAME} memory_bank user={user_id} kind={kind}")
         scene_update = infer_scene_update(user_message, display_name)
         if scene_update:
@@ -1994,6 +2111,31 @@ async def safe_send(ctx, text):
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
 
+
+async def _reply_and_store(ctx, text: str):
+    await safe_reply(ctx, text)
+    try:
+        await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text)
+    except Exception as e:
+        log_error("reply_and_store", e)
+
+
+def _format_memory_snapshot(user: dict | None, topics: list[dict], memories: list[dict], scene: dict | None) -> str:
+    lines = []
+    callback = (user or {}).get("callback_memory")
+    if callback:
+        lines.append(f"Callback: {callback[:140]}")
+    if topics:
+        topic_bits = ", ".join(f"{item['topic']} ({item['count']})" for item in topics[:4])
+        lines.append(f"Topics: {topic_bits}")
+    if memories:
+        memory_bits = " | ".join(f"{item['kind']}: {item['memory'][:70]}" for item in memories[:4])
+        lines.append(f"Memory bank: {memory_bits}")
+    scene_desc = describe_scene_state(scene)
+    if scene_desc:
+        lines.append(f"Scene: {scene_desc}")
+    return "\n".join(lines) if lines else "Nothing worth preserving yet. Try harder."
+
 @bot.command(name="voice",aliases=["speak","say"])
 async def voice_cmd(ctx,*,msg:str=None):
     try:
@@ -2024,7 +2166,7 @@ async def tedtalk_cmd(ctx, *, topic: str = None):
         attachment = ctx.message.attachments[0] if ctx.message.attachments else None
 
         if not attachment and not topic:
-            _tedtalk_active.discard(ctx.author.id)
+            _tedtalk_active.discard(msg_id)
             await safe_reply(ctx, "Attach a file or give me a topic. I can't teach you nothing, as satisfying as that would be.")
             return
 
@@ -2078,17 +2220,21 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
 
             if "pdf" in ct or attachment.filename.lower().endswith(".pdf"):
                 try:
-                    pdf_b64 = base64.b64encode(file_bytes).decode()
-                    def _extract_pdf():
-                        r = ai.call_with_retry(
-                            model=GROQ_MODEL,
-                            max_tokens=2000,
-                            messages=[{"role":"user","content":
-                                "Extract all key educational content from this document text. List every important concept, definition, formula, and fact.\n\n" + (material_content[:8000] if material_content else "No text extracted.")}]
-                        )
-                        return r.choices[0].message.content.strip() if r.choices else ""
-                    extract_resp_text = await asyncio.get_event_loop().run_in_executor(None, _extract_pdf)
-                    material_content = extract_resp_text
+                    try:
+                        import pdfplumber
+
+                        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                            material_content = "\n".join(page.extract_text() or "" for page in pdf.pages)[:8000]
+                    except Exception:
+                        try:
+                            import PyPDF2
+
+                            reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                            material_content = "\n".join(page.extract_text() or "" for page in reader.pages)[:8000]
+                        except Exception:
+                            material_content = ""
+                    if not material_content.strip():
+                        await ctx.send("Couldn't read the PDF text. Try an image or PPTX instead."); return
                 except Exception as e:
                     await ctx.send(f"Couldn't read the PDF: {e}"); return
 
@@ -2683,13 +2829,19 @@ async def stats_cmd(ctx):
 async def weather_cmd(ctx,*,location:str=None):
     try:
         if not location: await safe_reply(ctx,"Weather where?"); return
-        if not WEATHER_API_KEY: await safe_reply(ctx,"No weather access. Set WEATHER_API_KEY."); return
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://api.openweathermap.org/data/2.5/weather?q={location}&appid={WEATHER_API_KEY}&units=metric") as resp:
-                if resp.status!=200: await safe_reply(ctx,"That location means nothing to me."); return
-                data=await resp.json()
-        reply=await qai(f"Weather in {data['name']}: {data['weather'][0]['description']} at {data['main']['temp']}°C. Comment in your style. 1-2 sentences.",150)
+        data = await _fetch_nws_weather(location)
+        if not data:
+            await safe_reply(ctx,"That location means nothing to me. Try `City, ST`, a ZIP code, or `lat,lon`.")
+            return
+        precip = data.get("precipitation")
+        precip_text = f"{int(round(precip))}% precipitation chance" if isinstance(precip, (int, float)) else "precipitation unknown"
+        reply=await qai(
+            f"Weather in {data['place']}: {data['forecast']}. "
+            f"Temperature {data['temperature']} degrees {data['temperature_unit']}. "
+            f"Wind {data['wind_speed']} {data['wind_direction']}. {precip_text}. "
+            f"Comment in your style. 1-2 sentences.",
+            150
+        )
         await safe_reply(ctx,reply)
     except Exception as e: log_error("weather_cmd",e); await safe_reply(ctx,"...The information was unavailable.")
 
@@ -2761,14 +2913,120 @@ async def insult_cmd(ctx,member:discord.Member=None):
 async def dm_cmd(ctx,*,message:str=None):
     try:
         user=await _setup(ctx)
-        reply=await get_response(ctx.author.id,ctx.author.id,message or "The user wants to speak privately.",user,ctx.author.display_name,ctx.author.mention)
+        reply=await get_response(
+            ctx.author.id,ctx.author.id,message or "The user wants to speak privately.",
+            user,ctx.author.display_name,ctx.author.mention,is_dm=True
+        )
         try:
             await ctx.author.send(reply); await ctx.message.add_reaction("📨")
         except discord.Forbidden:
             await safe_reply(ctx,"Your DMs are closed. How cowardly.")
     except Exception as e: log_error("dm_cmd",e)
 
-@bot.command(name="reset",aliases=["forget","wipe"])
+@bot.command(name="remember")
+async def remember_cmd(ctx,*,text:str=None):
+    try:
+        if not text:
+            await safe_reply(ctx,"Tell me what I'm meant to remember.")
+            return
+        await _setup(ctx)
+        await mem.set_callback_memory(ctx.author.id, text[:220])
+        await mem.add_memory_event(ctx.author.id, "manual", text[:220], 5)
+        scene_update = infer_scene_update(text, ctx.author.display_name)
+        if scene_update:
+            await mem.update_scene_state(ctx.channel.id, **scene_update)
+        await safe_reply(ctx,"Fine. I'll remember it.")
+    except Exception as e: log_error("remember_cmd",e)
+
+@bot.command(name="forget")
+async def forget_cmd(ctx,*,topic:str=None):
+    try:
+        if not topic or topic.strip().lower() in {"all","everything","me"}:
+            await ctx.send(random.choice(["Wipe my memory of you? Press the button.","Gone in an instant. If you're sure."]),view=ResetView(ctx.author.id))
+            return
+        await _setup(ctx)
+        result=await mem.forget_memory_matches(ctx.author.id, topic)
+        removed=sum(result.values())
+        if removed:
+            await safe_reply(ctx,f"Fine. I dropped {removed} thing{'s' if removed!=1 else ''} tied to '{topic}'.")
+        else:
+            await safe_reply(ctx,"Nothing obvious matched that. Be more specific.")
+    except Exception as e: log_error("forget_cmd",e)
+
+@bot.command(name="memories",aliases=["memorybank"])
+async def memories_cmd(ctx):
+    try:
+        user=await _setup(ctx)
+        topics=await mem.get_top_topics(ctx.author.id,4)
+        memories=await mem.get_memory_bank_entries(ctx.author.id,6)
+        scene=await mem.get_scene_state(ctx.channel.id)
+        await safe_reply(ctx,_format_memory_snapshot(user,topics,memories,scene))
+    except Exception as e: log_error("memories_cmd",e)
+
+@bot.command(name="both")
+async def both_cmd(ctx,*,prompt:str=None):
+    try:
+        if not prompt:
+            await safe_reply(ctx,"Ask something worth answering.")
+            return
+        user=await _setup(ctx)
+        reply=await get_response(
+            ctx.author.id,ctx.channel.id,prompt,user,ctx.author.display_name,ctx.author.mention,
+            extra_context="TWO_BOT_MODE: The user explicitly wants both bots to answer. Keep it to one or two sentences and never speak for the other bot.",
+            channel_obj=ctx.channel
+        )
+        await _reply_and_store(ctx,reply)
+    except Exception as e: log_error("both_cmd",e)
+
+@bot.command(name="duet")
+async def duet_cmd(ctx,*,prompt:str=None):
+    try:
+        if not prompt:
+            await safe_reply(ctx,"Set the scene first.")
+            return
+        user=await _setup(ctx)
+        reply=await get_response(
+            ctx.author.id,ctx.channel.id,f"Contribute one turn to this shared two-bot scene: {prompt}",
+            user,ctx.author.display_name,ctx.author.mention,
+            extra_context="DUET_MODE: contribute one short in-character turn, leave space for the other bot, and avoid narration tags.",
+            channel_obj=ctx.channel
+        )
+        await _reply_and_store(ctx,reply)
+    except Exception as e: log_error("duet_cmd",e)
+
+@bot.command(name="argue")
+async def argue_cmd(ctx,*,topic:str=None):
+    try:
+        if not topic:
+            await safe_reply(ctx,"Argue about what.")
+            return
+        user=await _setup(ctx)
+        reply=await get_response(
+            ctx.author.id,ctx.channel.id,f"The user started a deliberate two-bot argument about: {topic}",
+            user,ctx.author.display_name,ctx.author.mention,
+            extra_context="ARGUE_MODE: take a sharp stance, challenge the other bot directly, and keep it to one or two sentences.",
+            channel_obj=ctx.channel
+        )
+        await _reply_and_store(ctx,reply)
+    except Exception as e: log_error("argue_cmd",e)
+
+@bot.command(name="compare")
+async def compare_cmd(ctx,*,topic:str=None):
+    try:
+        if not topic:
+            await safe_reply(ctx,"Compare what.")
+            return
+        user=await _setup(ctx)
+        reply=await get_response(
+            ctx.author.id,ctx.channel.id,f"Give your verdict on this and make your difference from Wanderer clear: {topic}",
+            user,ctx.author.display_name,ctx.author.mention,
+            extra_context="COMPARE_MODE: answer the prompt, then draw a quick contrast between your view and the other bot's likely view.",
+            channel_obj=ctx.channel
+        )
+        await _reply_and_store(ctx,reply)
+    except Exception as e: log_error("compare_cmd",e)
+
+@bot.command(name="reset",aliases=["wipe"])
 async def reset_cmd(ctx):
     try:
         await ctx.send(random.choice(["Wipe my memory of you? Press the button.","Gone in an instant. If you're sure."]),view=ResetView(ctx.author.id))
@@ -2860,6 +3118,12 @@ async def help_cmd(ctx):
             ("🎭 !impersonate <char>","Speaks as them, badly"),
             ("📜 !lore <topic>","Genshin lore from his perspective"),
         ]: e1.add_field(name=n,value=v,inline=False)
+        for n, v in [
+            ("!both <prompt>", "Both bots answer in sequence"),
+            ("!duet <prompt>", "Start a shared two-bot scene"),
+            ("!argue <topic>", "Let both bots clash over a topic"),
+            ("!compare <topic>", "Each bot gives a contrasting verdict"),
+        ]: e1.add_field(name=n, value=v, inline=False)
 
         e2 = discord.Embed(title="Commands (2/3) — Assess & Create", color=c)
         for n,v in [
@@ -2903,6 +3167,11 @@ async def help_cmd(ctx):
             ("📡 !proactive [on/off]","Toggle unprompted messages"),
             ("💌 !dms [on/off]","Toggle voluntary private DMs"),
         ]: e3.add_field(name=n,value=v,inline=False)
+        for n, v in [
+            ("!memories", "See what he is actually holding onto"),
+            ("!remember <text>", "Tell him to keep something"),
+            ("!forget <topic>", "Forget one topic instead of everything"),
+        ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(name="Hidden Systems",
             value="Be kind 7 days in a row: something rare happens once\n"
                   "Be rude: mood drops, you get a degrading nickname\n"
@@ -2944,3 +3213,4 @@ if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not _groq_keys: raise SystemExit("❌ No GROQ_API_KEY set (need at least GROQ_API_KEY)")
     bot.run(DISCORD_TOKEN)
+
