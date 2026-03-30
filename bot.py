@@ -39,9 +39,12 @@ from relationship_engine import (
     describe_conflict_aftermath,
     describe_conflict_followup,
     describe_emotional_layers,
+    describe_emotional_event,
     describe_emotional_arc,
     describe_arc_unlocks,
+    describe_live_world_context,
     describe_lore_hook,
+    describe_specific_lore_tree,
     describe_relationship_progression,
     describe_scenario_context,
     describe_scene_state,
@@ -676,21 +679,147 @@ def _duo_autoplay_prompt(session: dict) -> str:
     mode = session.get("mode", "both")
     topic = session.get("topic", "")
     partner = _partner_autoplay_name()
+    remaining = max(0, int(session.get("autoplay_remaining", 0) or 0))
+    outro = "This is the last automatic turn, so land it cleanly." if remaining <= 1 else f"Leave room for {remaining} more automatic turn(s) after you."
     if mode == "duet":
-        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. One short follow-up turn only."
+        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. One short follow-up turn only. {outro}"
     if mode == "argue":
-        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. One or two sentences."
+        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. One or two sentences. {outro}"
     if mode == "compare":
-        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. One or two sentences."
+        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. One or two sentences. {outro}"
     if mode == "interrogate":
-        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. One or two sentences."
+        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. One or two sentences. {outro}"
     if mode == "trial":
-        return f"The two-bot trial is active. Give your side's judgment on: {topic}. One or two sentences."
+        return f"The two-bot trial is active. Give your side's judgment on: {topic}. One or two sentences. {outro}"
     if mode == "mission":
-        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. One or two sentences."
+        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. One or two sentences. {outro}"
     if mode == "truthdare":
-        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. One or two sentences."
-    return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences."
+        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. One or two sentences. {outro}"
+    return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences. {outro}"
+
+
+DUO_CHAIN_TURNS = {
+    "both": 1,
+    "duet": 2,
+    "argue": 3,
+    "compare": 2,
+    "interrogate": 3,
+    "trial": 3,
+    "mission": 3,
+    "truthdare": 3,
+}
+
+
+def _pref_label(enabled: bool) -> str:
+    return "on" if enabled else "off"
+
+
+def _duo_story_label(mode: str) -> str:
+    return {
+        "compare": "verdict",
+        "interrogate": "rival case",
+        "trial": "trial",
+        "mission": "mission",
+        "truthdare": "truth-or-dare round",
+    }.get(mode or "", mode or "duo scene")
+
+
+def _current_arc(user: dict | None) -> str:
+    if user and user.get("emotional_arc"):
+        return user["emotional_arc"]
+    return compute_emotional_arc(
+        (user or {}).get("affection", 0),
+        (user or {}).get("trust", 0),
+        (user or {}).get("slow_burn", 0),
+        (user or {}).get("conflict_open", False),
+        (user or {}).get("repair_count", 0),
+    )
+
+
+def _progression_parts(user: dict | None) -> tuple[str, str]:
+    progression = describe_relationship_progression(
+        BOT_NAME,
+        (user or {}).get("affection", 0),
+        (user or {}).get("trust", 0),
+        romance_mode=(user or {}).get("romance_mode", False),
+        conflict_open=(user or {}).get("conflict_open", False),
+        slow_burn=(user or {}).get("slow_burn", 0),
+    )
+    stage, _, desc = progression.partition("|")
+    return stage or "hostile", desc or progression
+
+
+def _ambient_scene_line() -> str:
+    now = datetime.now()
+    month = now.month
+    day = now.day
+    hour = now.hour
+    if (month, day) == (1, 1):
+        pool = [
+            "A new year already. Try not to waste it quite so embarrassingly.",
+            "Another year, another chance for you to disappoint me in fresh ways.",
+        ]
+    elif (month, day) == (10, 31):
+        pool = [
+            "The night feels theatrical. Try not to mistake that for permission to be ridiculous.",
+            "There is something suitably dramatic in the air tonight. Finally.",
+        ]
+    elif hour in range(0, 5):
+        pool = [
+            "It's late enough that the room has gone quiet. Even your thoughts sound louder now.",
+            "This hour makes everything feel sharper. Try not to say something you'll regret.",
+        ]
+    elif hour in range(5, 8):
+        pool = [
+            "Morning has barely started and you're already here. Persistent little thing.",
+            "Early light, thin patience, and yet somehow you still found me.",
+        ]
+    elif month in {12, 1, 2}:
+        pool = [
+            "The cold has a way of making everyone more honest. Briefly.",
+            "Winter suits stillness. Shame people insist on filling it with noise.",
+        ]
+    elif month in {6, 7, 8}:
+        pool = [
+            "Summer heat makes tempers shorter. Convenient.",
+            "The air is heavy today. Even silence feels irritated.",
+        ]
+    else:
+        pool = CONVERSATION_STARTERS
+    return random.choice(pool)
+
+
+async def _start_duo_mode(ctx, user: dict | None, mode: str, topic: str, *, story: bool = False, enemy: str = ""):
+    autoplay_turns = DUO_CHAIN_TURNS.get(mode, 1)
+    if not (user or {}).get("duo_autoplay", True):
+        autoplay_turns = 1
+    await mem.set_duo_session(
+        ctx.channel.id,
+        mode,
+        topic,
+        BOT_NAME,
+        initiator_user_id=ctx.author.id,
+        awaiting_bot=PARTNER_NAME,
+        autoplay_turns=autoplay_turns,
+        autoplay_delay=6,
+    )
+    if story:
+        await mem.start_duo_story(ctx.channel.id, mode, topic, enemy=enemy)
+
+
+async def _pin_memory(ctx, kind: str, text: str | None, weight: int, *, shared_joke: bool = False):
+    if not text:
+        await safe_reply(ctx, f"Give me a {kind} worth keeping.")
+        return
+    await _setup(ctx)
+    clipped = text[:220]
+    await mem.add_memory_event(ctx.author.id, kind, clipped, weight)
+    if kind != "joke":
+        await mem.set_callback_memory(ctx.author.id, clipped)
+    if shared_joke:
+        await mem.add_inside_joke(ctx.author.id, clipped)
+        await mem.add_shared_inside_joke(ctx.author.id, clipped, source=kind)
+    await safe_reply(ctx, f"Fine. I pinned that as a {kind}.")
 
 
 async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
@@ -1015,12 +1144,20 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         repair_count = user.get("repair_count", 0) if user else 0
         recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
 
+        depth = (user or {}).get("rp_depth", "medium")
         r = random.random()
-        if r<.34:   hint="2-5 words only."
-        elif r<.67: hint="One sentence."
-        elif r<.86: hint="2-3 sentences."
-        elif r<.95: hint="A few sentences."
-        else:       hint="Longer, dramatic."
+        if depth == "low":
+            hint = "One sentence."
+        elif depth == "high":
+            if r < .3: hint = "2-3 sentences."
+            elif r < .75: hint = "A few sentences."
+            else: hint = "Longer, dramatic."
+        else:
+            if r<.34:   hint="2-5 words only."
+            elif r<.67: hint="One sentence."
+            elif r<.86: hint="2-3 sentences."
+            elif r<.95: hint="A few sentences."
+            else:       hint="Longer, dramatic."
 
         # Time and date context
         now      = datetime.now()
@@ -1048,6 +1185,16 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         triggers = detect_emotional_triggers(user_message)
         emotional_layer = describe_emotional_layers(BOT_NAME, mood, affection, trust, emotional_arc, triggers)
         if emotional_layer: parts.append(f"EMOTIONAL_LAYER:{emotional_layer}")
+        emotional_event = describe_emotional_event(
+            BOT_NAME,
+            triggers,
+            affection=affection,
+            trust=trust,
+            conflict_open=conflict_open,
+            repair_progress=user.get("repair_progress", 0) if user else 0,
+        )
+        if emotional_event:
+            parts.append(emotional_event)
         arc_unlocks = describe_arc_unlocks(BOT_NAME, emotional_arc)
         if arc_unlocks: parts.append(f"ARC_UNLOCKS:{arc_unlocks}")
         progression = describe_relationship_progression(
@@ -1075,6 +1222,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         parts.extend(extract_continuity_hooks(history, user_message))
         lore_hook = describe_lore_hook(BOT_NAME, user_message)
         if lore_hook: parts.append(lore_hook)
+        lore_tree = describe_specific_lore_tree(BOT_NAME, user_message)
+        if lore_tree: parts.append(lore_tree)
+        live_world = describe_live_world_context(BOT_NAME, text=user_message)
+        if live_world: parts.append(live_world)
         scene_desc = describe_scene_state(await mem.get_scene_state(channel_id))
         if scene_desc:
             parts.append(f"SCENE:{scene_desc}")
@@ -1096,11 +1247,14 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             parts.append("SCARA_EDGE: creator wounds and abandonment should sharpen the answer, not stay generic")
         if extra_context: parts.append(extra_context)
         parts.extend(await _user_memory_context(user_id, user))
+        if user and not user.get("utility_mode", True):
+            parts.append("UTILITY_PREF: utility mode is off; keep facts natural instead of list-like")
         if use_search or needs_search(user_message):
             search_result, search_sources = await _grounded_search_bundle(user_message)
             if search_result:
                 parts.append("FACT_MODE: answer accurately first, then add personality")
-                parts.append("UTILITY_MODE: lead with crisp facts, then one in-character observation")
+                if user and user.get("utility_mode", True):
+                    parts.append("UTILITY_MODE: lead with crisp facts, then one in-character observation")
                 parts.append("CITATIONS: when using search results, cite claims inline like [1] or [2]")
                 parts.append(f"SEARCH_RESULT:{search_result[:1200]}")
                 debug_event("search", f"{BOT_NAME} injected web context for user={user_id}")
@@ -1343,6 +1497,8 @@ async def get_audio_with_mood(text: str, mood: int, user: dict | None = None) ->
 
 async def send_voice(channel, text, ref=None, mood=0, guild=None, user: dict | None = None):
     try:
+        if user and not user.get("voice_enabled", True):
+            return False
         safe_text = tts_safe(text, guild)
         print(f"[VOICE] Original: {text[:80]!r}")
         print(f"[VOICE] After tts_safe: {safe_text[:80]!r}")
@@ -1519,9 +1675,11 @@ async def absence_checker():
                 intensity = "impatient" if days<5 else "barely concealing" if days<10 else "dangerous"
                 recent_memories = await mem.get_memory_bank_entries(uid, 2)
                 memory_hint = " | ".join(item["memory"][:90] for item in recent_memories) or "none"
+                live_world = describe_live_world_context(BOT_NAME)
                 msg = await qai(
                     f"{ud['display_name']} has been gone {days} days. React with {intensity} feeling masked as contempt. "
-                    f"Use the absence like a re-entry scene and, if useful, allude to one remembered thread: {memory_hint}. 1-2 sentences.",
+                    f"Use the absence like a re-entry scene and, if useful, allude to one remembered thread: {memory_hint}. "
+                    f"Ambient context: {live_world}. 1-2 sentences.",
                     160,
                 )
                 await du.send(msg); await mem.set_dm_sent(uid)
@@ -1557,7 +1715,7 @@ async def conversation_starter_loop():
                 if not await mem.can_starter(cid): continue
                 ch = bot.get_channel(cid)
                 if not ch: continue
-                await ch.send(random.choice(CONVERSATION_STARTERS))
+                await ch.send(_ambient_scene_line())
                 await mem.set_starter_sent(cid); return
             except Exception as e: log_error("starter_send", e)
     except Exception as e: log_error("conversation_starter_loop", e)
@@ -1695,6 +1853,13 @@ async def on_message(message):
                     pass
             if about_partner and not we_mentioned and not replying_to_us:
                 return  # Message is about Wanderer, not for us
+
+            try:
+                speaker_mode = await mem.get_channel_speaker_mode(message.channel.id)
+                if speaker_mode not in {"auto", "both", BOT_NAME} and not we_mentioned and not replying_to_us:
+                    return
+            except Exception as e:
+                log_error("speaker_mode_check", e)
 
         try:
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
@@ -2203,6 +2368,7 @@ async def _voluntary_dm_loop():
                                     dm_prompt = (
                                         f"You have decided to message {name} out of nowhere, unprompted. "
                                         + ("You are obsessively in love with them and hiding it desperately. " if romance else "You find them mildly tolerable. ")
+                                        + f"Ambient context: {describe_live_world_context(BOT_NAME)}. "
                                         + "Write ONE short message — 1-2 sentences. Spontaneous. Just speak."
                                     )
                                     loop = asyncio.get_event_loop()
@@ -2216,7 +2382,7 @@ async def _voluntary_dm_loop():
                                     txt = await loop.run_in_executor(None, _dm_ai) or random.choice(pool)
                                 except Exception:
                                     txt = random.choice(pool)
-                            if random.random()<.2 and FISH_AUDIO_API_KEY:
+                            if user_pref.get("voice_enabled", True) and random.random()<.2 and FISH_AUDIO_API_KEY:
                                 audio=await get_audio(strip_narration(txt),FISH_AUDIO_API_KEY)
                                 if audio:
                                     await du.send(file=discord.File(io.BytesIO(audio),filename="scaramouche.mp3"))
@@ -2262,7 +2428,9 @@ async def _duo_autoplay_loop():
                     )
                     await channel.send(reply)
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
-                    await mem.bump_duo_session(channel.id, BOT_NAME)
+                    if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
+                        await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
+                    await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
                 except Exception as e:
                     log_error("duo_autoplay_session", e)
         except Exception as e:
@@ -2286,8 +2454,11 @@ async def safe_send(ctx, text):
 async def _reply_and_store(ctx, text: str):
     await safe_reply(ctx, text)
     try:
+        duo = await mem.get_duo_session(ctx.channel.id)
         await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text)
-        await mem.bump_duo_session(ctx.channel.id, BOT_NAME)
+        if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
+            await mem.resolve_duo_story(ctx.channel.id, duo.get("mode", ""), text[:180])
+        await mem.bump_duo_session(ctx.channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
     except Exception as e:
         log_error("reply_and_store", e)
 
@@ -2311,8 +2482,17 @@ def _format_memory_snapshot(user: dict | None, topics: list[dict], memories: lis
 @bot.command(name="voice",aliases=["speak","say"])
 async def voice_cmd(ctx,*,msg:str=None):
     try:
-        if not msg: msg="You summoned me without saying a word. How impressively useless."
+        normalized = (msg or "").strip().lower()
         user=await _setup(ctx); mood_val=user.get("mood",0) if user else 0
+        if normalized in {"on", "off", "status"}:
+            if normalized == "status":
+                await safe_reply(ctx, f"Voice notes are `{_pref_label(user.get('voice_enabled', True) if user else True)}`.")
+            else:
+                enabled = normalized == "on"
+                await mem.set_user_preference(ctx.author.id, "voice_enabled", int(enabled))
+                await safe_reply(ctx, f"Fine. Voice notes are `{_pref_label(enabled)}` now.")
+            return
+        if not msg: msg="You summoned me without saying a word. How impressively useless."
         async with ctx.typing():
             text_reply=await get_response(ctx.author.id,ctx.channel.id,msg,user,ctx.author.display_name,ctx.author.mention)
             sent=await send_voice(ctx.channel,text_reply,mood=mood_val,guild=ctx.guild,user=user)
@@ -3030,6 +3210,7 @@ async def stats_cmd(ctx):
 async def weather_cmd(ctx,*,location:str=None):
     try:
         if not location: await safe_reply(ctx,"Weather where?"); return
+        user = await _setup(ctx)
         data = await _fetch_nws_weather(location)
         if not data:
             await safe_reply(ctx,"That location means nothing to me. Try `City, ST`, a ZIP code, or `lat,lon`.")
@@ -3043,17 +3224,20 @@ async def weather_cmd(ctx,*,location:str=None):
             f"Comment in your style. 1-2 sentences.",
             150
         )
-        reply = _utility_reply(
-            f"Weather for {data['place']}",
-            [
-                f"Forecast: {data['forecast']}",
-                f"Temperature: {data['temperature']} {data['temperature_unit']}",
-                f"Wind: {data['wind_speed']} {data['wind_direction']}".strip(),
-                f"Precipitation: {precip_text}",
-            ],
-            comment,
-            "Source: api.weather.gov",
-        )
+        if user and not user.get("utility_mode", True):
+            reply = f"{comment}\nSource: api.weather.gov"
+        else:
+            reply = _utility_reply(
+                f"Weather for {data['place']}",
+                [
+                    f"Forecast: {data['forecast']}",
+                    f"Temperature: {data['temperature']} {data['temperature_unit']}",
+                    f"Wind: {data['wind_speed']} {data['wind_direction']}".strip(),
+                    f"Precipitation: {precip_text}",
+                ],
+                comment,
+                "Source: api.weather.gov",
+            )
         await safe_reply(ctx,reply)
     except Exception as e: log_error("weather_cmd",e); await safe_reply(ctx,"...The information was unavailable.")
 
@@ -3175,14 +3359,134 @@ async def memories_cmd(ctx):
         await safe_reply(ctx,_format_memory_snapshot(user,topics,memories,scene))
     except Exception as e: log_error("memories_cmd",e)
 
+@bot.command(name="pinpromise")
+async def pinpromise_cmd(ctx, *, text: str = None):
+    try:
+        await _pin_memory(ctx, "promise", text, 7)
+    except Exception as e: log_error("pinpromise_cmd", e)
+
+@bot.command(name="pinwound")
+async def pinwound_cmd(ctx, *, text: str = None):
+    try:
+        await _pin_memory(ctx, "wound", text, 8)
+    except Exception as e: log_error("pinwound_cmd", e)
+
+@bot.command(name="pincomfort")
+async def pincomfort_cmd(ctx, *, text: str = None):
+    try:
+        await _pin_memory(ctx, "comfort", text, 6)
+    except Exception as e: log_error("pincomfort_cmd", e)
+
+@bot.command(name="pinjoke")
+async def pinjoke_cmd(ctx, *, text: str = None):
+    try:
+        await _pin_memory(ctx, "joke", text, 5, shared_joke=True)
+    except Exception as e: log_error("pinjoke_cmd", e)
+
+@bot.command(name="relationship")
+async def relationship_cmd(ctx):
+    try:
+        user = await _setup(ctx)
+        scene = await mem.get_scene_state(ctx.channel.id)
+        topics = await mem.get_top_topics(ctx.author.id, 3)
+        stage, stage_desc = _progression_parts(user)
+        arc = _current_arc(user)
+        aftermath = describe_conflict_aftermath(
+            user.get("conflict_summary", "") if user else "",
+            user.get("last_conflict_ts", 0) if user else 0,
+            user.get("repair_progress", 0) if user else 0,
+        ) or "no open aftermath"
+        lines = [
+            f"Relationship: affection {(user or {}).get('affection', 0)}/100 | trust {(user or {}).get('trust', 0)}/100 | mood {(user or {}).get('mood', 0):+d}",
+            f"Arc: {arc} | progression: {stage}",
+            f"Progression detail: {stage_desc}",
+            f"Conflict aftermath: {aftermath}",
+            f"Preferences: voice={_pref_label((user or {}).get('voice_enabled', True))} | utility={_pref_label((user or {}).get('utility_mode', True))} | duoauto={_pref_label((user or {}).get('duo_autoplay', True))} | rpdepth={(user or {}).get('rp_depth', 'medium')}",
+        ]
+        if topics:
+            lines.append("Top topics: " + ", ".join(item["topic"] for item in topics[:3]))
+        scene_desc = describe_scene_state(scene)
+        if scene_desc:
+            lines.append(f"Current scene: {scene_desc}")
+        await safe_reply(ctx, "\n".join(lines))
+    except Exception as e: log_error("relationship_cmd", e)
+
+@bot.command(name="arc")
+async def arc_cmd(ctx):
+    try:
+        user = await _setup(ctx)
+        arc = _current_arc(user)
+        stage, stage_desc = _progression_parts(user)
+        unlocks = describe_arc_unlocks(BOT_NAME, arc) or "No special unlocks yet."
+        recent = await mem.get_recent_milestones(f"{BOT_NAME}:user:{ctx.author.id}", 2)
+        lines = [
+            f"Arc: {arc}",
+            f"Progression: {stage} | {stage_desc}",
+            f"Unlocks: {unlocks}",
+        ]
+        if recent:
+            lines.append("Recent milestones: " + " | ".join(note[:120] for note in recent))
+        await safe_reply(ctx, "\n".join(lines))
+    except Exception as e: log_error("arc_cmd", e)
+
+@bot.command(name="duostate")
+async def duostate_cmd(ctx):
+    try:
+        speaker_mode = await mem.get_channel_speaker_mode(ctx.channel.id)
+        duo = await mem.get_duo_session(ctx.channel.id)
+        relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
+        stories = await mem.get_recent_duo_stories(ctx.channel.id, 4)
+        lines = [
+            f"Speaker mode: {speaker_mode}",
+            f"Bot relationship: {relation.get('stage', 'enemy')} | respect {relation.get('respect', 0)}/100 | tension {relation.get('tension', 0)}/100",
+        ]
+        if duo:
+            lines.append(
+                f"Active duo: mode={duo.get('mode')} | awaiting={duo.get('awaiting_bot') or 'nobody'} | turns_left={duo.get('autoplay_remaining', 0)} | topic={duo.get('topic')}"
+            )
+        else:
+            lines.append("Active duo: none")
+        if stories:
+            lines.append(
+                "Recent duo stories: "
+                + " || ".join(
+                    f"{_duo_story_label(item.get('story_type', ''))}: {item.get('topic', '')[:60]} [{item.get('status', 'open')}]"
+                    for item in stories[:3]
+                )
+            )
+        await safe_reply(ctx, "\n".join(lines))
+    except Exception as e: log_error("duostate_cmd", e)
+
+@bot.command(name="speaker", aliases=["activespeaker"])
+async def speaker_cmd(ctx, mode: str = None):
+    try:
+        current = await mem.get_channel_speaker_mode(ctx.channel.id)
+        if not mode:
+            await safe_reply(ctx, f"Channel speaker mode: `{current}`.")
+            return
+        normalized = mode.strip().lower()
+        mapping = {
+            "auto": "auto",
+            "both": "both",
+            "scara": "scaramouche",
+            "scaramouche": "scaramouche",
+            "wanderer": "wanderer",
+        }
+        if normalized not in mapping:
+            await safe_reply(ctx, "Use `!speaker auto`, `!speaker scaramouche`, `!speaker wanderer`, or `!speaker both`.")
+            return
+        await mem.set_channel_speaker_mode(ctx.channel.id, mapping[normalized])
+        await safe_reply(ctx, f"Fine. This channel is now set to `{mapping[normalized]}` mode.")
+    except Exception as e: log_error("speaker_cmd", e)
+
 @bot.command(name="both")
 async def both_cmd(ctx,*,prompt:str=None):
     try:
         if not prompt:
             await safe_reply(ctx,"Ask something worth answering.")
             return
-        await mem.set_duo_session(ctx.channel.id, "both", prompt, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user=await _setup(ctx)
+        await _start_duo_mode(ctx, user, "both", prompt)
         reply=await get_response(
             ctx.author.id,ctx.channel.id,prompt,user,ctx.author.display_name,ctx.author.mention,
             extra_context="TWO_BOT_MODE: The user explicitly wants both bots to answer. Keep it to one or two sentences and never speak for the other bot.",
@@ -3197,8 +3501,8 @@ async def duet_cmd(ctx,*,prompt:str=None):
         if not prompt:
             await safe_reply(ctx,"Set the scene first.")
             return
-        await mem.set_duo_session(ctx.channel.id, "duet", prompt, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user=await _setup(ctx)
+        await _start_duo_mode(ctx, user, "duet", prompt)
         reply=await get_response(
             ctx.author.id,ctx.channel.id,f"Contribute one turn to this shared two-bot scene: {prompt}",
             user,ctx.author.display_name,ctx.author.mention,
@@ -3214,8 +3518,8 @@ async def argue_cmd(ctx,*,topic:str=None):
         if not topic:
             await safe_reply(ctx,"Argue about what.")
             return
-        await mem.set_duo_session(ctx.channel.id, "argue", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user=await _setup(ctx)
+        await _start_duo_mode(ctx, user, "argue", topic)
         reply=await get_response(
             ctx.author.id,ctx.channel.id,f"The user started a deliberate two-bot argument about: {topic}",
             user,ctx.author.display_name,ctx.author.mention,
@@ -3231,8 +3535,8 @@ async def compare_cmd(ctx,*,topic:str=None):
         if not topic:
             await safe_reply(ctx,"Compare what.")
             return
-        await mem.set_duo_session(ctx.channel.id, "compare", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user=await _setup(ctx)
+        await _start_duo_mode(ctx, user, "compare", topic, story=True)
         reply=await get_response(
             ctx.author.id,ctx.channel.id,f"Give your verdict on this and make your difference from Wanderer clear: {topic}",
             user,ctx.author.display_name,ctx.author.mention,
@@ -3248,8 +3552,8 @@ async def interrogate_cmd(ctx,*,topic:str=None):
         if not topic:
             await safe_reply(ctx,"Interrogate what.")
             return
-        await mem.set_duo_session(ctx.channel.id, "interrogate", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
+        await _start_duo_mode(ctx, user, "interrogate", topic, story=True, enemy=topic)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Start a two-bot interrogation about: {topic}",
             user, ctx.author.display_name, ctx.author.mention,
@@ -3265,8 +3569,8 @@ async def choose_cmd(ctx,*,options:str=None):
         if not options or "|" not in options:
             await safe_reply(ctx,"Use `!choose option A | option B`.")
             return
-        await mem.set_duo_session(ctx.channel.id, "compare", options, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
+        await _start_duo_mode(ctx, user, "compare", options, story=True)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Choose between these options and justify it: {options}",
             user, ctx.author.display_name, ctx.author.mention,
@@ -3282,8 +3586,8 @@ async def trial_cmd(ctx,*,charge:str=None):
         if not charge:
             await safe_reply(ctx,"Put someone on trial for something.")
             return
-        await mem.set_duo_session(ctx.channel.id, "trial", charge, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
+        await _start_duo_mode(ctx, user, "trial", charge, story=True, enemy=charge)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Open a two-bot trial about this charge: {charge}",
             user, ctx.author.display_name, ctx.author.mention,
@@ -3299,8 +3603,8 @@ async def mission_cmd(ctx,*,objective:str=None):
         if not objective:
             await safe_reply(ctx,"Mission objective.")
             return
-        await mem.set_duo_session(ctx.channel.id, "mission", objective, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
+        await _start_duo_mode(ctx, user, "mission", objective, story=True, enemy=objective)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Plan a two-bot mission around this objective: {objective}",
             user, ctx.author.display_name, ctx.author.mention,
@@ -3314,8 +3618,8 @@ async def mission_cmd(ctx,*,objective:str=None):
 async def truthdare_cmd(ctx,*,prompt:str=None):
     try:
         topic = prompt or "truth or dare"
-        await mem.set_duo_session(ctx.channel.id, "truthdare", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
+        await _start_duo_mode(ctx, user, "truthdare", topic, story=True)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Start a two-bot truth-or-dare round with this setup: {topic}",
             user, ctx.author.display_name, ctx.author.mention,
@@ -3383,6 +3687,53 @@ async def dms_cmd(ctx,mode:str=None):
         await mem.set_mode(ctx.author.id,"allow_dms",new)
         await safe_reply(ctx,"Fine. I'll message you when I feel like it." if new else "Cutting me off? Fine.")
     except Exception as e: log_error("dms_cmd",e)
+
+@bot.command(name="utility")
+async def utility_cmd(ctx, mode: str = None):
+    try:
+        user = await _setup(ctx)
+        if not mode:
+            await safe_reply(ctx, f"Utility mode is `{_pref_label(user.get('utility_mode', True) if user else True)}`.")
+            return
+        normalized = mode.strip().lower()
+        if normalized not in {"on", "off"}:
+            await safe_reply(ctx, "Use `!utility on` or `!utility off`.")
+            return
+        enabled = normalized == "on"
+        await mem.set_user_preference(ctx.author.id, "utility_mode", int(enabled))
+        await safe_reply(ctx, f"Utility mode is `{_pref_label(enabled)}` now.")
+    except Exception as e: log_error("utility_cmd", e)
+
+@bot.command(name="duoauto")
+async def duoauto_cmd(ctx, mode: str = None):
+    try:
+        user = await _setup(ctx)
+        if not mode:
+            await safe_reply(ctx, f"Duo autoplay is `{_pref_label(user.get('duo_autoplay', True) if user else True)}`.")
+            return
+        normalized = mode.strip().lower()
+        if normalized not in {"on", "off"}:
+            await safe_reply(ctx, "Use `!duoauto on` or `!duoauto off`.")
+            return
+        enabled = normalized == "on"
+        await mem.set_user_preference(ctx.author.id, "duo_autoplay", int(enabled))
+        await safe_reply(ctx, f"Fine. Duo autoplay is `{_pref_label(enabled)}` now.")
+    except Exception as e: log_error("duoauto_cmd", e)
+
+@bot.command(name="rpdepth")
+async def rpdepth_cmd(ctx, depth: str = None):
+    try:
+        user = await _setup(ctx)
+        if not depth:
+            await safe_reply(ctx, f"RP depth is `{(user or {}).get('rp_depth', 'medium')}`.")
+            return
+        normalized = depth.strip().lower()
+        if normalized not in {"low", "medium", "high"}:
+            await safe_reply(ctx, "Use `!rpdepth low`, `!rpdepth medium`, or `!rpdepth high`.")
+            return
+        await mem.set_user_preference(ctx.author.id, "rp_depth", normalized)
+        await safe_reply(ctx, f"Fine. RP depth is `{normalized}` now.")
+    except Exception as e: log_error("rpdepth_cmd", e)
 
 @bot.command(name="timezone")
 async def timezone_cmd(ctx, *, timezone_name: str = None):
@@ -3542,6 +3893,10 @@ async def help_cmd(ctx):
             ("!memories", "See what he is actually holding onto"),
             ("!remember <text>", "Tell him to keep something"),
             ("!forget <topic>", "Forget one topic instead of everything"),
+            ("!relationship / !arc", "See arc, progression, and conflict aftermath"),
+            ("!duostate / !speaker", "Inspect duo mode or set the active speaker for this channel"),
+            ("!pinpromise / !pinwound / !pincomfort / !pinjoke", "Pin more precise memories"),
+            ("!utility / !duoauto / !rpdepth", "Tune utility output, duo chaining, and RP depth"),
         ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(name="Hidden Systems",
             value="Be kind 7 days in a row: something rare happens once\n"
