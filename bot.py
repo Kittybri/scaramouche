@@ -544,7 +544,7 @@ def _invite_progress_text(attempts: int, threshold: int) -> str:
     return "Persistent little thing. Keep pushing and I may decide this is less tedious than listening to you beg."
 
 
-def _handle_partner_invite_pressure(message: discord.Message, user: dict | None) -> tuple[str, discord.ui.View | None]:
+def _handle_partner_invite_pressure(message: discord.Message, user: dict | None) -> tuple[str | None, discord.ui.View | None]:
     guild = message.guild
     if guild and PARTNER_BOT_ID and guild.get_member(PARTNER_BOT_ID):
         return "He's already in this server. Try opening your eyes before dragging me into it.", None
@@ -561,16 +561,17 @@ def _handle_partner_invite_pressure(message: discord.Message, user: dict | None)
     invite_url = _partner_invite_url_from_message(message)
 
     if state.get("granted_ts") and now - float(state.get("granted_ts", 0.0) or 0.0) < _INVITE_PRESSURE_COOLDOWN_S:
+        state["count"] = 0
         _invite_pressure[key] = state
-        if invite_url:
-            return "I already handed it over. Use the button.", _partner_invite_view(invite_url)
-        return "I already told you what I need before I can do that.", None
+        return None, None
 
-    if int(state["count"]) >= threshold:
+    attempts = int(state["count"])
+    if attempts >= threshold:
         state["granted_ts"] = now
+        state["count"] = 0
         _invite_pressure[key] = state
         if invite_url:
-            return _invite_progress_text(int(state["count"]), threshold), _partner_invite_view(invite_url)
+            return _invite_progress_text(attempts, threshold), _partner_invite_view(invite_url)
         if _DISCORD_SERVER_INVITE_RE.search(message.content or ""):
             return (
                 "Hmph. Fine. That server invite is useless for a bot. Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID`, "
@@ -582,7 +583,7 @@ def _handle_partner_invite_pressure(message: discord.Message, user: dict | None)
         ), None
 
     _invite_pressure[key] = state
-    return _invite_progress_text(int(state["count"]), threshold), None
+    return _invite_progress_text(attempts, threshold), None
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -2899,10 +2900,11 @@ async def on_message(message):
         direct_to_me = bool(is_dm or mentioned or is_reply)
         if _is_partner_invite_request(content) and (direct_to_me or _looks_like_direct_invite_request(content)):
             reply, invite_view = _handle_partner_invite_pressure(message, user)
-            await mem.add_message(message.author.id, dm_channel_id, "user", content)
-            await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-            await message.reply(reply, view=invite_view)
-            return
+            if reply:
+                await mem.add_message(message.author.id, dm_channel_id, "user", content)
+                await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+                await message.reply(reply, view=invite_view)
+                return
         triangle = None
         try:
             await mem.record_bot_attention(
