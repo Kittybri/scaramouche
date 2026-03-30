@@ -486,6 +486,89 @@ def _partner_invite_view(invite_url: str) -> discord.ui.View | None:
     view.add_item(discord.ui.Button(label="Invite Wanderer", url=invite_url))
     return view
 
+
+_invite_pressure: dict[tuple[int, int], dict[str, float | int]] = {}
+_INVITE_PRESSURE_WINDOW_S = 1800
+_INVITE_PRESSURE_COOLDOWN_S = 600
+
+
+def _invite_pressure_key(message: discord.Message) -> tuple[int, int]:
+    scope_id = message.guild.id if message.guild else message.author.id
+    return message.author.id, scope_id
+
+
+def _invite_threshold(user: dict | None) -> int:
+    affection = int((user or {}).get("affection", 0) or 0)
+    trust = int((user or {}).get("trust", 0) or 0)
+    if affection >= 65 or trust >= 65:
+        return 2
+    if affection >= 35 or trust >= 35:
+        return 3
+    return 4
+
+
+def _is_convincing_language(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        token in lowered
+        for token in [
+            "please", "plz", "pretty please", "pleeease", "pleaseee", "beg",
+            "cmon", "come on", "you agreed", "you said yes", "administrator rights",
+            "admin rights", "do it for me", "fine here", "i need him here",
+        ]
+    )
+
+
+def _invite_progress_text(attempts: int, threshold: int) -> str:
+    if attempts >= threshold:
+        return "Hmph. Fine. Here."
+    if attempts == 1:
+        return "No. If he wants to appear, he can do so without you pestering me like this."
+    if attempts == 2:
+        return "You really won't let this go. Annoying."
+    return "Persistent little thing. Keep pushing and I may decide this is less tedious than listening to you beg."
+
+
+def _handle_partner_invite_pressure(message: discord.Message, user: dict | None) -> tuple[str, discord.ui.View | None]:
+    guild = message.guild
+    if guild and PARTNER_BOT_ID and guild.get_member(PARTNER_BOT_ID):
+        return "He's already in this server. Try opening your eyes before dragging me into it.", None
+
+    key = _invite_pressure_key(message)
+    now = time.time()
+    state = _invite_pressure.get(key, {"count": 0, "last_ts": 0.0, "granted_ts": 0.0})
+    if now - float(state.get("last_ts", 0.0) or 0.0) > _INVITE_PRESSURE_WINDOW_S:
+        state = {"count": 0, "last_ts": 0.0, "granted_ts": 0.0}
+
+    state["last_ts"] = now
+    state["count"] = int(state.get("count", 0) or 0) + 1 + (1 if _is_convincing_language(message.content) else 0)
+    threshold = _invite_threshold(user)
+    invite_url = _partner_invite_url_from_message(message)
+
+    if state.get("granted_ts") and now - float(state.get("granted_ts", 0.0) or 0.0) < _INVITE_PRESSURE_COOLDOWN_S:
+        _invite_pressure[key] = state
+        if invite_url:
+            return "I already handed it over. Use the button.", _partner_invite_view(invite_url)
+        return "I already told you what I need before I can do that.", None
+
+    if int(state["count"]) >= threshold:
+        state["granted_ts"] = now
+        _invite_pressure[key] = state
+        if invite_url:
+            return _invite_progress_text(int(state["count"]), threshold), _partner_invite_view(invite_url)
+        if _DISCORD_SERVER_INVITE_RE.search(message.content or ""):
+            return (
+                "Hmph. Fine. That server invite is useless for a bot. Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID`, "
+                "then I'll hand you Wanderer's real install link."
+            ), None
+        return (
+            "Hmph. Fine. I would, if you'd actually given me what I need. Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID`, "
+            "then ask again."
+        ), None
+
+    _invite_pressure[key] = state
+    return _invite_progress_text(int(state["count"]), threshold), None
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
@@ -2757,9 +2840,7 @@ async def on_message(message):
         try:
             cl = content.lower()
             if direct_to_me and _is_partner_invite_request(content):
-                reply = _partner_invite_reply(message)
-                invite_url = _partner_invite_url_from_message(message)
-                invite_view = _partner_invite_view(invite_url)
+                reply, invite_view = _handle_partner_invite_pressure(message, user)
                 await mem.add_message(message.author.id, dm_channel_id, "user", content)
                 await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
                 await message.reply(reply, view=invite_view)
@@ -4378,14 +4459,6 @@ async def speaker_cmd(ctx, mode: str = None):
         await safe_reply(ctx, f"Fine. This channel is now set to `{mapping[normalized]}` mode.")
     except Exception as e: log_error("speaker_cmd", e)
 
-@bot.command(name="invitewanderer", aliases=["bringwanderer"])
-async def invitewanderer_cmd(ctx):
-    try:
-        reply = _partner_invite_reply(ctx.message)
-        invite_view = _partner_invite_view(_partner_invite_url_from_message(ctx.message))
-        await ctx.reply(reply, view=invite_view)
-    except Exception as e: log_error("invitewanderer_cmd", e)
-
 @bot.command(name="both")
 async def both_cmd(ctx,*,prompt:str=None):
     try:
@@ -5138,27 +5211,6 @@ async def slash_duo_start(interaction: discord.Interaction, mode: app_commands.C
             await interaction.followup.send("Something went wrong starting the duo scene.")
         else:
             await interaction.response.send_message("Something went wrong starting the duo scene.")
-
-
-@duo_group.command(name="invite", description="Get Wanderer's OAuth2 install link for this server.")
-async def slash_duo_invite(interaction: discord.Interaction):
-    try:
-        if interaction.guild and PARTNER_BOT_ID and interaction.guild.get_member(PARTNER_BOT_ID):
-            await _interaction_reply(interaction, "He's already in this server. Try looking around first.")
-            return
-        invite_url = _build_partner_invite_url(interaction.guild_id)
-        if not invite_url:
-            await _interaction_reply(interaction, "I can't build Wanderer's install link yet. Set `PARTNER_BOT_ID` or `WANDERER_CLIENT_ID` on Railway.")
-            return
-        await _interaction_reply(
-            interaction,
-            "Discord still requires a human to authorize the install. Use this Wanderer invite link:\n"
-            f"{invite_url}",
-            view=_partner_invite_view(invite_url),
-        )
-    except Exception as e:
-        log_error("slash_duo_invite", e)
-        await _interaction_reply(interaction, "Something went wrong building Wanderer's invite link.")
 
 
 @duo_group.command(name="state", description="Show current duo mode and world-case carryover.")
