@@ -3070,9 +3070,15 @@ async def get_audio_with_mood(
             duo_mode=duo_mode,
             jealousy_level=jealousy_level,
         )
-        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood, style)
+        return await get_audio_mooded(
+            strip_narration(text),
+            FISH_AUDIO_API_KEY,
+            mood,
+            style,
+            bot_name="scaramouche",
+        )
     except Exception:
-        try: return await get_audio(strip_narration(text), FISH_AUDIO_API_KEY)
+        try: return await get_audio(strip_narration(text), FISH_AUDIO_API_KEY, bot_name="scaramouche")
         except Exception as e: log_error("get_audio_with_mood", e); return None
 
 async def send_voice(
@@ -4224,7 +4230,7 @@ async def _voluntary_dm_loop():
                                 except Exception:
                                     txt = random.choice(pool)
                             if user_pref.get("voice_enabled", True) and random.random()<.2 and FISH_AUDIO_API_KEY:
-                                audio=await get_audio(strip_narration(txt),FISH_AUDIO_API_KEY)
+                                audio=await get_audio(strip_narration(txt),FISH_AUDIO_API_KEY, bot_name="scaramouche")
                                 if audio:
                                     await du.send(file=discord.File(io.BytesIO(audio),filename="scaramouche.mp3"))
                                     await mem.set_dm_sent(uid); await mem.add_message(uid,uid,"assistant",f"[voice message] {txt}"); break
