@@ -16,6 +16,15 @@ from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio
 from character_vision import ask_character_bot
+from face_memory import (
+    enroll_face_profile,
+    enroll_face_profile_from_frames,
+    face_support_ready,
+    is_face_check_request,
+    is_face_enroll_request,
+    match_face,
+    match_face_frames,
+)
 from grounded_search import format_search_context, format_search_sources, search_web
 from anti_repeat import (
     build_prompt_guard,
@@ -605,6 +614,7 @@ BOT_NAME = "scaramouche"
 PARTNER_NAME = "wanderer"
 PARTNER_PAIR_KEY = "scaramouche::wanderer"
 BOT_RARE_PHRASES = RARE_PHRASES[BOT_NAME]
+FACE_PROFILE_KEY = "owner_face"
 _TREE_SYNCED = False
 _groq_keys = _load_groq_keys()
 _groq_key_idx = 0
@@ -738,6 +748,59 @@ async def _vision_image_reply(
 
     reply = await loop.run_in_executor(None, _run)
     return strip_narration((reply or "").strip())[:max_chars]
+
+
+def _face_feature_unavailable_text() -> str:
+    return "Hmph. The face matcher is not installed yet. Add `opencv-python-headless` and `numpy`, then redeploy me."
+
+
+def _face_enroll_failure_text(reason: str) -> str:
+    if reason == "no_face":
+        return "If you expect me to remember your face, send an image where it is actually visible."
+    if reason == "decode_failed":
+        return "Whatever that was, it was not usable."
+    return "That was not enough for a reliable face match."
+
+
+def _face_enroll_success_text(sample_count: int) -> str:
+    if sample_count <= 1:
+        return "Hmph. Fine. I'll remember that face."
+    if sample_count <= 3:
+        return "Another angle? Fine. I remember you more clearly now."
+    return "You have been persistent about this. Fine. Your face is fixed in memory now."
+
+
+def _face_delete_text() -> str:
+    return "Gone. I won't be keeping your face in memory any longer."
+
+
+def _face_prompt_note(match_info: dict | None, *, requested: bool = False) -> str:
+    if not match_info:
+        return ""
+    if match_info.get("ok") and match_info.get("matched"):
+        if match_info.get("status") == "confirmed":
+            return "OWNER_FACE_MATCH: You recognize the owner's face here with high confidence. Mention it naturally once if relevant."
+        return "OWNER_FACE_MATCH: This likely shows the owner. Mention that naturally only if it fits."
+    if requested and match_info.get("reason") != "not_enrolled":
+        return "OWNER_FACE_MATCH: You are not confident this shows the owner. Say so plainly."
+    return ""
+
+
+async def _load_face_attachment(message):
+    img = next((a for a in message.attachments if a.content_type and "image" in a.content_type), None)
+    vid = next((a for a in message.attachments
+               if (a.content_type and a.content_type in VIDEO_TYPES) or
+                  any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
+    if not img and not vid and message.reference:
+        try:
+            ref_msg = await message.channel.fetch_message(message.reference.message_id)
+            img = next((a for a in ref_msg.attachments if a.content_type and "image" in a.content_type), None)
+            vid = next((a for a in ref_msg.attachments
+                       if (a.content_type and a.content_type in VIDEO_TYPES) or
+                          any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
+        except Exception:
+            pass
+    return img, vid
 
 
 async def _recent_reply_samples(channel_id: int | None = None, user_id: int | None = None) -> list[str]:
@@ -2770,7 +2833,8 @@ async def on_message(message):
             return
 
         content = message.content.strip()
-        if not content: return
+        if not content and not message.attachments:
+            return
         mentioned_early = bot.user in message.mentions
         is_reply_early = (
             message.reference and message.reference.resolved and
@@ -2820,24 +2884,10 @@ async def on_message(message):
 
         # Image & video reading — look at media in this message OR the message being replied to
         try:
-            # Find image or video in current message first
-            img = next((a for a in message.attachments
-                       if a.content_type and "image" in a.content_type), None)
-            vid = next((a for a in message.attachments
-                       if (a.content_type and a.content_type in VIDEO_TYPES) or
-                          any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
-
-            # If no media, check the replied-to message
-            if not img and not vid and message.reference:
-                try:
-                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                    img = next((a for a in ref_msg.attachments
-                               if a.content_type and "image" in a.content_type), None)
-                    vid = next((a for a in ref_msg.attachments
-                               if (a.content_type and a.content_type in VIDEO_TYPES) or
-                                  any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
-                except Exception:
-                    pass
+            img, vid = await _load_face_attachment(message)
+            enroll_face_now = bool(is_owner and (img or vid) and is_face_enroll_request(content))
+            face_check_now = bool(is_owner and (img or vid) and is_face_check_request(content))
+            owner_face_profile = await mem.get_face_profile(FACE_PROFILE_KEY) if is_owner else None
 
             # ── Video handling ──
             if vid:
@@ -2850,6 +2900,33 @@ async def on_message(message):
                     frames = await asyncio.get_event_loop().run_in_executor(
                         None, _extract_frames_blocking, video_bytes, 5)
                     if frames:
+                        if enroll_face_now:
+                            if not face_support_ready():
+                                await message.reply(_face_feature_unavailable_text())
+                                return
+                            enrolled = enroll_face_profile_from_frames(owner_face_profile, frames)
+                            if not enrolled.get("ok"):
+                                await message.reply(_face_enroll_failure_text(enrolled.get("reason", "")))
+                                return
+                            await mem.save_face_profile(
+                                FACE_PROFILE_KEY,
+                                message.author.id,
+                                message.author.display_name,
+                                enrolled["profile"],
+                            )
+                            debug_event("face", f"{BOT_NAME} enrolled owner face samples={enrolled.get('sample_count', 0)}")
+                            await message.reply(_face_enroll_success_text(enrolled.get("sample_count", 0)))
+                            return
+
+                        face_match = None
+                        if is_owner and owner_face_profile and face_support_ready():
+                            face_match = match_face_frames(frames, owner_face_profile)
+                            if face_match.get("ok"):
+                                debug_event(
+                                    "face",
+                                    f"{BOT_NAME} owner_video_match status={face_match.get('status')} "
+                                    f"frames={face_match.get('matched_frames', 0)}/{face_match.get('checked_frames', 0)}",
+                                )
                         user     = user or {}
                         mood     = user.get("mood", 0) if user else 0
                         system   = build_system(user, message.author.display_name,
@@ -2866,7 +2943,8 @@ async def on_message(message):
                                 f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
                                 + (f" Their message: '{content}'" if content else "")
                                 + f" Describe what's happening in the video and react as Scaramouche. "
-                                f"Be specific about what you see. MOOD:{mood}. NO asterisk actions. 2-4 sentences."
+                                f"Be specific about what you see. MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
+                                + _face_prompt_note(face_match, requested=face_check_now)
                             )
                         })
                         def _video_vision():
@@ -2907,13 +2985,37 @@ async def on_message(message):
                     mood     = user.get("mood", 0) if user else 0
                     system   = build_system(user, message.author.display_name,
                                            bool(OWNER_ID and message.author.id == OWNER_ID))
+                    if enroll_face_now:
+                        if not face_support_ready():
+                            await message.reply(_face_feature_unavailable_text())
+                            return
+                        enrolled = enroll_face_profile(owner_face_profile, img_bytes)
+                        if not enrolled.get("ok"):
+                            await message.reply(_face_enroll_failure_text(enrolled.get("reason", "")))
+                            return
+                        await mem.save_face_profile(
+                            FACE_PROFILE_KEY,
+                            message.author.id,
+                            message.author.display_name,
+                            enrolled["profile"],
+                        )
+                        debug_event("face", f"{BOT_NAME} enrolled owner face samples={enrolled.get('sample_count', 0)}")
+                        await message.reply(_face_enroll_success_text(enrolled.get("sample_count", 0)))
+                        return
+
+                    face_match = None
+                    if is_owner and owner_face_profile and face_support_ready():
+                        face_match = match_face(img_bytes, owner_face_profile)
+                        if face_match.get("ok"):
+                            debug_event("face", f"{BOT_NAME} owner_image_match status={face_match.get('status')} dist={face_match.get('distance', 0):.4f}")
 
                     vision_prompt = (
                         f"{message.author.display_name} sent you this image"
                         + (f" with the message: '{content}'" if content else "")
                         + f". React as Scaramouche. You can actually see it — describe what you see "
                         f"and react in character. Be specific about what's in the image. "
-                        f"MOOD:{mood}. NO asterisk actions. 1-3 sentences."
+                        f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
+                        + _face_prompt_note(face_match, requested=face_check_now)
                     )
                     reply = await _vision_image_reply(
                         prompt=vision_prompt,
@@ -3514,6 +3616,23 @@ async def safe_reply(ctx, text):
 async def safe_send(ctx, text):
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
+
+
+async def _command_face_media(ctx):
+    img = next((a for a in ctx.message.attachments if a.content_type and "image" in a.content_type), None)
+    vid = next((a for a in ctx.message.attachments
+               if (a.content_type and a.content_type in VIDEO_TYPES) or
+                  any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
+    if not img and not vid and ctx.message.reference:
+        try:
+            ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            img = next((a for a in ref_msg.attachments if a.content_type and "image" in a.content_type), None)
+            vid = next((a for a in ref_msg.attachments
+                       if (a.content_type and a.content_type in VIDEO_TYPES) or
+                          any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
+        except Exception:
+            pass
+    return img, vid
 
 
 async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False, view: discord.ui.View | None = None):
@@ -4955,6 +5074,68 @@ async def whoami_cmd(ctx):
         reply=await get_response(ctx.author.id,ctx.channel.id,"What do you actually think about the fact that I built you. Be honest.",user,ctx.author.display_name,ctx.author.mention,is_owner=True)
         await safe_reply(ctx,reply)
     except Exception as e: log_error("whoami_cmd",e)
+
+@bot.command(name="enrollface", aliases=["rememberface"])
+async def enrollface_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        if not face_support_ready():
+            await safe_reply(ctx, _face_feature_unavailable_text())
+            return
+        img, vid = await _command_face_media(ctx)
+        if not img and not vid:
+            await safe_reply(ctx, "Attach or reply to an image or video and use `!enrollface`.")
+            return
+        profile = await mem.get_face_profile(FACE_PROFILE_KEY)
+        import aiohttp as _aiohttp
+        if vid:
+            async with _aiohttp.ClientSession() as _sess:
+                async with _sess.get(vid.url) as _resp:
+                    video_bytes = await _resp.read()
+            frames = await asyncio.get_event_loop().run_in_executor(None, _extract_frames_blocking, video_bytes, 5)
+            enrolled = enroll_face_profile_from_frames(profile, frames)
+        else:
+            async with _aiohttp.ClientSession() as _sess:
+                async with _sess.get(img.url) as _resp:
+                    img_bytes = await _resp.read()
+            enrolled = enroll_face_profile(profile, img_bytes)
+        if not enrolled.get("ok"):
+            await safe_reply(ctx, _face_enroll_failure_text(enrolled.get("reason", "")))
+            return
+        await mem.save_face_profile(FACE_PROFILE_KEY, ctx.author.id, ctx.author.display_name, enrolled["profile"])
+        await safe_reply(ctx, _face_enroll_success_text(enrolled.get("sample_count", 0)))
+    except Exception as e:
+        log_error("enrollface_cmd", e)
+
+@bot.command(name="faceinfo")
+async def faceinfo_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        profile = await mem.get_face_profile(FACE_PROFILE_KEY)
+        if not profile:
+            await safe_reply(ctx, "No enrolled face profile yet.")
+            return
+        sample_count = int(profile.get("sample_count", 0) or 0)
+        updated_ts = float(profile.get("updated_ts", 0) or 0)
+        updated_label = datetime.fromtimestamp(updated_ts).strftime("%Y-%m-%d %H:%M") if updated_ts else "unknown"
+        await safe_reply(ctx, f"`Face memory: enrolled` — {sample_count} sample(s), updated {updated_label}.")
+    except Exception as e:
+        log_error("faceinfo_cmd", e)
+
+@bot.command(name="deleteface", aliases=["forgetface"])
+async def deleteface_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        await mem.delete_face_profile(FACE_PROFILE_KEY)
+        await safe_reply(ctx, _face_delete_text())
+    except Exception as e:
+        log_error("deleteface_cmd", e)
 
 async def help_cmd(ctx):
     try:
