@@ -81,6 +81,16 @@ PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID","0") or "0")  # Wanderer bot
 PARTNER_INVITE_PERMISSIONS = int(os.getenv("PARTNER_BOT_PERMISSIONS", "8") or "8")
 PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.commands").strip() or "bot applications.commands"
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("WANDERER_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
+GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
+CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
+CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
+CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
+CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "110") or "110")
+HISTORY_LIMIT_DIRECT = int(os.getenv("HISTORY_LIMIT_DIRECT", "120") or "120")
+HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
+MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "420") or "420")
+MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "220") or "220")
+SELF_EDIT_MIN_REPLY_CHARS = int(os.getenv("SELF_EDIT_MIN_REPLY_CHARS", "180") or "180")
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -604,6 +614,7 @@ class RotatingGroq:
     def __init__(self):
         self._clients = [Groq(api_key=k) for k in _groq_keys]
         self._idx = 0
+        self._exhausted_until = 0.0
         print(f"[GROQ] Loaded {len(self._clients)} API key(s)")
 
     @property
@@ -619,12 +630,28 @@ class RotatingGroq:
     def chat(self):
         return self._client.chat
 
+    def _mark_exhausted(self, error: Exception | str | None = None):
+        retry_after = _parse_rate_limit_retry_s(str(error or ""))
+        self._exhausted_until = max(self._exhausted_until, time.time() + retry_after)
+        print(f"[GROQ] All keys exhausted; suppressing ambient chatter for {retry_after}s")
+
+    def clear_exhausted(self):
+        self._exhausted_until = 0.0
+
+    def is_exhausted(self) -> bool:
+        return time.time() < self._exhausted_until
+
+    def exhausted_remaining(self) -> int:
+        return max(0, int(self._exhausted_until - time.time()))
+
     def call_with_retry(self, **kwargs):
         """Try current key, rotate on rate limit, try remaining keys."""
         last_err = None
         for _ in range(len(self._clients)):
             try:
-                return self._client.chat.completions.create(**kwargs)
+                result = self._client.chat.completions.create(**kwargs)
+                self.clear_exhausted()
+                return result
             except Exception as e:
                 err_str = str(e)
                 if "rate_limit" in err_str.lower() or "429" in err_str:
@@ -632,11 +659,47 @@ class RotatingGroq:
                     self._rotate()
                 else:
                     raise
+        self._mark_exhausted(last_err)
         raise last_err  # All keys exhausted
 
 ai = RotatingGroq()
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_VISION_MODEL = "llama-3.2-90b-vision-preview"
+
+
+def _parse_rate_limit_retry_s(error_text: str) -> int:
+    match = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", error_text or "", re.IGNORECASE)
+    if not match:
+        return GROQ_EXHAUSTED_SILENCE_S
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = float(match.group(3) or 0.0)
+    retry_after = int(hours * 3600 + minutes * 60 + seconds)
+    return max(GROQ_EXHAUSTED_SILENCE_S, retry_after)
+
+
+def _should_suppress_ambient_reply(is_dm: bool, direct_to_me: bool) -> bool:
+    return (not is_dm) and (not direct_to_me) and ai.is_exhausted()
+
+
+def _context_limit_for_reply(*, is_dm: bool, direct_to_me: bool) -> int:
+    if is_dm:
+        return CHANNEL_CONTEXT_LIMIT_DM
+    return CHANNEL_CONTEXT_LIMIT_DIRECT if direct_to_me else CHANNEL_CONTEXT_LIMIT_AMBIENT
+
+
+def _history_limit_for_reply(*, is_dm: bool, direct_to_me: bool) -> int:
+    if is_dm:
+        return max(HISTORY_LIMIT_DIRECT, 120)
+    return HISTORY_LIMIT_DIRECT if direct_to_me else HISTORY_LIMIT_AMBIENT
+
+
+def _reply_token_budget(*, is_dm: bool, direct_to_me: bool, use_search: bool, is_owner: bool) -> int:
+    if use_search or is_owner:
+        return max(MAIN_REPLY_MAX_TOKENS_DIRECT, 420)
+    if is_dm or direct_to_me:
+        return MAIN_REPLY_MAX_TOKENS_DIRECT
+    return MAIN_REPLY_MAX_TOKENS_AMBIENT
 
 _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
@@ -1099,6 +1162,9 @@ async def _maybe_self_edit_reply(
     cleaned = strip_narration((reply or "").strip())
     issues = _self_edit_issues(cleaned, recent_replies, user=user)
     if not issues:
+        return cleaned
+    severe = any(issue in {"too generic", "out of character", "repetitive"} for issue in issues)
+    if len(cleaned) < SELF_EDIT_MIN_REPLY_CHARS and len(user_message or "") < 90 and not severe:
         return cleaned
     debug_event("self_edit", f"{BOT_NAME} issues={','.join(issues)}")
     rewritten = await _rewrite_reply_once(
@@ -1592,7 +1658,7 @@ async def _handle_partner_message(message) -> bool:
     return True
 
 # ── Channel context ───────────────────────────────────────────────────────────
-async def fetch_channel_context(channel, limit: int = 100) -> str:
+async def fetch_channel_context(channel, limit: int = CHANNEL_CONTEXT_LIMIT_DIRECT) -> str:
     try:
         if not hasattr(channel, 'history'): return ""
         msgs = []
@@ -1604,7 +1670,7 @@ async def fetch_channel_context(channel, limit: int = 100) -> str:
                 is_self = (bot_user and msg.author == bot_user) or msg.author == bot.user
                 is_partner = PARTNER_BOT_ID and msg.author.id == PARTNER_BOT_ID
                 if not is_self and not is_partner: continue
-            text = msg.content[:150].strip()
+            text = msg.content[:CHANNEL_CONTEXT_MESSAGE_CHARS].strip()
             # Detect voice messages (mp3 attachments with no text)
             has_voice = any(a.filename.endswith(".mp3") for a in msg.attachments)
             has_image = any(a.content_type and "image" in a.content_type for a in msg.attachments)
@@ -1645,7 +1711,7 @@ async def fetch_channel_context(channel, limit: int = 100) -> str:
         if hasattr(channel, 'guild') and channel.guild:
             mention_map = {m.display_name: m.mention for m in channel.guild.members if not m.bot}
             if mention_map:
-                mention_hint = "MENTION_MAP: " + ", ".join(f"{n}={v}" for n,v in list(mention_map.items())[:20])
+                mention_hint = "MENTION_MAP: " + ", ".join(f"{n}={v}" for n,v in list(mention_map.items())[:12])
                 context += "\n" + mention_hint
         return context
     except Exception as e:
@@ -1798,12 +1864,13 @@ async def _fetch_nws_weather(location: str) -> dict | None:
 # ── AI core ───────────────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
-                       is_owner=False, channel_obj=None, is_dm=False):
+                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True):
     recent_replies: list[str] = []
     search_sources = ""
     rate_limited = False
     try:
-        history   = await mem.get_history(user_id, channel_id, limit=200)
+        history_limit = _history_limit_for_reply(is_dm=is_dm, direct_to_me=direct_to_me)
+        history = await mem.get_history(user_id, channel_id, limit=history_limit)
         mood      = user.get("mood",0) if user else 0
         affection = user.get("affection",0) if user else 0
         trust     = user.get("trust",0) if user else 0
@@ -1946,7 +2013,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         duo_context = await _duo_prompt_context(channel_id, user_message)
         channel_ctx = ""
         if channel_obj and hasattr(channel_obj, 'history'):
-            channel_ctx = await fetch_channel_context(channel_obj)
+            channel_ctx = await fetch_channel_context(
+                channel_obj,
+                limit=_context_limit_for_reply(is_dm=is_dm, direct_to_me=direct_to_me),
+            )
         base_context = "["+"|".join(parts)+"]\n"
         if world_context:
             base_context += world_context + "\n"
@@ -1960,17 +2030,24 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
         context_block = ((repeat_guard + "\n\n") if repeat_guard else "") + base_context
 
+        reply_max_tokens = _reply_token_budget(
+            is_dm=is_dm,
+            direct_to_me=direct_to_me,
+            use_search=use_search,
+            is_owner=is_owner,
+        )
+
         history.append({"role":"user","content":context_block})
         system = build_system(user, display_name, is_owner)
 
         reply = ""
         retry_context = context_block
-        for attempt in range(3):
+        for attempt in range(2):
             msgs = [{"role":"system","content":system}] + history[:-1] + [{"role":"user","content":retry_context}]
 
             def _blocking():
                 return ai.call_with_retry(
-                    model=GROQ_MODEL, max_tokens=800, messages=msgs,
+                    model=GROQ_MODEL, max_tokens=reply_max_tokens, messages=msgs,
                     temperature=0.9, frequency_penalty=0.75, presence_penalty=0.65
                 )
 
@@ -1984,13 +2061,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         if not reply:
             reply = fallback_reply(BOT_NAME, recent_replies)
-        if not rate_limited:
+        if not rate_limited and (is_dm or direct_to_me or len(reply) >= SELF_EDIT_MIN_REPLY_CHARS):
             reply = await _maybe_self_edit_reply(
                 reply,
                 recent_replies=recent_replies,
                 user_message=user_message,
                 user=user,
-                max_tokens=240,
+                max_tokens=min(240, max(140, reply_max_tokens // 2)),
             )
         if search_sources:
             reply = f"{reply}\n\n{search_sources}"
@@ -2188,14 +2265,14 @@ async def qai(prompt, max_tokens=200, *, self_edit: bool = True):
         loop = asyncio.get_event_loop()
         guarded_prompt = ((repeat_guard + "\n\n") if repeat_guard else "") + prompt
         reply = ""
-        for attempt in range(3):
+        for attempt in range(2):
             active_prompt = guarded_prompt
             if attempt:
                 active_prompt += "\n\nRETRY: Change the opening phrase and overall sentence structure."
             reply = await loop.run_in_executor(None, _qai_blocking, active_prompt, max_tokens)
             reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
             reply = await _apply_phrase_policy(reply, recent_replies)
-            if self_edit and reply:
+            if self_edit and reply and max_tokens >= 140 and len(reply) >= SELF_EDIT_MIN_REPLY_CHARS:
                 reply = await _maybe_self_edit_reply(
                     reply,
                     recent_replies=recent_replies,
@@ -2333,11 +2410,13 @@ async def maybe_react(message, romance=False):
 def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
     if is_dm: return 1.0  # Always respond in DMs
     if mentioned or is_reply: return 1.0
-    t = content.lower()
-    if any(k in t for k in SCARA_KW):  return .88
-    if romance:                          return .50
-    if any(k in t for k in GENSHIN_KW): return .28
-    return .06
+    t = content.lower().strip()
+    if any(t.startswith(name) for name in ("scaramouche", "scara", "balladeer", "kunikuzushi")):
+        return .96
+    if any(k in t for k in SCARA_KW):  return .38
+    if romance:                          return .18
+    if any(k in t for k in GENSHIN_KW): return .14
+    return .03
 
 async def typing_delay(text):
     try:
@@ -2692,6 +2771,16 @@ async def on_message(message):
 
         content = message.content.strip()
         if not content: return
+        mentioned_early = bot.user in message.mentions
+        is_reply_early = (
+            message.reference and message.reference.resolved and
+            not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
+            message.reference.resolved.author == bot.user
+        )
+        direct_to_me_early = bool(is_dm or mentioned_early or is_reply_early)
+        if _should_suppress_ambient_reply(is_dm, direct_to_me_early):
+            print(f"[GROQ] Ambient reply suppressed while exhausted ({ai.exhausted_remaining()}s remaining)")
+            return
 
         # Milestone / anniversary checks
         try:
@@ -3018,7 +3107,7 @@ async def on_message(message):
                     message.author.id, dm_channel_id, content,
                     user, message.author.display_name, message.author.mention,
                     extra_context=extra, is_owner=is_owner,
-                    channel_obj=message.channel, is_dm=is_dm
+                    channel_obj=message.channel, is_dm=is_dm, direct_to_me=direct_to_me
                 )
         except Exception as e:
             log_error("on_message/get_response", e)
@@ -3181,6 +3270,9 @@ async def _proactive_loop():
     await asyncio.sleep(random.randint(1800,5400))
     while not bot.is_closed():
         try:
+            if ai.is_exhausted():
+                await asyncio.sleep(max(120, min(ai.exhausted_remaining(), 1800)))
+                continue
             channels = await mem.get_active_channels()
             ru       = await mem.get_romance_users()
             random.shuffle(channels)
@@ -3251,6 +3343,9 @@ async def _voluntary_dm_loop():
     await asyncio.sleep(random.randint(2700,7200))
     while not bot.is_closed():
         try:
+            if ai.is_exhausted():
+                await asyncio.sleep(max(120, min(ai.exhausted_remaining(), 1800)))
+                continue
             if random.random()<.4:
                 eligible = await mem.get_dm_eligible_users()
                 if eligible:
@@ -3304,6 +3399,9 @@ async def _duo_autoplay_loop():
     await asyncio.sleep(20)
     while not bot.is_closed():
         try:
+            if ai.is_exhausted():
+                await asyncio.sleep(max(60, min(ai.exhausted_remaining(), 900)))
+                continue
             for session in await mem.get_due_duo_sessions(BOT_NAME):
                 try:
                     channel = bot.get_channel(session["channel_id"])
@@ -3328,6 +3426,7 @@ async def _duo_autoplay_loop():
                         extra_context="DUO_AUTOPLAY: the other bot already spoke. Follow up naturally, keep it brief, and do not re-explain their point.",
                         channel_obj=channel,
                         is_dm=not bool(getattr(channel, "guild", None)),
+                        direct_to_me=False,
                     )
                     await channel.send(reply)
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
@@ -3347,6 +3446,9 @@ async def _rival_event_loop():
     await asyncio.sleep(45)
     while not bot.is_closed():
         try:
+            if ai.is_exhausted():
+                await asyncio.sleep(max(120, min(ai.exhausted_remaining(), 1800)))
+                continue
             channels = await mem.get_active_channels()
             random.shuffle(channels)
             for channel_id, _ in channels:
