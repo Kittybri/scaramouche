@@ -33,6 +33,13 @@ from grounded_search import (
     format_url_preview_context,
     search_web,
 )
+from video_reports import (
+    build_weather_video_notes,
+    extract_teaching_material,
+    render_duo_debate_video,
+    render_teaching_video,
+    video_renderer_available,
+)
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -776,6 +783,8 @@ _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
 _silence_pending: set[tuple[int, int]] = set()
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
+_teachvideo_active: set[int]      = set()
+_weathervideo_active: set[int]    = set()
 _tedtalk_cache:  dict[int, dict]  = {}
 _processed_msgs: set[int]         = set()  # dedup: prevent double-processing
 
@@ -4356,6 +4365,55 @@ async def safe_send(ctx, text):
     except Exception as e: log_error("safe_send", e)
 
 
+def _partner_bot_present(ctx) -> bool:
+    try:
+        return bool(ctx.guild and PARTNER_BOT_ID and ctx.guild.get_member(PARTNER_BOT_ID))
+    except Exception:
+        return False
+
+
+async def _send_video_summary(ctx, summary: dict, caption: str, *, sources_text: str = ""):
+    try:
+        final_video = (summary or {}).get("final_video", "")
+        if not final_video or not os.path.exists(final_video):
+            await safe_send(ctx, "The render finished, but the video file never appeared. Irritating.")
+            return
+        await ctx.send(caption, file=discord.File(final_video, filename=os.path.basename(final_video)))
+        if sources_text.strip():
+            await ctx.send(sources_text[:1800])
+    except Exception as e:
+        log_error("send_video_summary", e)
+        await safe_send(ctx, f"The video was rendered, but sending it failed. {e}")
+
+
+def _teaching_video_title(topic: str | None, attachment) -> str:
+    if topic and topic.strip():
+        return topic.strip()[:80]
+    if attachment and getattr(attachment, "filename", ""):
+        return os.path.splitext(attachment.filename)[0][:80]
+    return "Scaramouche Lesson"
+
+
+def _teachvideo_time_hint(attachment=None) -> str:
+    ext = os.path.splitext(getattr(attachment, "filename", "") or "")[1].lower()
+    content_type = (getattr(attachment, "content_type", "") or "").lower()
+    if content_type.startswith("video/") or ext in {".mp4", ".mov", ".mkv", ".webm"}:
+        return "This will take around 4-7 minutes."
+    if "pdf" in content_type or ext == ".pdf":
+        return "Give me about 3-5 minutes."
+    if ext in {".ppt", ".pptx", ".doc", ".docx"}:
+        return "Give me about 3-5 minutes."
+    if content_type.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "Give me about 2-4 minutes."
+    if ext in {".txt", ".md"}:
+        return "This should take around 2-3 minutes."
+    return "Give me about 2-4 minutes."
+
+
+def _weathervideo_time_hint(use_duo: bool) -> str:
+    return "Give us about 3-6 minutes." if use_duo else "Give me about 2-4 minutes."
+
+
 def _silence_reply_pool(user: dict | None) -> list[str]:
     if user and user.get("repair_progress", 0) > 0:
         return [
@@ -4995,6 +5053,66 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
         if msg_id: _tedtalk_active.discard(msg_id)
 
 
+@bot.command(name="teachvideo", aliases=["videoteach", "lessonvideo", "presentationvideo"])
+async def teachvideo_cmd(ctx, *, topic: str = None):
+    try:
+        msg_id = ctx.message.id
+        if msg_id in _teachvideo_active:
+            return
+        _teachvideo_active.add(msg_id)
+        await _setup(ctx)
+        attachment = ctx.message.attachments[0] if ctx.message.attachments else None
+        if not attachment and not (topic or "").strip():
+            _teachvideo_active.discard(msg_id)
+            await safe_reply(ctx, "Attach notes or give me a lesson topic. I won't invent a presentation out of thin air.")
+            return
+        available, reason = video_renderer_available(BOT_NAME)
+        if not available:
+            _teachvideo_active.discard(msg_id)
+            await safe_reply(ctx, f"Video rendering is unavailable on this host. {reason}")
+            return
+        time_hint = _teachvideo_time_hint(attachment)
+        await ctx.reply(random.choice([
+            f"Fine. If you want the explanation as a video, sit down and wait. {time_hint}",
+            f"A presentation video? Hmph. I'll make it watchable. {time_hint}",
+            f"I'll render the lesson properly. Try not to waste my effort. {time_hint}",
+        ]))
+        asyncio.ensure_future(_do_teachvideo(ctx, attachment, topic, msg_id))
+    except Exception as e:
+        _teachvideo_active.discard(ctx.message.id)
+        log_error("teachvideo_cmd", e)
+        await safe_reply(ctx, "...The video request failed before it even started.")
+
+
+async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
+    try:
+        time_hint = _teachvideo_time_hint(attachment)
+        await ctx.send(random.choice([
+            f"I'm turning it into slides now. Don't interrupt me. {time_hint}",
+            f"Rendering the presentation. This takes longer than words. {time_hint}",
+            f"I'm building the lesson video. Wait. {time_hint}",
+        ]))
+        material_content = await extract_teaching_material(attachment, topic=topic or "", bot_name=BOT_NAME)
+        if not material_content.strip():
+            await ctx.send("There was nothing usable in that material. Typical."); return
+        summary = await render_teaching_video(BOT_NAME, material_content, title=_teaching_video_title(topic, attachment))
+        await _send_video_summary(
+            ctx,
+            summary,
+            random.choice([
+                "There. A proper lesson video.",
+                "You wanted a presentation. Here it is.",
+                "Finished. Try to learn something from it.",
+            ]),
+        )
+    except Exception as e:
+        log_error("do_teachvideo", e)
+        await safe_send(ctx, f"The presentation video failed. {e}")
+    finally:
+        if msg_id:
+            _teachvideo_active.discard(msg_id)
+
+
 @bot.command(name="dare")
 async def dare_cmd(ctx):
     try:
@@ -5431,6 +5549,70 @@ async def weather_cmd(ctx,*,location:str=None):
             )
         await safe_reply(ctx,reply)
     except Exception as e: log_error("weather_cmd",e); await safe_reply(ctx,"...The information was unavailable.")
+
+
+@bot.command(name="weathervideo", aliases=["videoweather", "weatherreportvideo"])
+async def weathervideo_cmd(ctx, *, location: str = None):
+    try:
+        msg_id = ctx.message.id
+        if msg_id in _weathervideo_active:
+            return
+        _weathervideo_active.add(msg_id)
+        await _setup(ctx)
+        if not location:
+            _weathervideo_active.discard(msg_id)
+            await safe_reply(ctx, "Weather where? Give me a location if you want a report worth rendering.")
+            return
+        use_duo = _partner_bot_present(ctx)
+        available, reason = video_renderer_available(BOT_NAME, duo=use_duo)
+        if not available:
+            _weathervideo_active.discard(msg_id)
+            await safe_reply(ctx, f"Video rendering is unavailable on this host. {reason}")
+            return
+        time_hint = _weathervideo_time_hint(use_duo)
+        await ctx.reply(random.choice([
+            f"A weather report video. Fine. I'll make it concise. {time_hint}",
+            f"You want the forecast packaged properly. Wait. {time_hint}",
+            f"I'll render the report. Try to deserve the effort. {time_hint}",
+        ]))
+        asyncio.ensure_future(_do_weathervideo(ctx, location, use_duo, msg_id))
+    except Exception as e:
+        _weathervideo_active.discard(ctx.message.id)
+        log_error("weathervideo_cmd", e)
+        await safe_reply(ctx, "...The weather video request collapsed immediately. Annoying.")
+
+
+async def _do_weathervideo(ctx, location: str, use_duo: bool, msg_id=None):
+    try:
+        time_hint = _weathervideo_time_hint(use_duo)
+        await ctx.send(
+            f"If Wanderer is here, he'll be dragged into this too. {time_hint}"
+            if use_duo else
+            f"I'm assembling the weather report now. {time_hint}"
+        )
+        data = await _fetch_nws_weather(location)
+        if not data:
+            await ctx.send("That location still means nothing to me. Try `City, ST`, a ZIP code, or `lat,lon`."); return
+        news_results = await search_web(f"{data['place']} weather news", max_results=3)
+        notes = build_weather_video_notes(data["place"], data, news_results, duo=use_duo)
+        title = f"{data['place']} Weather Report"
+        summary = await (render_duo_debate_video(notes, title=title) if use_duo else render_teaching_video(BOT_NAME, notes, title=title))
+        sources = "Weather source: api.weather.gov"
+        search_sources = format_search_sources(news_results, max_results=3)
+        if search_sources:
+            sources = f"{sources}\n{search_sources}"
+        await _send_video_summary(
+            ctx,
+            summary,
+            "There. Your duo weather report is ready." if use_duo else "There. Your weather report video is ready.",
+            sources_text=sources,
+        )
+    except Exception as e:
+        log_error("do_weathervideo", e)
+        await safe_send(ctx, f"The weather video failed. {e}")
+    finally:
+        if msg_id:
+            _weathervideo_active.discard(msg_id)
 
 @bot.command(name="lore")
 async def lore_cmd(ctx,*,topic:str=None):
@@ -6150,6 +6332,7 @@ async def help_cmd(ctx):
             ("🗡️ !rival @user","Designate a rival"),
             ("⏰ !remind <mins> <txt>","Reminder with disdain"),
             ("🌤️ !weather <city>","Weather + contemptuous commentary"),
+            ("🎥 !weathervideo <city>","Render a weather report video; duo if Wanderer is here"),
             ("📢 !poll <question>","He demands a vote"),
             ("📋 !summarize","Recent chat summary with contempt"),
             ("🔇 !mute [@user] [min]","Ignores someone in character"),
@@ -6161,6 +6344,7 @@ async def help_cmd(ctx):
         ]: e3.add_field(name=n,value=v,inline=False)
         for n, v in [
             ("!memories", "See what he is actually holding onto"),
+            ("!teachvideo <topic>", "Render a lesson video from notes or an attachment"),
             ("!remember <text>", "Tell him to keep something"),
             ("!forget <topic>", "Forget one topic instead of everything"),
             ("!relationship / !arc", "See arc, progression, and conflict aftermath"),
