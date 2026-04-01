@@ -421,6 +421,10 @@ def synthesize_audio(text: str, output_dir: Path) -> Path:
     chunks = split_for_tts(text)
     api_key = (os.getenv("FISH_AUDIO_API_KEY") or "").strip()
     voice_id = get_voice_id()
+    if api_key:
+        print(f"[Scaramouche TTS] Using Fish Audio (voice: {voice_id[:8]}...)")
+    else:
+        print("[Scaramouche TTS] WARNING: FISH_AUDIO_API_KEY not set — falling back to gTTS (generic voice)")
     chunk_paths = []
 
     for idx, chunk in enumerate(chunks, start=1):
