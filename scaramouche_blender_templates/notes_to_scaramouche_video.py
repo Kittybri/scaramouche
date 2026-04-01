@@ -642,12 +642,12 @@ def _scara_mouth_strength(viseme: str) -> float:
     return {
         "rest": 0.0,
         "blink": 0.0,
-        "n": 0.16,
-        "i": 0.20,
-        "u": 0.24,
-        "e": 0.26,
-        "a": 0.36,
-        "o": 0.40,
+        "n": 0.22,
+        "i": 0.28,
+        "u": 0.34,
+        "e": 0.38,
+        "a": 0.54,
+        "o": 0.60,
     }.get(viseme, 0.0)
 
 
@@ -658,13 +658,13 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
     result = sprite.copy()
     width, height = result.size
     mouth_box = (
-        int(width * 0.39),
-        int(height * 0.56),
-        int(width * 0.61),
-        int(height * 0.67),
+        int(width * 0.38),
+        int(height * 0.395),
+        int(width * 0.62),
+        int(height * 0.515),
     )
     lower = result.crop(mouth_box)
-    extra_height = max(2, int(height * 0.012 + height * 0.038 * strength))
+    extra_height = max(5, int(height * 0.030 + height * 0.120 * strength))
     stretched = lower.resize((lower.width, lower.height + extra_height), RESAMPLING.LANCZOS)
     masked = Image.new("RGBA", result.size, (0, 0, 0, 0))
     masked.alpha_composite(stretched, (mouth_box[0], mouth_box[1]))
@@ -673,12 +673,12 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
     shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     cx = (mouth_box[0] + mouth_box[2]) // 2
-    cy = int(height * 0.615)
-    mouth_w = max(8, int(width * (0.055 + 0.11 * strength)))
-    mouth_h = max(4, int(height * (0.008 + 0.025 * strength)))
+    cy = int(height * 0.452)
+    mouth_w = max(12, int(width * (0.100 + 0.22 * strength)))
+    mouth_h = max(8, int(height * (0.028 + 0.090 * strength)))
     shadow_draw.ellipse(
         (cx - mouth_w // 2, cy - mouth_h // 2, cx + mouth_w // 2, cy + mouth_h // 2),
-        fill=(36, 8, 12, 120 + int(90 * strength)),
+        fill=(36, 8, 12, 160 + int(120 * strength)),
     )
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(1, int(width * 0.012))))
     result.alpha_composite(shadow)

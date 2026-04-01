@@ -39,6 +39,7 @@ class DebateTurn:
     audio_path: Path | None = None
     duration_s: float = 0.0
     segment_index: int = 0
+    voice_id: str = ""
 
 
 def load_module(name: str, path: Path):
@@ -250,9 +251,13 @@ def synthesize_turn_audio(turn: DebateTurn, output_dir: Path) -> tuple[Path, flo
     audio_dir.mkdir(parents=True, exist_ok=True)
     raw_path = audio_dir / f"{turn.speaker}_{turn.segment_index:02d}_raw.mp3"
     if api_key:
-        audio_bytes = module.fish_tts_chunk(turn.text, api_key, module.get_voice_id())
+        turn.voice_id = (module.get_voice_id() or "").strip() or "missing"
+        print(f"[duo-video] speaker={turn.speaker} voice_id={turn.voice_id}")
+        audio_bytes = module.fish_tts_chunk(turn.text, api_key, turn.voice_id)
         raw_path.write_bytes(audio_bytes)
     else:
+        turn.voice_id = "gtts-fallback"
+        print(f"[duo-video] speaker={turn.speaker} voice_id=gtts-fallback")
         module.gtts_chunk(turn.text, raw_path)
     final_path = apply_character_audio_profile(raw_path, turn.speaker)
     return final_path, module.probe_media_duration(final_path)
@@ -430,16 +435,16 @@ def focus_presenter_crop(subject: Image.Image, speaker: str) -> Image.Image:
     if subject.width <= 0 or subject.height <= 0:
         return subject
     if speaker == "wanderer":
-        left = int(subject.width * 0.32)
-        right = int(subject.width * 0.68)
+        left = int(subject.width * 0.40)
+        right = int(subject.width * 0.60)
         top = int(subject.height * 0.00)
-        bottom = int(subject.height * 0.74)
+        bottom = int(subject.height * 0.64)
         return subject.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
     if speaker == "scaramouche":
-        left = int(subject.width * 0.28)
-        right = int(subject.width * 0.72)
+        left = int(subject.width * 0.34)
+        right = int(subject.width * 0.62)
         top = int(subject.height * 0.00)
-        bottom = int(subject.height * 0.76)
+        bottom = int(subject.height * 0.58)
         return subject.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
     return subject
 
@@ -475,12 +480,12 @@ def _scara_mouth_strength(viseme: str) -> float:
     return {
         "rest": 0.0,
         "blink": 0.0,
-        "n": 0.16,
-        "i": 0.20,
-        "u": 0.24,
-        "e": 0.26,
-        "a": 0.36,
-        "o": 0.40,
+        "n": 0.22,
+        "i": 0.28,
+        "u": 0.34,
+        "e": 0.38,
+        "a": 0.54,
+        "o": 0.60,
     }.get(viseme, 0.0)
 
 
@@ -491,13 +496,13 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
     result = sprite.copy()
     width, height = result.size
     mouth_box = (
-        int(width * 0.39),
-        int(height * 0.56),
-        int(width * 0.61),
-        int(height * 0.67),
+        int(width * 0.38),
+        int(height * 0.395),
+        int(width * 0.62),
+        int(height * 0.515),
     )
     lower = result.crop(mouth_box)
-    extra_height = max(2, int(height * 0.012 + height * 0.038 * strength))
+    extra_height = max(5, int(height * 0.030 + height * 0.120 * strength))
     stretched = lower.resize((lower.width, lower.height + extra_height), RESAMPLING.LANCZOS)
     masked = Image.new("RGBA", result.size, (0, 0, 0, 0))
     masked.alpha_composite(stretched, (mouth_box[0], mouth_box[1]))
@@ -506,12 +511,12 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
     shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     cx = (mouth_box[0] + mouth_box[2]) // 2
-    cy = int(height * 0.615)
-    mouth_w = max(8, int(width * (0.055 + 0.11 * strength)))
-    mouth_h = max(4, int(height * (0.008 + 0.025 * strength)))
+    cy = int(height * 0.452)
+    mouth_w = max(12, int(width * (0.100 + 0.22 * strength)))
+    mouth_h = max(8, int(height * (0.028 + 0.090 * strength)))
     shadow_draw.ellipse(
         (cx - mouth_w // 2, cy - mouth_h // 2, cx + mouth_w // 2, cy + mouth_h // 2),
-        fill=(36, 8, 12, 120 + int(90 * strength)),
+        fill=(36, 8, 12, 160 + int(120 * strength)),
     )
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(1, int(width * 0.012))))
     result.alpha_composite(shadow)
@@ -622,7 +627,10 @@ def build_presenter_panel(
     presenter = focus_presenter_crop(presenter, speaker)
     if speaker == "scaramouche":
         presenter = animate_scaramouche_sprite(presenter, active_label)
-    target_box = (panel_size[0] - 58, panel_size[1] - 126)
+    if speaker == "scaramouche":
+        target_box = (panel_size[0] - 42, panel_size[1] - 104)
+    else:
+        target_box = (panel_size[0] - 58, panel_size[1] - 126)
     sprite = contain_image(presenter, target_box, anchor_bottom=True)
     if not active:
         sprite = ImageEnhance.Brightness(sprite).enhance(0.72)
@@ -788,6 +796,10 @@ def main():
         "scara_manifest": str(output_dir / "scaramouche_plates" / "plates_manifest.json"),
         "wanderer_manifest": str(output_dir / "wanderer_plates" / "plates_manifest.json"),
         "duo_scene": DUO_RENDER_SCENE,
+        "voices": {
+            turn.speaker: turn.voice_id
+            for turn in turns
+        },
     }
     (output_dir / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
