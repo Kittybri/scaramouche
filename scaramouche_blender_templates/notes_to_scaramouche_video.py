@@ -660,7 +660,7 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
     shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     cx = int(width * 0.50)
-    cy = int(height * 0.66)
+    cy = int(height * 0.36)
     mouth_w = max(14, int(width * (0.080 + 0.19 * strength)))
     mouth_h = max(8, int(height * (0.018 + 0.095 * strength)))
     shadow_draw.rounded_rectangle(

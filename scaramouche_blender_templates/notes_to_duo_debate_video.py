@@ -434,19 +434,11 @@ def stable_segment_key(image_path: str | None, speaker: str) -> tuple[str, str]:
 def focus_presenter_crop(subject: Image.Image, speaker: str) -> Image.Image:
     if subject.width <= 0 or subject.height <= 0:
         return subject
-    if speaker == "wanderer":
-        left = int(subject.width * 0.22)
-        right = int(subject.width * 0.78)
-        top = int(subject.height * 0.00)
-        bottom = int(subject.height * 0.64)
-        return subject.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
-    if speaker == "scaramouche":
-        left = int(subject.width * 0.22)
-        right = int(subject.width * 0.78)
-        top = int(subject.height * 0.00)
-        bottom = int(subject.height * 0.62)
-        return subject.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
-    return subject
+    left = int(subject.width * 0.22)
+    right = int(subject.width * 0.78)
+    top = int(subject.height * 0.00)
+    bottom = int(subject.height * 0.64)
+    return subject.crop((left, top, max(left + 1, right), max(top + 1, bottom)))
 
 
 def scaramouche_preview_image(panel_size: tuple[int, int]) -> Image.Image | None:
@@ -498,7 +490,7 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
     shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     cx = int(width * 0.50)
-    cy = int(height * 0.66)
+    cy = int(height * 0.36)
     mouth_w = max(14, int(width * (0.080 + 0.19 * strength)))
     mouth_h = max(8, int(height * (0.018 + 0.095 * strength)))
     shadow_draw.rounded_rectangle(
@@ -615,10 +607,7 @@ def build_presenter_panel(
     presenter = focus_presenter_crop(presenter, speaker)
     if speaker == "scaramouche":
         presenter = animate_scaramouche_sprite(presenter, active_label)
-    if speaker == "scaramouche":
-        target_box = (panel_size[0] - 26, panel_size[1] - 92)
-    else:
-        target_box = (panel_size[0] - 28, panel_size[1] - 92)
+    target_box = (panel_size[0] - 28, panel_size[1] - 92)
     sprite = contain_image(presenter, target_box, anchor_bottom=True)
     if not active:
         sprite = ImageEnhance.Brightness(sprite).enhance(0.72)
