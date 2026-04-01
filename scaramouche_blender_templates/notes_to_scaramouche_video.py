@@ -657,30 +657,18 @@ def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
         return sprite
     result = sprite.copy()
     width, height = result.size
-    mouth_box = (
-        int(width * 0.38),
-        int(height * 0.395),
-        int(width * 0.62),
-        int(height * 0.515),
-    )
-    lower = result.crop(mouth_box)
-    extra_height = max(5, int(height * 0.030 + height * 0.120 * strength))
-    stretched = lower.resize((lower.width, lower.height + extra_height), RESAMPLING.LANCZOS)
-    masked = Image.new("RGBA", result.size, (0, 0, 0, 0))
-    masked.alpha_composite(stretched, (mouth_box[0], mouth_box[1]))
-    result.alpha_composite(masked)
-
     shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
-    cx = (mouth_box[0] + mouth_box[2]) // 2
-    cy = int(height * 0.452)
-    mouth_w = max(12, int(width * (0.100 + 0.22 * strength)))
-    mouth_h = max(8, int(height * (0.028 + 0.090 * strength)))
-    shadow_draw.ellipse(
+    cx = int(width * 0.50)
+    cy = int(height * 0.66)
+    mouth_w = max(14, int(width * (0.080 + 0.19 * strength)))
+    mouth_h = max(8, int(height * (0.018 + 0.095 * strength)))
+    shadow_draw.rounded_rectangle(
         (cx - mouth_w // 2, cy - mouth_h // 2, cx + mouth_w // 2, cy + mouth_h // 2),
-        fill=(36, 8, 12, 160 + int(120 * strength)),
+        radius=max(3, mouth_h // 2),
+        fill=(40, 8, 14, 170 + int(80 * strength)),
     )
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(1, int(width * 0.012))))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=1))
     result.alpha_composite(shadow)
     return result
 
