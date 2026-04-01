@@ -140,6 +140,24 @@ import random as _rmod, memory as _mmod
 _mmod.random = _rmod
 
 # ── Narration stripper ────────────────────────────────────────────────────────
+def _unwrap_dialogue_quotes(text: str) -> str:
+    cleaned = (text or "").strip()
+    quote_pairs = [
+        ('"', '"'),
+        ('“', '”'),
+    ]
+    for _ in range(2):
+        changed = False
+        for left, right in quote_pairs:
+            if cleaned.startswith(left) and cleaned.endswith(right) and len(cleaned) >= (len(left) + len(right) + 1):
+                cleaned = cleaned[len(left):-len(right)].strip()
+                changed = True
+                break
+        if not changed:
+            break
+    return cleaned
+
+
 def strip_narration(text: str) -> str:
     try:
         original = text
@@ -151,11 +169,13 @@ def strip_narration(text: str) -> str:
         text = re.sub(r'<#\d+>', '', text)
         text = re.sub(r'<@&\d+>', '', text)
         text = re.sub(r'\s{2,}',' ',text).strip().lstrip('.,; ')
+        text = _unwrap_dialogue_quotes(text)
         # If stripping removed everything, just remove asterisks/brackets but keep the words
         if not text or len(text) < 3:
             text = original.replace('*','').replace('[','').replace(']','').replace('(','').replace(')','')
             text = re.sub(r'<@!?\d+>', '', text)
             text = re.sub(r'\s{2,}',' ',text).strip().lstrip('.,; ')
+            text = _unwrap_dialogue_quotes(text)
         return text
     except Exception:
         return text
@@ -4357,12 +4377,14 @@ async def _rival_event_loop():
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def safe_reply(ctx, text):
+    text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
         return
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
 
 async def safe_send(ctx, text):
+    text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
         return
     try: await ctx.send(text)
@@ -4645,6 +4667,7 @@ async def _command_face_media(ctx):
 
 async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False, view: discord.ui.View | None = None):
     try:
+        text = _unwrap_dialogue_quotes(text)
         if not (text or "").strip():
             return
         if thinking and not interaction.response.is_done():
