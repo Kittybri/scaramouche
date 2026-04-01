@@ -336,6 +336,11 @@ def split_for_tts(text: str, max_chars: int = 1200) -> list[str]:
 
 
 def get_voice_id() -> str:
+    module = maybe_import_voice_handler()
+    if module is not None and hasattr(module, "resolve_voice_id"):
+        resolved = (module.resolve_voice_id(bot_name="scaramouche") or "").strip()
+        if resolved:
+            return resolved
     for env_name in (
         "SCARAMOUCHE_FISH_VOICE_ID",
         "SCARAMOUCHE_VOICE_ID",
@@ -345,13 +350,23 @@ def get_voice_id() -> str:
         value = (os.getenv(env_name) or "").strip()
         if value:
             return value
-    module = maybe_import_voice_handler()
     if module is not None and getattr(module, "VOICE_ID", ""):
         return module.VOICE_ID
     return FALLBACK_VOICE_ID
 
 
 def fish_tts_chunk(text: str, api_key: str, voice_id: str) -> bytes:
+    module = maybe_import_voice_handler()
+    if module is not None and hasattr(module, "_fish_tts_blocking"):
+        audio_bytes = module._fish_tts_blocking(
+            text,
+            api_key,
+            220,
+            voice_id=voice_id,
+            bot_name="scaramouche",
+        )
+        if audio_bytes:
+            return audio_bytes
     payload = ormsgpack.packb(
         {
             "text": text[:1500],
@@ -618,6 +633,53 @@ def contain_image(image: Image.Image, target_size: tuple[int, int], *, anchor_bo
     return canvas
 
 
+def _scara_mouth_strength(viseme: str) -> float:
+    return {
+        "rest": 0.0,
+        "blink": 0.0,
+        "n": 0.16,
+        "i": 0.20,
+        "u": 0.24,
+        "e": 0.26,
+        "a": 0.36,
+        "o": 0.40,
+    }.get(viseme, 0.0)
+
+
+def animate_scaramouche_sprite(sprite: Image.Image, viseme: str) -> Image.Image:
+    strength = _scara_mouth_strength(viseme)
+    if strength <= 0.0:
+        return sprite
+    result = sprite.copy()
+    width, height = result.size
+    mouth_box = (
+        int(width * 0.39),
+        int(height * 0.56),
+        int(width * 0.61),
+        int(height * 0.67),
+    )
+    lower = result.crop(mouth_box)
+    extra_height = max(2, int(height * 0.012 + height * 0.038 * strength))
+    stretched = lower.resize((lower.width, lower.height + extra_height), RESAMPLING.LANCZOS)
+    masked = Image.new("RGBA", result.size, (0, 0, 0, 0))
+    masked.alpha_composite(stretched, (mouth_box[0], mouth_box[1]))
+    result.alpha_composite(masked)
+
+    shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    cx = (mouth_box[0] + mouth_box[2]) // 2
+    cy = int(height * 0.615)
+    mouth_w = max(8, int(width * (0.055 + 0.11 * strength)))
+    mouth_h = max(4, int(height * (0.008 + 0.025 * strength)))
+    shadow_draw.ellipse(
+        (cx - mouth_w // 2, cy - mouth_h // 2, cx + mouth_w // 2, cy + mouth_h // 2),
+        fill=(36, 8, 12, 120 + int(90 * strength)),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(1, int(width * 0.012))))
+    result.alpha_composite(shadow)
+    return result
+
+
 def paste_with_shadow(base: Image.Image, overlay: Image.Image, position: tuple[int, int], blur_radius: int = 18):
     shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 0))
     shadow.putalpha(overlay.getchannel("A"))
@@ -632,6 +694,7 @@ def paste_with_shadow(base: Image.Image, overlay: Image.Image, position: tuple[i
 def build_presenter_frame(
     title: str,
     segment: dict,
+    viseme: str,
     slide_path: str,
     presenter_path: str | None,
     frame_size: tuple[int, int],
@@ -692,6 +755,7 @@ def build_presenter_frame(
         presenter_sprite = crop_presenter_sprite(presenter_path)
         presenter_cache[presenter_path] = presenter_sprite
     if presenter_sprite is not None:
+        presenter_sprite = animate_scaramouche_sprite(presenter_sprite, viseme)
         sprite = contain_image(presenter_sprite, (presenter_w - 42, presenter_h - 116), anchor_bottom=True)
         paste_with_shadow(frame, sprite, (presenter_x + 20, presenter_y + 96))
 
@@ -726,6 +790,7 @@ def assemble_frame_images(plates_manifest: dict, spec: dict, frame_plan: list[tu
         frame = build_presenter_frame(
             title,
             segments[segment_index - 1],
+            viseme,
             segments[segment_index - 1].get("slide_path", ""),
             source,
             frame_size,

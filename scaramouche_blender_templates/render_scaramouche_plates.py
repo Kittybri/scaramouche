@@ -16,6 +16,12 @@ GUIDE_HEAD_STEMS = ("WANDERER_GUIDE_HEAD", "PARTNER_GUIDE_HEAD")
 GUIDE_TORSO_STEMS = ("WANDERER_GUIDE_TORSO", "PARTNER_GUIDE_TORSO")
 RIGHT_SHOULDER_BONE = "Bone e58fb3e882a9_019"
 LEFT_SHOULDER_BONE = "Bone e5b7a6e882a9_037"
+RIGHT_UPPER_ARM_BONE = "Bone e58fb3e88595_021"
+LEFT_UPPER_ARM_BONE = "Bone e5b7a6e88595_039"
+RIGHT_FOREARM_BONE = "Bone e58fb3e381b2e38198_026"
+LEFT_FOREARM_BONE = "Bone e5b7a6e381b2e38198_044"
+RIGHT_WRIST_BONE = "Bone e58fb3e6898be9a696_033"
+LEFT_WRIST_BONE = "Bone e5b7a6e6898be9a696_049"
 
 
 def read_arg(name: str, default: str = "") -> str:
@@ -222,11 +228,17 @@ def apply_presenter_pose(armature):
     if armature is None:
         return
     reset_pose(armature)
-    shoulder_rotations = {
-        RIGHT_SHOULDER_BONE: (0.0, 18.0, 0.0),
-        LEFT_SHOULDER_BONE: (0.0, -18.0, 0.0),
+    pose_rotations = {
+        RIGHT_SHOULDER_BONE: (0.0, 6.0, 4.0),
+        LEFT_SHOULDER_BONE: (0.0, -6.0, -4.0),
+        RIGHT_UPPER_ARM_BONE: (0.0, 0.0, 34.0),
+        LEFT_UPPER_ARM_BONE: (0.0, 0.0, -34.0),
+        RIGHT_FOREARM_BONE: (0.0, 0.0, -10.0),
+        LEFT_FOREARM_BONE: (0.0, 0.0, 10.0),
+        RIGHT_WRIST_BONE: (0.0, 0.0, 3.0),
+        LEFT_WRIST_BONE: (0.0, 0.0, -3.0),
     }
-    for bone_name, degrees_xyz in shoulder_rotations.items():
+    for bone_name, degrees_xyz in pose_rotations.items():
         pose_bone = armature.pose.bones.get(bone_name)
         if pose_bone is None:
             continue
@@ -332,10 +344,10 @@ def normalize_scara(scene, presenter_only: bool):
     face_center = (face_min + face_max) / 2.0
 
     guide_head, guide_torso = target_guides(scene)
-    target_x = -1.2
-    target_y = 0.25
-    target_face_z = 1.08 if presenter_only else 0.98
-    if guide_head is not None:
+    target_x = 0.0 if presenter_only else -1.2
+    target_y = 0.0 if presenter_only else 0.25
+    target_face_z = 1.18 if presenter_only else 0.98
+    if guide_head is not None and not presenter_only:
         target_x = guide_head.matrix_world.translation.x
         target_y = guide_head.matrix_world.translation.y
     face_offset_from_floor = max(0.001, face_center.z - model_min.z)
@@ -387,9 +399,9 @@ def configure_camera(scene, presenter_only: bool, layout: dict):
     screen = find_screen(scene)
 
     if presenter_only:
-        focus = Vector((face_center.x, face_center.y + 0.10, model_min.z + (model_max.z - model_min.z) * 0.65))
-        camera.location = Vector((face_center.x + 0.02, face_center.y - 2.20, model_min.z + (model_max.z - model_min.z) * 0.72))
-        camera.data.lens = 72.0
+        focus = Vector((face_center.x, face_center.y + 0.02, model_min.z + (model_max.z - model_min.z) * 0.62))
+        camera.location = Vector((face_center.x, face_center.y - 1.95, model_min.z + (model_max.z - model_min.z) * 0.70))
+        camera.data.lens = 58.0
     else:
         torso_target = guide_torso.matrix_world.translation if guide_torso is not None else Vector((face_center.x, face_center.y, model_min.z + 0.58 * (model_max.z - model_min.z)))
         screen_center = screen.matrix_world.translation if screen is not None else Vector((1.94, 0.44, 1.69))
