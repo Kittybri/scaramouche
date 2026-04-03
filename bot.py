@@ -6744,8 +6744,8 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
     except Exception:
         pass
 
-@bot.command(name="dms")
-async def dms_cmd(ctx):
+@bot.command(name="dmlist")
+async def dmlist_cmd(ctx):
     """Owner-only: list users who have DM'd the bot."""
     try:
         if not OWNER_ID or ctx.author.id != OWNER_ID:
@@ -6772,7 +6772,7 @@ async def dms_cmd(ctx):
         for i, u in enumerate(dm_users, 1):
             blocked = " 🚫 **BLOCKED**" if u["user_id"] in _dm_blocked_users else ""
             lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`{blocked}")
-        header = f"**DM-only users ({len(dm_users)}):**\nUse `!blockdm <number>` to block or `!unblockdm <number>` to unblock.\n\n"
+        header = f"**DM-only users ({len(dm_users)}):**\nUse `!blockdm <number>` to block or `!unblockdm <number>` to unblock. (`!dmlist`)\n\n"
         pages = []
         page = header
         for line in lines:
@@ -6795,7 +6795,7 @@ async def blockdm_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, "That command isn't for you.")
             return
         if not target:
-            await safe_reply(ctx, "Usage: `!blockdm <number from !dms list>` or `!blockdm <user ID>`")
+            await safe_reply(ctx, "Usage: `!blockdm <number from !dmlist>` or `!blockdm <user ID>`")
             return
         target = target.strip()
         # Resolve the user
@@ -6824,7 +6824,7 @@ async def blockdm_cmd(ctx, *, target: str = None):
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`. Use `!dms` to see the list.")
+            await safe_reply(ctx, f"No user matching `{target}`. Use `!dmlist` to see the list.")
             return
         uid = user_record["user_id"]
         if uid in _dm_blocked_users:
@@ -6853,7 +6853,7 @@ async def unblockdm_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, "That command isn't for you.")
             return
         if not target:
-            await safe_reply(ctx, "Usage: `!unblockdm <number from !dms list>` or `!unblockdm <user ID>`")
+            await safe_reply(ctx, "Usage: `!unblockdm <number from !dmlist>` or `!unblockdm <user ID>`")
             return
         target = target.strip()
         all_users = await mem.get_top_users(200)
@@ -6879,7 +6879,7 @@ async def unblockdm_cmd(ctx, *, target: str = None):
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`. Use `!dms` to see the list.")
+            await safe_reply(ctx, f"No user matching `{target}`. Use `!dmlist` to see the list.")
             return
         uid = user_record["user_id"]
         if uid not in _dm_blocked_users:
