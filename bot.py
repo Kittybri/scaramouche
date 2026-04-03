@@ -6732,6 +6732,72 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
     except Exception:
         pass
 
+@bot.command(name="servers")
+async def servers_cmd(ctx):
+    """Owner-only: list every guild the bot is currently in."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
+        if not guilds:
+            await safe_reply(ctx, "I'm not in any servers.")
+            return
+        lines = []
+        for i, g in enumerate(guilds, 1):
+            lines.append(f"`{i}.` **{g.name}** — {g.member_count} members — ID: `{g.id}`")
+        header = f"I'm in **{len(guilds)}** server(s).\nUse `!leaveserver <number>` or `!leaveserver <server ID>` to make me leave one.\n"
+        # Discord message limit is 2000 chars; paginate if needed
+        pages = []
+        page = header
+        for line in lines:
+            if len(page) + len(line) + 1 > 1900:
+                pages.append(page)
+                page = ""
+            page += line + "\n"
+        if page:
+            pages.append(page)
+        for p in pages:
+            await safe_reply(ctx, p)
+    except Exception as e:
+        log_error("servers_cmd", e)
+
+@bot.command(name="leaveserver")
+async def leaveserver_cmd(ctx, *, target: str = None):
+    """Owner-only: leave a server by list number or guild ID."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        if not target:
+            await safe_reply(ctx, "Usage: `!leaveserver <number>` (from `!servers` list) or `!leaveserver <server ID>`")
+            return
+        target = target.strip()
+        guild_to_leave = None
+        # Try as a list index first
+        if target.isdigit():
+            idx = int(target)
+            guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
+            if 1 <= idx <= len(guilds):
+                guild_to_leave = guilds[idx - 1]
+            else:
+                # Maybe it's a guild ID
+                guild_to_leave = bot.get_guild(int(target))
+        else:
+            # Try as guild ID
+            try:
+                guild_to_leave = bot.get_guild(int(target))
+            except ValueError:
+                pass
+        if not guild_to_leave:
+            await safe_reply(ctx, f"Couldn't find a server matching `{target}`. Use `!servers` to see the list.")
+            return
+        name = guild_to_leave.name
+        await guild_to_leave.leave()
+        await safe_reply(ctx, f"Left **{name}**.")
+    except Exception as e:
+        log_error("leaveserver_cmd", e)
+
 @bot.event
 async def on_command_error(ctx,error):
     try:
