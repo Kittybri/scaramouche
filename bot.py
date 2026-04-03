@@ -6745,7 +6745,12 @@ async def servers_cmd(ctx):
             return
         lines = []
         for i, g in enumerate(guilds, 1):
-            owner_in = g.get_member(OWNER_ID) is not None
+            try:
+                owner_in = await g.fetch_member(OWNER_ID)
+            except discord.NotFound:
+                owner_in = None
+            except Exception:
+                owner_in = g.get_member(OWNER_ID)
             tag = "✅" if owner_in else "⚠️ *you're not in this one*"
             lines.append(f"`{i}.` **{g.name}** — {g.member_count} members — {tag} — ID: `{g.id}`")
         header = f"I'm in **{len(guilds)}** server(s).\nUse `!leaveserver <number>` or `!leaveserver <server ID>` to make me leave one.\n"
