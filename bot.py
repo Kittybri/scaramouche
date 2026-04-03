@@ -135,6 +135,9 @@ GROQ_MODEL_PRIMARY = os.getenv("GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile").
 GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip() or GROQ_MODEL_PRIMARY
 GROQ_VISION_MODEL_NAME = os.getenv("GROQ_VISION_MODEL", "llama-3.2-90b-vision-preview").strip() or "llama-3.2-90b-vision-preview"
 
+# Owner-only mode: when True, bot ignores all users except the owner
+_owner_only_mode = False
+
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
 _mmod.random = _rmod
@@ -3435,6 +3438,10 @@ async def on_message(message):
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
                 return
 
+        # Owner-only mode: ignore everyone except the owner (still process owner commands)
+        if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
+            return
+
         # !help intercept — handle before anything else
         stripped = message.content.strip().lower()
         if stripped in ("!scarahelp", "!commands"):
@@ -6731,6 +6738,22 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
         bot.tree.add_command(_group)
     except Exception:
         pass
+
+@bot.command(name="owneronly")
+async def owneronly_cmd(ctx):
+    """Owner-only: toggle whether the bot talks to anyone else."""
+    try:
+        global _owner_only_mode
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        _owner_only_mode = not _owner_only_mode
+        if _owner_only_mode:
+            await safe_reply(ctx, "Owner-only mode **ON**. I'll ignore everyone except you now.")
+        else:
+            await safe_reply(ctx, "Owner-only mode **OFF**. I'll talk to everyone again.")
+    except Exception as e:
+        log_error("owneronly_cmd", e)
 
 @bot.command(name="servers")
 async def servers_cmd(ctx):
