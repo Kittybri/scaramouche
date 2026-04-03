@@ -5554,7 +5554,8 @@ async def nightmare_cmd(ctx):
 @bot.command(name="rank")
 async def rank_cmd(ctx):
     try:
-        top=await mem.get_top_users(8)
+        top=await mem.get_top_users(20)
+        top=[u for u in top if u["user_id"] not in _dm_blocked_users][:8]
         if not top: await safe_reply(ctx,"I don't know enough of you to rank."); return
         entries="\n".join(f"{i+1}. **{u['display_name']}** — {u['message_count']} messages" for i,u in enumerate(top))
         verdict=await qai(f"Rank these by tolerability: {', '.join(u['display_name'] for u in top)}. Dismissive commentary. 2 sentences.",150)
