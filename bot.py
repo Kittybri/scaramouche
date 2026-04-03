@@ -735,6 +735,43 @@ class RotatingGroq:
 
 ai = RotatingGroq()
 GROQ_MODEL = GROQ_MODEL_PRIMARY
+
+# ── Voice message transcription (Groq Whisper) ───────────────────────────────
+async def transcribe_voice_message(attachment: discord.Attachment) -> str | None:
+    """Download a Discord voice message and transcribe it via Groq Whisper."""
+    try:
+        import aiohttp as _aio, tempfile, os as _os
+        # Download the audio file
+        async with _aio.ClientSession() as sess:
+            async with sess.get(attachment.url) as resp:
+                if resp.status != 200:
+                    return None
+                audio_bytes = await resp.read()
+        # Write to a temp file (Groq SDK needs a file-like object with a name)
+        suffix = ".ogg" if attachment.filename.endswith(".ogg") else ".mp3"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        try:
+            # Use Groq Whisper — run in executor since it's blocking
+            def _transcribe():
+                client = Groq(api_key=_groq_keys[0])
+                with open(tmp_path, "rb") as f:
+                    result = client.audio.transcriptions.create(
+                        model="whisper-large-v3",
+                        file=f,
+                        response_format="text",
+                    )
+                return result.strip() if isinstance(result, str) else (result.text or "").strip()
+            text = await asyncio.get_event_loop().run_in_executor(None, _transcribe)
+            print(f"[VOICE] Transcribed: {text[:100]!r}")
+            return text if text else None
+        finally:
+            try: _os.unlink(tmp_path)
+            except: pass
+    except Exception as e:
+        log_error("transcribe_voice_message", e)
+        return None
 GROQ_VISION_MODEL = GROQ_VISION_MODEL_NAME
 
 
@@ -3570,6 +3607,28 @@ async def on_message(message):
         content = message.content.strip()
         if not content and not message.attachments:
             return
+
+        # Voice message transcription: if user sent a voice note, transcribe it
+        voice_attachment = next(
+            (a for a in message.attachments
+             if a.filename.endswith((".ogg", ".mp3", ".wav", ".m4a"))
+             or (a.content_type and "audio" in a.content_type)),
+            None
+        )
+        if voice_attachment and not content:
+            try:
+                transcribed = await transcribe_voice_message(voice_attachment)
+                if transcribed:
+                    content = transcribed
+                    # Store that this was a voice message for context
+                    message.content = content
+                    print(f"[VOICE] {message.author.display_name}: {content[:80]}")
+                else:
+                    content = "[sent a voice message that couldn't be transcribed]"
+            except Exception as e:
+                log_error("voice_transcribe_on_message", e)
+                content = "[sent a voice message]"
+
         mentioned_early = bot.user in message.mentions
         is_reply_early = (
             message.reference and message.reference.resolved and
