@@ -6745,7 +6745,9 @@ async def servers_cmd(ctx):
             return
         lines = []
         for i, g in enumerate(guilds, 1):
-            lines.append(f"`{i}.` **{g.name}** — {g.member_count} members — ID: `{g.id}`")
+            owner_in = g.get_member(OWNER_ID) is not None
+            tag = "✅" if owner_in else "⚠️ *you're not in this one*"
+            lines.append(f"`{i}.` **{g.name}** — {g.member_count} members — {tag} — ID: `{g.id}`")
         header = f"I'm in **{len(guilds)}** server(s).\nUse `!leaveserver <number>` or `!leaveserver <server ID>` to make me leave one.\n"
         # Discord message limit is 2000 chars; paginate if needed
         pages = []
