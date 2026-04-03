@@ -6739,6 +6739,84 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
     except Exception:
         pass
 
+@bot.command(name="whois")
+async def whois_cmd(ctx, *, target: str = None):
+    """Owner-only: look up a user from the ranking by number or name."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        top = await mem.get_top_users(50)
+        if not top:
+            await safe_reply(ctx, "No users in my records yet.")
+            return
+        if not target:
+            # Show the full ranking with IDs
+            lines = []
+            for i, u in enumerate(top, 1):
+                lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
+            header = f"**All known users ({len(top)}):**\nUse `!whois <number>` or `!whois <name>` for details.\n\n"
+            pages = []
+            page = header
+            for line in lines:
+                if len(page) + len(line) + 1 > 1900:
+                    pages.append(page)
+                    page = ""
+                page += line + "\n"
+            if page:
+                pages.append(page)
+            for p in pages:
+                await safe_reply(ctx, p)
+            return
+        # Find the user by number or name
+        target = target.strip()
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(top):
+                user_record = top[idx - 1]
+        if not user_record:
+            # Search by name (case-insensitive partial match)
+            target_lower = target.lower()
+            for u in top:
+                if target_lower in u["display_name"].lower():
+                    user_record = u
+                    break
+        if not user_record:
+            await safe_reply(ctx, f"No user matching `{target}` in my records.")
+            return
+        uid = user_record["user_id"]
+        # Fetch Discord user info
+        try:
+            discord_user = await bot.fetch_user(uid)
+        except Exception:
+            discord_user = None
+        # Find which of my servers they're in
+        shared = []
+        for g in bot.guilds:
+            try:
+                m = await g.fetch_member(uid)
+                if m:
+                    shared.append(g.name)
+            except Exception:
+                pass
+        embed = discord.Embed(title=f"Who is: {user_record['display_name']}", color=0x4B0082)
+        embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
+        embed.add_field(name="Messages", value=str(user_record["message_count"]), inline=True)
+        if discord_user:
+            embed.add_field(name="Discord tag", value=str(discord_user), inline=True)
+            created = discord_user.created_at.strftime("%b %d, %Y")
+            embed.add_field(name="Account created", value=created, inline=True)
+            if discord_user.avatar:
+                embed.set_thumbnail(url=discord_user.avatar.url)
+        if shared:
+            embed.add_field(name="Shared servers", value=", ".join(shared), inline=False)
+        else:
+            embed.add_field(name="Shared servers", value="*None — they may have DM'd me or left*", inline=False)
+        await ctx.send(embed=embed)
+    except Exception as e:
+        log_error("whois_cmd", e)
+
 @bot.command(name="owneronly")
 async def owneronly_cmd(ctx):
     """Owner-only: toggle whether the bot talks to anyone else."""
