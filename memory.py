@@ -227,6 +227,10 @@ class Memory:
                     created_ts  REAL DEFAULT 0,
                     last_seen   REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS blocked_users (
+                    user_id     INTEGER PRIMARY KEY,
+                    blocked_ts  REAL DEFAULT 0
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -2137,6 +2141,30 @@ class Memory:
             ) as cur:
                 rows = await cur.fetchall()
         return [{"user_id":r[0],"display_name":r[1],"message_count":r[2]} for r in rows]
+
+    # ── Blocked users ─────────────────────────────────────────────────────────
+    async def block_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO blocked_users (user_id, blocked_ts) VALUES (?, ?)",
+                (user_id, time.time()))
+            await db.commit()
+
+    async def unblock_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def get_blocked_users(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id FROM blocked_users") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def is_blocked(self, user_id: int) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
+                return await cur.fetchone() is not None
 
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:

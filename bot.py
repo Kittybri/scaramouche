@@ -3248,9 +3248,11 @@ class ResetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    global PARTNER_BOT_ID, _TREE_SYNCED
+    global PARTNER_BOT_ID, _TREE_SYNCED, _dm_blocked_users
     try:
         await mem.init()
+        _dm_blocked_users = await mem.get_blocked_users()
+        print(f"[BLOCK] Loaded {len(_dm_blocked_users)} blocked user(s) from database.")
         # Safety: PARTNER_BOT_ID must not be our own ID
         if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
             print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
@@ -3444,6 +3446,10 @@ async def on_message(message):
         if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
             return
 
+        # Blocked users: completely invisible to the bot everywhere
+        if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
+            return
+
         # !help intercept — handle before anything else
         stripped = message.content.strip().lower()
         if stripped in ("!scarahelp", "!commands"):
@@ -3545,9 +3551,6 @@ async def on_message(message):
         dm_channel_id = message.author.id if is_dm else message.channel.id
         if is_dm:
             print(f"[DM] From {message.author.display_name}: {message.content[:80]}")
-            # Block check: silently ignore DM-blocked users (except owner)
-            if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
-                return
 
         user     = None
         romance  = False
@@ -6799,16 +6802,17 @@ async def blockdm_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, "Usage: `!blockdm <number from !dmlist>` or `!blockdm <user ID>`")
             return
         target = target.strip()
-        # Resolve the user
+        # Resolve the user from ALL known users
         all_users = await mem.get_top_users(200)
-        guild_member_ids = set()
-        for g in bot.guilds:
-            for m in g.members:
-                guild_member_ids.add(m.id)
-        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
         user_record = None
         if target.isdigit():
             idx = int(target)
+            # Try as dmlist index first
+            guild_member_ids = set()
+            for g in bot.guilds:
+                for m in g.members:
+                    guild_member_ids.add(m.id)
+            dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
             if 1 <= idx <= len(dm_users):
                 user_record = dm_users[idx - 1]
             else:
@@ -6818,14 +6822,14 @@ async def blockdm_cmd(ctx, *, target: str = None):
                         user_record = u
                         break
         if not user_record:
-            # Try name search
+            # Try name search across all users
             target_lower = target.lower()
-            for u in dm_users:
+            for u in all_users:
                 if target_lower in u["display_name"].lower():
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`. Use `!dmlist` to see the list.")
+            await safe_reply(ctx, f"No user matching `{target}`. Use `!dmlist` or `!whois` to see users.")
             return
         uid = user_record["user_id"]
         if uid in _dm_blocked_users:
@@ -6840,9 +6844,10 @@ async def blockdm_cmd(ctx, *, target: str = None):
             await dm_channel.send(farewell)
         except Exception as e:
             log_error("blockdm_farewell", e)
-        # Block them
+        # Block them (in memory + database)
         _dm_blocked_users.add(uid)
-        await safe_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`) from DMs. Farewell message sent.")
+        await mem.block_user(uid)
+        await safe_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`). Farewell message sent. They're invisible to me now.")
     except Exception as e:
         log_error("blockdm_cmd", e)
 
@@ -6887,7 +6892,8 @@ async def unblockdm_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, f"**{user_record['display_name']}** isn't blocked.")
             return
         _dm_blocked_users.discard(uid)
-        await safe_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`). They can DM me again.")
+        await mem.unblock_user(uid)
+        await safe_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`). They can talk to me again.")
     except Exception as e:
         log_error("unblockdm_cmd", e)
 
