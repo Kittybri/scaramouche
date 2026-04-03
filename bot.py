@@ -6791,6 +6791,62 @@ async def dmlist_cmd(ctx):
     except Exception as e:
         log_error("dms_cmd", e)
 
+@bot.command(name="blockall")
+async def blockall_cmd(ctx):
+    """Owner-only: block all strangers (users not in any server the owner is in)."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        # Find which servers the owner is in
+        owner_guild_ids = set()
+        for g in bot.guilds:
+            try:
+                m = await g.fetch_member(OWNER_ID)
+                if m:
+                    owner_guild_ids.add(g.id)
+            except Exception:
+                pass
+        # Collect member IDs from servers the owner is in (these are "friends")
+        safe_user_ids = {OWNER_ID, bot.user.id}
+        if PARTNER_BOT_ID:
+            safe_user_ids.add(PARTNER_BOT_ID)
+        for g in bot.guilds:
+            if g.id in owner_guild_ids:
+                for m in g.members:
+                    safe_user_ids.add(m.id)
+        # Get all known users and block the strangers
+        all_users = await mem.get_top_users(500)
+        blocked_count = 0
+        blocked_names = []
+        farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
+                     "We can continue our conversation on a later date. This is my last message.")
+        for u in all_users:
+            uid = u["user_id"]
+            if uid in safe_user_ids or uid in _dm_blocked_users:
+                continue
+            # This is a stranger — block them
+            _dm_blocked_users.add(uid)
+            await mem.block_user(uid)
+            blocked_names.append(u["display_name"])
+            blocked_count += 1
+            # Send farewell DM
+            try:
+                discord_user = await bot.fetch_user(uid)
+                dm_channel = await discord_user.create_dm()
+                await dm_channel.send(farewell)
+            except Exception:
+                pass
+        if blocked_count == 0:
+            await safe_reply(ctx, "No strangers to block. Everyone in my records shares a server with you.")
+        else:
+            names_preview = ", ".join(blocked_names[:15])
+            if len(blocked_names) > 15:
+                names_preview += f" ... and {len(blocked_names) - 15} more"
+            await safe_reply(ctx, f"Blocked **{blocked_count}** stranger(s): {names_preview}\n\nFarewell messages sent. They're invisible to me now.")
+    except Exception as e:
+        log_error("blockall_cmd", e)
+
 @bot.command(name="blockdm")
 async def blockdm_cmd(ctx, *, target: str = None):
     """Owner-only: block a user from DM'ing the bot. Sends a farewell message."""
