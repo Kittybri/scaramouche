@@ -6791,6 +6791,81 @@ async def dmlist_cmd(ctx):
     except Exception as e:
         log_error("dms_cmd", e)
 
+@bot.command(name="logs")
+async def logs_cmd(ctx, *, target: str = None):
+    """Owner-only: view conversation logs with a user (especially blocked ones)."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        if not target:
+            # Show blocked users as a quick pick list
+            all_users = await mem.get_top_users(500)
+            blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
+            if not blocked:
+                await safe_reply(ctx, "No blocked users. Use `!logs <name or ID>` to view any user's logs.")
+                return
+            lines = []
+            for i, u in enumerate(blocked, 1):
+                lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
+            header = f"**Blocked users ({len(blocked)}):**\nUse `!logs <number>` to read their conversation.\n\n"
+            page = header + "\n".join(lines)
+            await safe_reply(ctx, page[:2000])
+            return
+        target = target.strip()
+        # Resolve user
+        all_users = await mem.get_top_users(500)
+        blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(blocked):
+                user_record = blocked[idx - 1]
+            else:
+                # Try as user ID
+                for u in all_users:
+                    if u["user_id"] == int(target):
+                        user_record = u
+                        break
+        if not user_record:
+            target_lower = target.lower()
+            for u in all_users:
+                if target_lower in u["display_name"].lower():
+                    user_record = u
+                    break
+        if not user_record:
+            await safe_reply(ctx, f"No user matching `{target}`. Use `!logs` to see blocked users or `!whois` for all.")
+            return
+        # Fetch conversation logs
+        logs = await mem.get_user_logs(user_record["user_id"], limit=200)
+        if not logs:
+            await safe_reply(ctx, f"No conversation logs found for **{user_record['display_name']}**.")
+            return
+        # Format the logs
+        lines = [f"**Conversation log with {user_record['display_name']}** ({len(logs)} messages):\n"]
+        for msg in logs:
+            ts = msg.get("ts", 0)
+            time_str = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M") if ts else "?"
+            role_label = "🧑" if msg["role"] == "user" else "🤖"
+            content = (msg["content"] or "")[:300]
+            if len(msg.get("content", "") or "") > 300:
+                content += "..."
+            lines.append(f"`{time_str}` {role_label} {content}")
+        # Paginate — send as multiple messages
+        pages = []
+        page = ""
+        for line in lines:
+            if len(page) + len(line) + 1 > 1900:
+                pages.append(page)
+                page = ""
+            page += line + "\n"
+        if page:
+            pages.append(page)
+        for p in pages:
+            await safe_reply(ctx, p)
+    except Exception as e:
+        log_error("logs_cmd", e)
+
 @bot.command(name="blockall")
 async def blockall_cmd(ctx):
     """Owner-only: block all strangers (users not in any server the owner is in)."""

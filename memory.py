@@ -2166,6 +2166,17 @@ class Memory:
             async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
                 return await cur.fetchone() is not None
 
+    async def get_user_logs(self, user_id: int, limit: int = 200) -> list[dict]:
+        """Get full conversation log for a user across all channels, newest last."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT role, content, ts FROM messages
+                WHERE user_id=? AND (bot_name=? OR bot_name IS NULL)
+                ORDER BY ts ASC LIMIT ?
+            """, (user_id, self.bot_name, limit)) as cur:
+                rows = await cur.fetchall()
+        return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
+
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:
         async with aiosqlite.connect(DB_PATH) as db:
