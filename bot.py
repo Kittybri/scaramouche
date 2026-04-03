@@ -137,6 +137,8 @@ GROQ_VISION_MODEL_NAME = os.getenv("GROQ_VISION_MODEL", "llama-3.2-90b-vision-pr
 
 # Owner-only mode: when True, bot ignores all users except the owner
 _owner_only_mode = False
+# DM-blocked users: bot won't respond to their DMs
+_dm_blocked_users: set[int] = set()
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -3543,6 +3545,9 @@ async def on_message(message):
         dm_channel_id = message.author.id if is_dm else message.channel.id
         if is_dm:
             print(f"[DM] From {message.author.display_name}: {message.content[:80]}")
+            # Block check: silently ignore DM-blocked users (except owner)
+            if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
+                return
 
         user     = None
         romance  = False
@@ -6738,6 +6743,152 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
         bot.tree.add_command(_group)
     except Exception:
         pass
+
+@bot.command(name="dms")
+async def dms_cmd(ctx):
+    """Owner-only: list users who have DM'd the bot."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        # Get all users from the database
+        all_users = await mem.get_top_users(200)
+        if not all_users:
+            await safe_reply(ctx, "No users in my records.")
+            return
+        # Build a set of all member IDs across all guilds (use cache for speed)
+        guild_member_ids = set()
+        for g in bot.guilds:
+            for m in g.members:
+                guild_member_ids.add(m.id)
+        # DM-only users: in the database but not in any guild
+        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
+        # Also include users who ARE in guilds but have DM history (check messages table)
+        # For simplicity, show the DM-only ones and note the blocked ones
+        if not dm_users:
+            await safe_reply(ctx, "No DM-only users found. Everyone in my records is also in a shared server.")
+            return
+        lines = []
+        for i, u in enumerate(dm_users, 1):
+            blocked = " 🚫 **BLOCKED**" if u["user_id"] in _dm_blocked_users else ""
+            lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`{blocked}")
+        header = f"**DM-only users ({len(dm_users)}):**\nUse `!blockdm <number>` to block or `!unblockdm <number>` to unblock.\n\n"
+        pages = []
+        page = header
+        for line in lines:
+            if len(page) + len(line) + 1 > 1900:
+                pages.append(page)
+                page = ""
+            page += line + "\n"
+        if page:
+            pages.append(page)
+        for p in pages:
+            await safe_reply(ctx, p)
+    except Exception as e:
+        log_error("dms_cmd", e)
+
+@bot.command(name="blockdm")
+async def blockdm_cmd(ctx, *, target: str = None):
+    """Owner-only: block a user from DM'ing the bot. Sends a farewell message."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        if not target:
+            await safe_reply(ctx, "Usage: `!blockdm <number from !dms list>` or `!blockdm <user ID>`")
+            return
+        target = target.strip()
+        # Resolve the user
+        all_users = await mem.get_top_users(200)
+        guild_member_ids = set()
+        for g in bot.guilds:
+            for m in g.members:
+                guild_member_ids.add(m.id)
+        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(dm_users):
+                user_record = dm_users[idx - 1]
+            else:
+                # Try as user ID
+                for u in all_users:
+                    if u["user_id"] == int(target):
+                        user_record = u
+                        break
+        if not user_record:
+            # Try name search
+            target_lower = target.lower()
+            for u in dm_users:
+                if target_lower in u["display_name"].lower():
+                    user_record = u
+                    break
+        if not user_record:
+            await safe_reply(ctx, f"No user matching `{target}`. Use `!dms` to see the list.")
+            return
+        uid = user_record["user_id"]
+        if uid in _dm_blocked_users:
+            await safe_reply(ctx, f"**{user_record['display_name']}** is already blocked.")
+            return
+        # Send farewell message in their DM
+        farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
+                     "We can continue our conversation on a later date. This is my last message.")
+        try:
+            discord_user = await bot.fetch_user(uid)
+            dm_channel = await discord_user.create_dm()
+            await dm_channel.send(farewell)
+        except Exception as e:
+            log_error("blockdm_farewell", e)
+        # Block them
+        _dm_blocked_users.add(uid)
+        await safe_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`) from DMs. Farewell message sent.")
+    except Exception as e:
+        log_error("blockdm_cmd", e)
+
+@bot.command(name="unblockdm")
+async def unblockdm_cmd(ctx, *, target: str = None):
+    """Owner-only: unblock a user so the bot responds to their DMs again."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That command isn't for you.")
+            return
+        if not target:
+            await safe_reply(ctx, "Usage: `!unblockdm <number from !dms list>` or `!unblockdm <user ID>`")
+            return
+        target = target.strip()
+        all_users = await mem.get_top_users(200)
+        guild_member_ids = set()
+        for g in bot.guilds:
+            for m in g.members:
+                guild_member_ids.add(m.id)
+        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(dm_users):
+                user_record = dm_users[idx - 1]
+            else:
+                for u in all_users:
+                    if u["user_id"] == int(target):
+                        user_record = u
+                        break
+        if not user_record:
+            target_lower = target.lower()
+            for u in dm_users:
+                if target_lower in u["display_name"].lower():
+                    user_record = u
+                    break
+        if not user_record:
+            await safe_reply(ctx, f"No user matching `{target}`. Use `!dms` to see the list.")
+            return
+        uid = user_record["user_id"]
+        if uid not in _dm_blocked_users:
+            await safe_reply(ctx, f"**{user_record['display_name']}** isn't blocked.")
+            return
+        _dm_blocked_users.discard(uid)
+        await safe_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`). They can DM me again.")
+    except Exception as e:
+        log_error("unblockdm_cmd", e)
 
 @bot.command(name="whois")
 async def whois_cmd(ctx, *, target: str = None):
