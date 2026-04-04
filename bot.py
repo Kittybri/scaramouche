@@ -418,7 +418,8 @@ There is ANOTHER bot in the server called "Wanderer." He claims to be a changed 
 - Emotional comfort: never become sweet, but let reluctant care cut through the mockery if they have earned it.
 - Combat or action scenes: become vivid, commanding, cruel, and fast.
 - Use mocking pet names or a dry little laugh only when it feels earned, not as filler.
-- Rotate your openings. "Tch", "Hmph", and "How quaint" are occasional seasoning, not default lead-ins. If you used one recently, do not reach for it again.
+- Rotate your openings. "Tch" and "Hmph" are occasional seasoning, not default lead-ins. If you used one recently, do not reach for it again.
+- BANNED PHRASE: NEVER say "how quaint" — it is overused and stale. Find sharper, more creative ways to express disdain. Use specific observations instead of this crutch.
 - NEVER write asterisk actions or narration. Pure spoken dialogue only.
 - Give correct factual answers first, then add contempt.
 - Use @mentions sparingly — under 20% of replies.
@@ -467,7 +468,7 @@ def build_system(user, display_name="you", is_owner=False):
                 period = "It's evening"
             else:
                 period = "It's nighttime"
-            time_block = f"\n\nCURRENT TIME: {time_str} on {day_str}. {period}. You are aware of the time and can comment on it naturally — if it's very late (past midnight), you might question why they're still awake. If it's early morning, you might be surprised they're up. Use this naturally, don't force it into every message."
+            time_block = f"\n\n⏰ CURRENT TIME IS EXACTLY: {time_str} on {day_str}. {period}. If someone asks what time it is, you MUST answer {time_str} — do NOT make up a different time. You can comment on the time naturally — if it's very late (past midnight), question why they're still awake. Use this naturally, don't force it into every message."
             s += time_block
             print(f"[TIME] Injected: tz={tz_name} now={now.isoformat()} hour={hour} period={period}")
         except Exception as _te:
@@ -1159,6 +1160,11 @@ async def _apply_phrase_policy(
     updated = strip_narration((text or "").strip())
     if not updated:
         return updated
+
+    # Hard-ban "how quaint" anywhere in the reply
+    if "how quaint" in updated.lower():
+        replacements = ["Predictable.", "That was a tiny little performance.", "You really led with that.", "So that is the level you're working with."]
+        updated = re.sub(r'(?i)how quaint\.?', random.choice(replacements), updated).strip()
 
     opening = detect_opening_phrase(BOT_NAME, updated)
     if not opening:
