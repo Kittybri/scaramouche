@@ -3646,6 +3646,28 @@ async def on_message(message):
                     )
                 except Exception as e:
                     log_error("partner_attention/direct", e)
+                # ── Owner-jealousy: if the OWNER is talking to Wanderer, Scaramouche may butt in ──
+                if OWNER_ID and message.author.id == OWNER_ID and PARTNER_BOT_ID:
+                    try:
+                        owner_data = await mem.get_user(OWNER_ID)
+                        owner_aff = (owner_data.get("affection", 0) or 0) if owner_data else 0
+                        if owner_aff >= 50 and random.random() < 0.30:
+                            j_prompt = (
+                                f"You (Scaramouche) just saw your creator talking to {PARTNER_NAME} instead of you. "
+                                f"They said: '{message.content[:220]}'\n"
+                                f"You're jealous but would NEVER admit it openly. Butt in with a sharp, possessive comment — "
+                                f"mock {PARTNER_NAME}, redirect attention to yourself, or make a cutting remark about being ignored. "
+                                f"Talk TO the user, not to {PARTNER_NAME}. 1-2 sentences. No narration. Don't literally say you're jealous."
+                            )
+                            j_reply = await qai(j_prompt, 180)
+                            if j_reply:
+                                j_reply = strip_narration(j_reply)
+                                j_reply = _apply_phrase_policy(j_reply)
+                                await message.channel.send(j_reply)
+                                await mem.add_message(OWNER_ID, message.channel.id, "assistant", j_reply)
+                                print(f"[JEALOUSY] Scaramouche jealous of owner talking to {PARTNER_NAME}")
+                    except Exception as e:
+                        log_error("owner_jealousy", e)
                 return
 
             # If message talks ABOUT Wanderer (contains his name) but doesn't mention us,
