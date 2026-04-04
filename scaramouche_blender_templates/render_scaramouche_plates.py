@@ -9,19 +9,25 @@ from mathutils import Matrix, Vector
 
 SCARA_MODEL_CANDIDATES = [
     os.getenv("SCARAMOUCHE_MODEL_PATH", "").strip(),
+    r"C:\Users\abria\Downloads\scara_new_model\Scaramouche model\Scaramouche.pmx",
     r"C:\Users\abria\Downloads\genshin-impact-scaramouche (1).glb",
     r"C:\Users\abria\Downloads\genshin-impact-scaramouche.glb",
 ]
 GUIDE_HEAD_STEMS = ("WANDERER_GUIDE_HEAD", "PARTNER_GUIDE_HEAD")
 GUIDE_TORSO_STEMS = ("WANDERER_GUIDE_TORSO", "PARTNER_GUIDE_TORSO")
-RIGHT_SHOULDER_BONE = "Bone e58fb3e882a9_019"
-LEFT_SHOULDER_BONE = "Bone e5b7a6e882a9_037"
-RIGHT_UPPER_ARM_BONE = "Bone e58fb3e88595_021"
-LEFT_UPPER_ARM_BONE = "Bone e5b7a6e88595_039"
-RIGHT_FOREARM_BONE = "Bone e58fb3e381b2e38198_026"
-LEFT_FOREARM_BONE = "Bone e5b7a6e381b2e38198_044"
-RIGHT_WRIST_BONE = "Bone e58fb3e6898be9a696_033"
-LEFT_WRIST_BONE = "Bone e5b7a6e6898be9a696_049"
+RIGHT_SHOULDER_BONE = "\u53f3\u80a9"
+LEFT_SHOULDER_BONE = "\u5de6\u80a9"
+RIGHT_UPPER_ARM_BONE = "\u53f3\u8155"
+LEFT_UPPER_ARM_BONE = "\u5de6\u8155"
+RIGHT_FOREARM_BONE = "\u53f3\u3072\u3058"
+LEFT_FOREARM_BONE = "\u5de6\u3072\u3058"
+RIGHT_WRIST_BONE = "\u53f3\u624b\u9996"
+LEFT_WRIST_BONE = "\u5de6\u624b\u9996"
+TORSO_BONE = "\u4e0a\u534a\u8eab"
+UPPER_TORSO_BONE = "\u4e0a\u534a\u8eab2"
+NECK_BONE = "\u9996"
+HEAD_BONE = "\u982d"
+POSE_PHASES = (0, 1, 2)
 
 
 def read_arg(name: str, default: str = "") -> str:
@@ -58,9 +64,18 @@ def collect_descendants(root):
     return descendants
 
 
+def is_descendant_of(obj, ancestor):
+    current = obj.parent
+    while current is not None:
+        if current == ancestor:
+            return True
+        current = current.parent
+    return False
+
+
 def find_scara_root(scene):
     for obj in scene.objects:
-        if obj.name.startswith("Sketchfab_model"):
+        if obj.name.startswith("Sketchfab_model") or obj.name == "Scaramouche":
             return obj
     return None
 
@@ -68,24 +83,54 @@ def find_scara_root(scene):
 def find_scara_container(root):
     if root is None:
         return None
-    return next((obj for obj in root.children if obj.name.startswith("Scaramouche.fbx")), None)
+    return next(
+        (
+            obj
+            for obj in root.children
+            if obj.name.startswith("Scaramouche.fbx") or obj.name == "Scaramouche_arm"
+        ),
+        root,
+    )
 
 
 def find_scara_armature(scene, root):
     if root is None:
         return None
     descendants = collect_descendants(root)
-    return next((obj for obj in descendants if obj.type == "ARMATURE"), None)
+    return next(
+        (
+            obj
+            for obj in descendants
+            if obj.type == "ARMATURE" and ("Scaramouche" in obj.name or obj.name.endswith("_arm"))
+        ),
+        next((obj for obj in descendants if obj.type == "ARMATURE"), None),
+    )
 
 
 def find_scara_meshes(scene, root):
     if root is None:
         return []
     descendants = collect_descendants(root)
-    return [obj for obj in descendants if obj.type == "MESH" and obj.name != "Icosphere"]
+    armature = find_scara_armature(scene, root)
+    if armature is not None:
+        armature_meshes = [
+            obj
+            for obj in descendants
+            if obj.type == "MESH" and (obj.parent == armature or is_descendant_of(obj, armature))
+        ]
+        if armature_meshes:
+            return armature_meshes
+    return [obj for obj in descendants if obj.type == "MESH" and obj.name != "Icosphere" and not obj.name[:3].isdigit()]
 
 
 def find_face_mesh(meshes):
+    for mesh in meshes:
+        if mesh.name == "Scaramouche_mesh":
+            return mesh
+    for mesh in meshes:
+        shape_keys = getattr(getattr(mesh.data, "shape_keys", None), "key_blocks", None)
+        if shape_keys and any(name in shape_keys for name in ("まばたき", "あ", "い", "う", "え", "お")):
+            return mesh
     for mesh in meshes:
         data_name = getattr(mesh.data, "name", "")
         if data_name.startswith("Scaramouche_Face"):
@@ -147,7 +192,30 @@ def import_scara_model(scene):
         return find_scara_root(scene)
     set_active_scene(scene)
     before = set(bpy.data.objects)
-    bpy.ops.import_scene.gltf(filepath=model_path)
+    ext = os.path.splitext(model_path)[1].lower()
+    if ext == ".pmx":
+        import addon_utils
+
+        try:
+            addon_utils.enable("mmd_tools", default_set=True, persistent=True)
+        except Exception:
+            pass
+        imported = False
+        for importer in (
+            lambda: bpy.ops.mmd_tools.import_model(filepath=model_path),
+            lambda: bpy.ops.import_scene.pmx(filepath=model_path),
+            lambda: bpy.ops.import_scene.mmd(filepath=model_path),
+        ):
+            try:
+                importer()
+                imported = True
+                break
+            except Exception:
+                continue
+        if not imported:
+            raise SystemExit(f"Could not import Scaramouche PMX: {model_path}")
+    else:
+        bpy.ops.import_scene.gltf(filepath=model_path)
     imported = [obj for obj in bpy.data.objects if obj not in before]
     imported_names = [obj.name for obj in imported]
     for name in imported_names:
@@ -164,11 +232,47 @@ def import_scara_model(scene):
         obj = bpy.data.objects.get(name)
         if obj is None:
             continue
-        if obj.parent is None and obj.name.startswith("Sketchfab_model"):
+        if obj.parent is None and (obj.name.startswith("Sketchfab_model") or obj.name == "Scaramouche"):
             imported_roots.append(obj)
     if imported_roots:
         return imported_roots[0]
     return find_scara_root(scene)
+
+
+def _set_shape_key(mesh, key_name: str, value: float):
+    if mesh is None or mesh.data.shape_keys is None:
+        return
+    kb = mesh.data.shape_keys.key_blocks.get(key_name)
+    if kb is not None:
+        kb.value = value
+
+
+def reset_face_morphs(face_mesh):
+    if face_mesh is None or face_mesh.data.shape_keys is None:
+        return
+    for key_block in face_mesh.data.shape_keys.key_blocks:
+        if key_block.name != "Basis":
+            key_block.value = 0.0
+
+
+def apply_face_morphs(face_mesh, viseme: str):
+    if face_mesh is None:
+        return
+    reset_face_morphs(face_mesh)
+    if viseme == "blink":
+        _set_shape_key(face_mesh, "まばたき", 1.0)
+        return
+    viseme_map = {
+        "a": [("あ", 0.85), ("あ２", 0.35)],
+        "i": [("い", 0.85)],
+        "u": [("う", 0.85)],
+        "e": [("え", 0.80)],
+        "o": [("お", 0.90), ("お小さい", 0.25)],
+        "n": [("ん", 0.70)],
+        "rest": [],
+    }
+    for key_name, value in viseme_map.get(viseme, []):
+        _set_shape_key(face_mesh, key_name, value)
 
 
 def apply_screen_image(scene, image_path: str):
@@ -224,26 +328,91 @@ def reset_pose(armature):
         bone.scale = (1.0, 1.0, 1.0)
 
 
-def apply_presenter_pose(armature):
+def _set_rotation(armature, bone_name: str, degrees_xyz):
+    pose_bone = armature.pose.bones.get(bone_name)
+    if pose_bone is None:
+        return
+    pose_bone.rotation_mode = "XYZ"
+    pose_bone.rotation_euler = tuple(math.radians(value) for value in degrees_xyz)
+
+
+def apply_presenter_pose(armature, viseme: str = "rest", mood: str = "debate", phase: int = 0):
     if armature is None:
         return
     reset_pose(armature)
-    pose_rotations = {
-        RIGHT_SHOULDER_BONE: (0.0, 6.0, 4.0),
-        LEFT_SHOULDER_BONE: (0.0, -6.0, -4.0),
-        RIGHT_UPPER_ARM_BONE: (0.0, 0.0, 34.0),
-        LEFT_UPPER_ARM_BONE: (0.0, 0.0, -34.0),
-        RIGHT_FOREARM_BONE: (0.0, 0.0, -10.0),
-        LEFT_FOREARM_BONE: (0.0, 0.0, 10.0),
-        RIGHT_WRIST_BONE: (0.0, 0.0, 3.0),
-        LEFT_WRIST_BONE: (0.0, 0.0, -3.0),
+    base_rotations = {
+        RIGHT_SHOULDER_BONE: (0.0, 4.0, 8.0),
+        LEFT_SHOULDER_BONE: (0.0, -4.0, -8.0),
+        RIGHT_UPPER_ARM_BONE: (0.0, -1.0, 46.0),
+        LEFT_UPPER_ARM_BONE: (0.0, 1.0, -46.0),
+        RIGHT_FOREARM_BONE: (0.0, 0.0, -18.0),
+        LEFT_FOREARM_BONE: (0.0, 0.0, 18.0),
+        RIGHT_WRIST_BONE: (0.0, 0.0, 5.0),
+        LEFT_WRIST_BONE: (0.0, 0.0, -5.0),
+        TORSO_BONE: (1.5, 0.0, 0.0),
+        UPPER_TORSO_BONE: (3.0, 0.0, 0.0),
+        NECK_BONE: (-1.0, 0.0, 0.0),
+        HEAD_BONE: (1.0, 0.0, 0.0),
     }
-    for bone_name, degrees_xyz in pose_rotations.items():
-        pose_bone = armature.pose.bones.get(bone_name)
-        if pose_bone is None:
+    for bone_name, degrees_xyz in base_rotations.items():
+        _set_rotation(armature, bone_name, degrees_xyz)
+
+    is_speaking = viseme not in {"rest", "blink"}
+    if is_speaking:
+        speaking_rotations = {
+            TORSO_BONE: (3.4, 0.0, -1.2),
+            UPPER_TORSO_BONE: (5.2, 0.0, -2.2),
+            NECK_BONE: (-2.8, 0.0, 1.0),
+            HEAD_BONE: (4.4, 0.0, 1.2),
+            RIGHT_SHOULDER_BONE: (0.0, 5.0, 10.0),
+            LEFT_SHOULDER_BONE: (0.0, -5.0, -10.0),
+            RIGHT_UPPER_ARM_BONE: (0.0, -1.0, 49.0),
+            LEFT_UPPER_ARM_BONE: (0.0, 1.0, -49.0),
+        }
+        for bone_name, degrees_xyz in speaking_rotations.items():
+            _set_rotation(armature, bone_name, degrees_xyz)
+    elif viseme == "blink":
+        blink_rotations = {
+            TORSO_BONE: (1.0, 0.0, 0.0),
+            UPPER_TORSO_BONE: (2.4, 0.0, 0.6),
+            NECK_BONE: (-4.0, 0.0, 0.0),
+            HEAD_BONE: (-2.2, 0.0, 0.0),
+        }
+        for bone_name, degrees_xyz in blink_rotations.items():
+            _set_rotation(armature, bone_name, degrees_xyz)
+
+    if mood == "debate":
+        _set_rotation(armature, RIGHT_SHOULDER_BONE, (0.0, 6.0, 11.0 if is_speaking else 9.0))
+        _set_rotation(armature, LEFT_SHOULDER_BONE, (0.0, -6.0, -11.0 if is_speaking else -9.0))
+
+    phase_offsets = {
+        0: {
+            TORSO_BONE: (0.0, 0.0, 0.0),
+            UPPER_TORSO_BONE: (0.0, 0.0, 0.0),
+            NECK_BONE: (0.0, 0.0, 0.0),
+            HEAD_BONE: (0.0, 0.0, 0.0),
+        },
+        1: {
+            TORSO_BONE: (0.2, 0.0, -1.6),
+            UPPER_TORSO_BONE: (0.6, 0.0, -2.4),
+            NECK_BONE: (-0.3, 0.0, -0.6),
+            HEAD_BONE: (0.5, 0.0, -1.3),
+        },
+        2: {
+            TORSO_BONE: (0.2, 0.0, 1.6),
+            UPPER_TORSO_BONE: (0.6, 0.0, 2.4),
+            NECK_BONE: (-0.3, 0.0, 0.6),
+            HEAD_BONE: (0.5, 0.0, 1.3),
+        },
+    }
+    for bone_name, offsets in phase_offsets.get(phase, phase_offsets[0]).items():
+        bone = armature.pose.bones.get(bone_name)
+        if bone is None:
             continue
-        pose_bone.rotation_mode = "XYZ"
-        pose_bone.rotation_euler = tuple(math.radians(value) for value in degrees_xyz)
+        bone.rotation_mode = "XYZ"
+        bone.rotation_euler.x += math.radians(offsets[0])
+        bone.rotation_euler.y += math.radians(offsets[1])
+        bone.rotation_euler.z += math.radians(offsets[2])
 
 
 def find_pose_bone(armature, name_fragment: str):
@@ -256,27 +425,24 @@ def find_pose_bone(armature, name_fragment: str):
     return None
 
 
-def apply_expression_pose(scene, mood: str):
+def apply_expression_pose(scene, mood: str, phase: int = 0):
     root = find_scara_root(scene)
     armature = find_scara_armature(scene, root)
+    face_mesh = find_face_mesh(find_scara_meshes(scene, root))
     if armature is None:
         return
-    apply_presenter_pose(armature)
-    if mood == "debate":
-        right = armature.pose.bones.get(RIGHT_SHOULDER_BONE)
-        left = armature.pose.bones.get(LEFT_SHOULDER_BONE)
-        if right is not None:
-            right.rotation_euler.y += math.radians(4.0)
-        if left is not None:
-            left.rotation_euler.y -= math.radians(4.0)
+    apply_presenter_pose(armature, "rest", mood, phase)
+    apply_face_morphs(face_mesh, "blink")
 
 
-def apply_mouth_pose(scene, viseme: str, mood: str):
+def apply_mouth_pose(scene, viseme: str, mood: str, phase: int = 0):
     root = find_scara_root(scene)
     armature = find_scara_armature(scene, root)
+    face_mesh = find_face_mesh(find_scara_meshes(scene, root))
     if armature is None:
         return
-    apply_expression_pose(scene, mood)
+    apply_presenter_pose(armature, viseme, mood, phase)
+    apply_face_morphs(face_mesh, viseme)
     lower_tooth = find_pose_bone(armature, "ToothBone D")
     upper_tooth = find_pose_bone(armature, "ToothBone U")
     angle_map = {
@@ -500,11 +666,15 @@ def main():
         apply_screen_image(scene, slide_path)
         output_manifest["plates"][str(index)] = {}
         for viseme in visemes:
-            apply_mouth_pose(scene, viseme, mood)
-            target = os.path.join(output_dir, f"segment_{index:02d}_{viseme}.png")
-            scene.render.filepath = target
-            bpy.ops.render.render(write_still=True, scene=scene.name)
-            output_manifest["plates"][str(index)][viseme] = target
+            for phase in POSE_PHASES:
+                apply_mouth_pose(scene, viseme, mood, phase)
+                suffix = "" if phase == 0 else f"__phase{phase}"
+                target = os.path.join(output_dir, f"segment_{index:02d}_{viseme}{suffix}.png")
+                scene.render.filepath = target
+                bpy.ops.render.render(write_still=True, scene=scene.name)
+                output_manifest["plates"][str(index)][f"{viseme}{suffix}"] = target
+                if phase == 0:
+                    output_manifest["plates"][str(index)][viseme] = target
 
     with open(os.path.join(output_dir, "plates_manifest.json"), "w", encoding="utf-8") as handle:
         json.dump(output_manifest, handle, indent=2)
