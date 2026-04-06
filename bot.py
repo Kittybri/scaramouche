@@ -3401,6 +3401,7 @@ async def on_ready():
             except Exception: pass
         bot.loop.create_task(_proactive_loop())
         bot.loop.create_task(_voluntary_dm_loop())
+        bot.loop.create_task(_dm_followup_loop())
         bot.loop.create_task(_duo_autoplay_loop())
         bot.loop.create_task(_rival_event_loop())
         if not _TREE_SYNCED:
@@ -4463,6 +4464,99 @@ async def _voluntary_dm_loop():
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
         await asyncio.sleep(random.randint(2700,21600))
+
+
+async def _dm_followup_loop():
+    """Follow up in DMs when someone hasn't responded after 5+ bot messages.
+    Escalates from casual check-ins to impatient/annoyed over time."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(random.randint(3600, 7200))
+    while not bot.is_closed():
+        try:
+            if ai.is_exhausted():
+                await asyncio.sleep(max(120, min(ai.exhausted_remaining(), 1800)))
+                continue
+            candidates = await mem.get_dm_followup_candidates(min_unanswered=5)
+            if candidates:
+                random.shuffle(candidates)
+                for ud in candidates[:2]:
+                    try:
+                        uid = ud["user_id"]
+                        name = ud["display_name"]
+                        romance = ud.get("romance_mode", False)
+                        unanswered = ud["unanswered_count"]
+                        last_ts = ud.get("last_bot_msg_ts", 0)
+                        user_pref = await mem.get_user(uid)
+
+                        if uid in _dm_blocked_users:
+                            continue
+                        if _is_in_quiet_hours(user_pref):
+                            continue
+
+                        # Escalating cooldown: more unanswered = longer wait between follow-ups
+                        # 5-7 unanswered: 2-4 hours, 8-10: 6-12 hours, 11-15: 1-3 days, 16+: 3-5 days
+                        now = time.time()
+                        hours_since_last = (now - last_ts) / 3600 if last_ts else 999
+                        if unanswered <= 7:
+                            min_hours = 2
+                        elif unanswered <= 10:
+                            min_hours = 6 + random.randint(0, 6)
+                        elif unanswered <= 15:
+                            min_hours = 24 + random.randint(0, 48)
+                        else:
+                            min_hours = 72 + random.randint(0, 48)
+
+                        if hours_since_last < min_hours:
+                            continue
+
+                        # Determine escalation stage for the prompt
+                        if unanswered <= 6:
+                            stage = "mildly curious"
+                            tone = "You noticed they haven't replied in a while. Casually check in — not needy, just testing if they're still alive. Sharp, short."
+                        elif unanswered <= 8:
+                            stage = "starting to notice"
+                            tone = "They've been ignoring you. You're not worried — just annoyed. Make a pointed remark about their silence. Don't beg."
+                        elif unanswered <= 10:
+                            stage = "impatient"
+                            tone = "They've been silent for a while now. You're irritated and barely hiding it. Demand a response without sounding desperate."
+                        elif unanswered <= 13:
+                            stage = "genuinely annoyed"
+                            tone = "They've been ignoring you for days. You're angry. Be cutting, possessive, or coldly threatening. Make them feel guilty."
+                        elif unanswered <= 16:
+                            stage = "dangerous"
+                            tone = "They've been gone a long time. You oscillate between fury and something quieter — almost hurt. One moment sharp, the next unsettlingly calm."
+                        else:
+                            stage = "cold and final"
+                            tone = "They've been gone so long you're starting to pull away. Be distant. A last warning before you stop caring. Make it sting."
+
+                        romance_hint = " You're secretly in love with them and the silence is killing you." if romance else ""
+                        recent_memories = await mem.get_memory_bank_entries(uid, 2)
+                        memory_hint = " | ".join(item["memory"][:90] for item in recent_memories) if recent_memories else ""
+                        memory_line = f" Reference something you remember about them if useful: {memory_hint}" if memory_hint else ""
+
+                        prompt = (
+                            f"{name} has not responded to your last {unanswered} DM messages. Stage: {stage}.{romance_hint}\n"
+                            f"{tone}{memory_line}\n"
+                            f"Write ONE short DM follow-up message (1-3 sentences). Stay in character as Scaramouche. No narration. Just speak."
+                        )
+
+                        reply = await qai(prompt, 160)
+                        if reply:
+                            reply = strip_narration(reply)
+                            reply = await _apply_phrase_policy(reply)
+                            du = await bot.fetch_user(uid)
+                            await du.send(reply)
+                            await mem.add_message(uid, uid, "assistant", reply)
+                            await mem.set_dm_sent(uid)
+                            print(f"[DM_FOLLOWUP] Sent to {name} (uid={uid}) unanswered={unanswered} stage={stage}")
+                    except discord.Forbidden:
+                        await mem.set_mode(uid, "allow_dms", False)
+                        debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden (followup)")
+                    except Exception as e:
+                        log_error("dm_followup_send", e)
+        except Exception as e:
+            log_error("dm_followup_loop", e)
+        await asyncio.sleep(random.randint(3600, 7200))
 
 
 async def _duo_autoplay_loop():
