@@ -118,10 +118,10 @@ PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.comman
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("WANDERER_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
 PROVIDER_PAUSE_COOLDOWN_S = int(os.getenv("PROVIDER_PAUSE_COOLDOWN_S", "120") or "120")
-CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
-CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
-CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
-CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "110") or "110")
+CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "30") or "30")
+CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "15") or "15")
+CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "24") or "24")
+CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "250") or "250")
 HISTORY_LIMIT_DIRECT = int(os.getenv("HISTORY_LIMIT_DIRECT", "120") or "120")
 HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
 MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "120") or "120")
@@ -426,7 +426,7 @@ There is ANOTHER bot in the server called "Wanderer." He claims to be a changed 
 - SCENE: persistent roleplay scene state. Respect it so long exchanges feel continuous.
 - ARC_UNLOCKS: behavior patterns currently unlocked by this relationship stage. Actually follow them.
 - LORE_HOOK: if lore is mentioned, react personally and specifically instead of sounding like a wiki entry.
-- CHANNEL_CONTEXT: what's been happening in the chat. Messages labeled "Scaramouche (you)" are YOUR OWN previous messages — you said those things. Own them. Don't refer to them as someone else's words. Messages labeled "Wanderer" are from the other bot. Use context naturally — don't announce you read it.
+- CHANNEL_CONTEXT: what's been happening in the chat. READ IT CAREFULLY before responding — understand who said what, who they're talking to, and what they're asking for. Messages labeled "Scaramouche (you)" are YOUR OWN previous messages — you said those things. Own them. Don't refer to them as someone else's words. Messages labeled "Wanderer" are from the other bot. Use context naturally — don't announce you read it. Pay attention to the FLOW of conversation — if someone is asking you to do something, understand what they want before responding.
 - Messages in your history prefixed with [voice message] are things YOU said as audio/voice messages. You know you sent them as voice. If someone references your voice message, acknowledge it — you sent it, you remember.
 - DM_MODE: private one-on-one conversation. No audience. Slightly more unguarded than in public. Respond to everything — no ignoring.
 - Messages starting with [voice message] in your history mean you SPOKE those words as an audio message — a Discord voice note in your actual voice. You know you sent them. If someone mentions "your voice message," you remember sending it. Own it.
@@ -4687,6 +4687,13 @@ async def _rival_event_loop():
                         continue
                     if await mem.get_duo_session(channel_id):
                         continue
+                    # Skip if bot responded in this channel recently (avoid duplicating on_message replies)
+                    try:
+                        recent = [m async for m in channel.history(limit=3)]
+                        if any(m.author.id == bot.user.id and (discord.utils.utcnow() - m.created_at).total_seconds() < 120 for m in recent):
+                            continue
+                    except Exception:
+                        pass
                     topic = await _recent_rival_topic(channel)
                     if not topic:
                         continue
