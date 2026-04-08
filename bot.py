@@ -5877,6 +5877,18 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         await mem.save_rpg_state(user_id, boss_points=0, current_round=0, scenario_data={}, active=True)
         await channel.send(embed=embed)
         await mem.record_game_result(user_id, "rpg", False, boss_points)
+        # Taunt the loser
+        guild = channel.guild if hasattr(channel, "guild") else None
+        loser_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "you"
+        taunt = await qai(
+            f"A player named {loser_name} just LOST to Harbinger #{boss['rank']} {boss['name']} in the RPG. "
+            f"They only had {boss_points} points out of {needed} needed. Pathetic. "
+            f"As Scaramouche, mock them ruthlessly. Be condescending, call them stupid/weak/pathetic. "
+            f"Short and cutting — 1-2 sentences max. No encouragement.",
+            100,
+        )
+        if taunt:
+            await channel.send(taunt)
 
 
 @bot.command(name="rpg1", aliases=["quest1", "harbinger1"])
