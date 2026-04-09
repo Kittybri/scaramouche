@@ -1521,6 +1521,95 @@ def _user_local_hour(user: dict | None) -> int:
         return datetime.now().hour
 
 
+def _time_period_label(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 21:
+        return "evening"
+    return "night"
+
+
+def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+
+    actual = _time_period_label(_user_local_hour(user))
+    wrong_patterns: dict[str, tuple[str, ...]] = {
+        "morning": (
+            r"\bwhat(?:'s| is)\s+so\s+special\s+about\s+mornings?\b",
+            r"\bmorning\s+has\s+barely\s+started\b",
+            r"\byou(?:'re| are)\s+up\s+early\b",
+            r"\bthis\s+morning\b",
+            r"\bgood\s+morning\b",
+        ),
+        "afternoon": (
+            r"\bthis\s+afternoon\b",
+            r"\bgood\s+afternoon\b",
+        ),
+        "evening": (
+            r"\bthis\s+evening\b",
+            r"\bgood\s+evening\b",
+        ),
+        "night": (
+            r"\btonight\b",
+            r"\bthis\s+late\s+night\b",
+            r"\bgood\s+night\b",
+        ),
+    }
+
+    for label, patterns in wrong_patterns.items():
+        if label == actual:
+            continue
+        for pattern in patterns:
+            if re.search(pattern, cleaned, re.IGNORECASE):
+                if label == "morning" and actual == "night":
+                    cleaned = re.sub(
+                        r"\bwhat(?:'s| is)\s+so\s+special\s+about\s+mornings?\b",
+                        "What's so special about showing up this late",
+                        cleaned,
+                        flags=re.IGNORECASE,
+                    )
+                    cleaned = re.sub(r"\bmorning\s+has\s+barely\s+started\b", "It's late and you're still here", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\byou(?:'re| are)\s+up\s+early\b", "you're still awake", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\bthis\s+morning\b", "this late at night", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\bgood\s+morning\b", "You're up late", cleaned, flags=re.IGNORECASE)
+                elif label == "morning":
+                    cleaned = re.sub(r"\bthis\s+morning\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\bgood\s+morning\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
+                elif label == "night" and actual != "night":
+                    cleaned = re.sub(r"\btonight\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
+                else:
+                    cleaned = re.sub(rf"\bthis\s+{label}\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(rf"\bgood\s+{label}\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def _sanitize_partner_attribution(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    replacements = [
+        (
+            r"\bWanderer,\s*you think ([^?]+)\?\s*I've\b",
+            r"Wanderer, if you think \1, I've",
+        ),
+        (
+            r"\bWanderer,\s*you think ([^?]+)\?",
+            r"Wanderer, if you think \1, say it plainly.",
+        ),
+        (
+            r"\bWanderer said ([^.?!]+)",
+            r"So this is what I am pinning on Wanderer: \1",
+        ),
+    ]
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
 def _voice_style_for(
     user: dict | None,
     mood: int = 0,
@@ -3167,6 +3256,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if ai.is_exhausted() and route_name == "light":
             return ""
         reply = fallback_reply(BOT_NAME, recent_replies)
+    reply = _sanitize_time_of_day_claims(reply, refreshed_user or user)
+    reply = _sanitize_partner_attribution(reply)
     if reply:
         remember_output(BOT_NAME, reply)
     return reply
@@ -3233,6 +3324,8 @@ async def qai(prompt, max_tokens=200, *, self_edit: bool = True, route: str = "a
             if ai.is_exhausted() and route_name == "light":
                 return ""
             reply = fallback_reply(BOT_NAME, recent_replies)
+        reply = _sanitize_time_of_day_claims(reply, user)
+        reply = _sanitize_partner_attribution(reply)
         if reply:
             remember_output(BOT_NAME, reply)
         return reply
@@ -4747,7 +4840,8 @@ async def _rival_event_loop():
                         continue
                     opener = await qai(
                         f"Users were discussing: '{topic}'. Start a spontaneous disagreement with {PARTNER_NAME}. "
-                        "One or two sentences. Sound amused, cutting, and specific enough that the other bot has something to answer.",
+                        "One or two sentences. Sound amused, cutting, and specific enough that the other bot has something to answer. "
+                        "State only your own reaction; do not invent what the other bot thinks, feels, or said unless they actually said it in-channel.",
                         140,
                     )
                     opener = strip_narration(opener)
@@ -8888,4 +8982,3 @@ if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not _groq_keys: raise SystemExit("❌ No GROQ_API_KEY set (need at least GROQ_API_KEY)")
     bot.run(DISCORD_TOKEN)
-
