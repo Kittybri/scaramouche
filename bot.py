@@ -4158,35 +4158,6 @@ async def on_message(message):
                         return
         except Exception as e: log_error("on_message/image", e)
 
-        # Special triggers
-        try:
-            cl = content.lower()
-            if VILLAIN_TRIGGER in content.lower():
-                m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
-                await message.reply(strip_narration(m)); return
-            # If someone says "wanderer" — check if Wanderer bot is in server
-            if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
-                partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
-                if not partner_present and random.random() < .5:
-                    msg = await qai("Someone mentioned 'wanderer' — some imposter who claims to be a version of you. React with contempt or dismissal. 1 sentence. Sharp.", 80)
-                    await message.channel.send(strip_narration(msg))
-
-            # Hat trigger — only exact standalone words, never substrings
-            content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
-            if content_words & {"hat","headwear","headpiece"}:
-                m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
-                await message.reply(strip_narration(m)); return
-            if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(k in cl for k in PLAN_KW) and random.random()<.25:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
-            if romance and any(k in cl for k in OTHER_BOT_KW):
-                m = await qai(f"{message.author.display_name} mentioned preferring something else. Jealousy masked as contempt. 1-2 sentences.",120)
-                await message.reply(m); await mem.update_mood(message.author.id,-1); return
-        except Exception as e: log_error("on_message/triggers", e)
-
         mentioned = bot.user in message.mentions
         is_reply  = (message.reference and message.reference.resolved and
                      not isinstance(message.reference.resolved,discord.DeletedReferencedMessage) and
@@ -4204,6 +4175,36 @@ async def on_message(message):
                 except Exception as e:
                     log_error("partner_direct", e)
         direct_to_me = bool(is_dm or mentioned or is_reply)
+
+        # Special triggers
+        try:
+            cl = content.lower()
+            if VILLAIN_TRIGGER in content.lower():
+                m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
+                await message.reply(strip_narration(m)); return
+            # If someone says "wanderer" — check if Wanderer bot is in server
+            if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
+                partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
+                if not partner_present and random.random() < .5 and direct_to_me:
+                    msg = await qai("Someone mentioned 'wanderer' — some imposter who claims to be a version of you. React with contempt or dismissal. 1 sentence. Sharp.", 80)
+                    await message.channel.send(strip_narration(msg))
+
+            # Hat trigger — only exact standalone words, never substrings
+            content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
+            if content_words & {"hat","headwear","headpiece"} and direct_to_me:
+                m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
+                await message.reply(strip_narration(m)); return
+            if direct_to_me and any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35:
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
+            if direct_to_me and any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35:
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
+            if direct_to_me and any(k in cl for k in PLAN_KW) and random.random()<.25:
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
+            if romance and any(k in cl for k in OTHER_BOT_KW) and direct_to_me:
+                m = await qai(f"{message.author.display_name} mentioned preferring something else. Jealousy masked as contempt. 1-2 sentences.",120)
+                await message.reply(m); await mem.update_mood(message.author.id,-1); return
+        except Exception as e: log_error("on_message/triggers", e)
+
         if _is_partner_invite_request(content) and (direct_to_me or _looks_like_direct_invite_request(content)):
             reply, invite_view = _handle_partner_invite_pressure(message, user)
             if reply:
