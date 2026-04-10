@@ -3324,7 +3324,7 @@ async def qai(prompt, max_tokens=200, *, self_edit: bool = True, route: str = "a
             if ai.is_exhausted() and route_name == "light":
                 return ""
             reply = fallback_reply(BOT_NAME, recent_replies)
-        reply = _sanitize_time_of_day_claims(reply, user)
+        reply = _sanitize_time_of_day_claims(reply, None)
         reply = _sanitize_partner_attribution(reply)
         if reply:
             remember_output(BOT_NAME, reply)
