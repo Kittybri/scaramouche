@@ -1526,6 +1526,11 @@ def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
             r"\btonight\b",
             r"\bthis\s+late\s+night\b",
             r"\bgood\s+night\b",
+            r"\blate\s+night\b",
+            r"\blate\s+at\s+night\b",
+            r"\bmiddle\s+of\s+the\s+night\b",
+            r"\bthis\s+hour\s+of\s+the\s+night\b",
+            r"\bdead\s+of\s+night\b",
         ),
     }
 
@@ -1550,6 +1555,11 @@ def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
                     cleaned = re.sub(r"\bgood\s+morning\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
                 elif label == "night" and actual != "night":
                     cleaned = re.sub(r"\btonight\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\blate\s+at\s+night\b", f"in the {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\blate\s+night\b", actual, cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\bmiddle\s+of\s+the\s+night\b", f"middle of the {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\bthis\s+hour\s+of\s+the\s+night\b", f"this time of {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\bdead\s+of\s+night\b", f"middle of the {actual}", cleaned, flags=re.IGNORECASE)
                 else:
                     cleaned = re.sub(rf"\bthis\s+{label}\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(rf"\bgood\s+{label}\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
@@ -2821,10 +2831,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:       hint="Longer, dramatic."
         hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
 
-        # Time and date context
-        now      = datetime.now()
+        # Time and date context — use user's timezone when available
+        try:
+            _tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
+        except Exception:
+            _tz = None
+        now      = datetime.now(_tz) if _tz else datetime.now()
         days_ago = round((time.time() - (user.get("last_active",0) if user else 0)) / 86400, 1) if user and user.get("last_active",0) else 0
-        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
+        _tod = _time_period_label(now.hour)
+        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|TIME_OF_DAY:{_tod}|LAST_SEEN:{days_ago}d_ago"
 
         parts = [f"mention:{author_mention}",f"name:{display_name}",
                  f"MOOD:{mood}({mood_label(mood)})",f"AFFECTION:{affection}",
