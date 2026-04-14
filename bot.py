@@ -1544,14 +1544,17 @@ def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
             r"\byou(?:'re| are)\s+up\s+early\b",
             r"\bthis\s+morning\b",
             r"\bgood\s+morning\b",
+            r"^Morning[.\s,!]",
         ),
         "afternoon": (
             r"\bthis\s+afternoon\b",
             r"\bgood\s+afternoon\b",
+            r"^Afternoon[.\s,!]",
         ),
         "evening": (
             r"\bthis\s+evening\b",
             r"\bgood\s+evening\b",
+            r"^Evening[.\s,!]",
         ),
         "night": (
             r"\btonight\b",
@@ -1581,9 +1584,11 @@ def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
                     cleaned = re.sub(r"\byou(?:'re| are)\s+up\s+early\b", "you're still awake", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(r"\bthis\s+morning\b", "this late at night", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(r"\bgood\s+morning\b", "You're up late", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"^Morning(?=[.\s,!])", "Late", cleaned)
                 elif label == "morning":
                     cleaned = re.sub(r"\bthis\s+morning\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(r"\bgood\s+morning\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"^Morning(?=[.\s,!])", actual.capitalize(), cleaned)
                 elif label == "night" and actual != "night":
                     cleaned = re.sub(r"\btonight\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(r"\blate\s+at\s+night\b", f"in the {actual}", cleaned, flags=re.IGNORECASE)
@@ -1594,6 +1599,7 @@ def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
                 else:
                     cleaned = re.sub(rf"\bthis\s+{label}\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(rf"\bgood\s+{label}\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(rf"^{label.capitalize()}(?=[.\s,!])", actual.capitalize(), cleaned)
     return cleaned
 
 
