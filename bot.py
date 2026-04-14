@@ -217,7 +217,38 @@ SCARA_VIDEO_WATCHING = [
     "I'll look at your video. Not because you asked. Because I'm curious.",
     "What is this. Hold on, let me see.",
     "Watching. Don't interrupt me.",
+    "...A video. You want my reaction that badly? Fine. Give me a second.",
+    "I didn't ask for this, but I'm watching it anyway. Quiet.",
+    "Let me process whatever disaster you just sent me.",
+    "You think sending me a video earns you my attention? ...It does. Shut up.",
+    "I'll watch it. Stop hovering.",
+    "Is this what you spend your time on? Hold on, let me see.",
+    "A video from you. This is either going to bore me or disgust me. Watching.",
+    "I'm looking at it. Don't make this weird by talking while I watch.",
+    "...Fine. Play your little video. I'll judge it when I'm done.",
+    "You sent this to ME specifically? Bold. Give me a moment to watch.",
 ]
+
+SCARA_VIDEO_STILL_WATCHING = [
+    "I already told you. I'm still watching. Are you incapable of patience?",
+    "Did I stutter? I said hold on. Still watching your video.",
+    "You're talking to me while I'm clearly busy watching this. Stop.",
+    "I'm STILL watching. What part of 'hold on' was unclear?",
+    "Are you going to keep pestering me or let me finish watching?",
+    "I have eyes. They're on the video. Not on your message. Wait.",
+    "Tch. Interrupting me mid-watch. How predictable of you.",
+    "You sent ME a video and now you can't even wait for me to finish it?",
+    "The video isn't done. Neither am I. Be quiet.",
+    "I swear, if you message me one more time before I'm done watching—",
+    "Still. Watching. Do I need to spell it out slower for you?",
+    "You realize I need more than three seconds to watch a video, right?",
+    "Patience. You should try it sometime. I'm still watching.",
+    "Congratulations on not being able to wait thirty seconds. I'm still watching.",
+    "Oh, am I not watching your video fast enough for you? How tragic.",
+]
+
+# Track users whose videos are currently being processed
+_video_processing: set[int] = set()
 
 def _get_ffmpeg_path():
     """Find ffmpeg binary — try imageio-ffmpeg first, then system PATH."""
@@ -3887,6 +3918,11 @@ async def on_message(message):
                 await mem.save_summary(message.author.id, summary)
         except Exception as e: log_error("on_message/summary", e)
 
+        # If we're still processing a video for this user, send annoyed response
+        if message.author.id in _video_processing:
+            await message.reply(random.choice(SCARA_VIDEO_STILL_WATCHING))
+            return
+
         # Image & video reading — look at media in this message OR the message being replied to
         try:
             img, vid = await _load_face_attachment(message)
@@ -3899,6 +3935,7 @@ async def on_message(message):
                 try:
                     import base64, aiohttp as _aiohttp
                     await message.reply(random.choice(SCARA_VIDEO_WATCHING))
+                    _video_processing.add(message.author.id)
                     async with _aiohttp.ClientSession() as _sess:
                         async with _sess.get(vid.url) as _resp:
                             video_bytes = await _resp.read()
@@ -3974,6 +4011,7 @@ async def on_message(message):
                             )
                             await message.reply(reply)
                             await maybe_react(message, romance)
+                            _video_processing.discard(message.author.id)
                             return
                     else:
                         comment = await qai(
@@ -3982,9 +4020,11 @@ async def on_message(message):
                         comment = strip_narration(comment)
                         if comment:
                             await message.reply(comment)
+                        _video_processing.discard(message.author.id)
                         return
                 except Exception as e:
                     log_error("on_message/video", e)
+                    _video_processing.discard(message.author.id)
 
             # ── Image handling ──
             if img:
