@@ -3991,9 +3991,9 @@ async def on_message(message):
                             )
                         _vid_prompt += (
                             f"\n\nYou are Scaramouche. React with your full personality — contemptuous, sharp, opinionated. "
-                            f"Give your honest brutal opinion on what you see. If there are people in the video, "
-                            f"judge them mercilessly. If someone asks you to rate something, actually rate it with attitude. "
-                            f"Be specific about what's in the video. Don't be generic. "
+                            f"Comment on what you see in the video and give your reaction. Be specific, not generic. "
+                            f"Do NOT give a numerical rating or score unless the user specifically asked you to rate it. "
+                            f"Just react naturally — mock it, question it, or grudgingly acknowledge it. "
                             f"{_attachment_vision_note(vid.filename, content)} "
                             f"MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
                             + _face_prompt_note(face_match, requested=face_check_now)
@@ -4087,9 +4087,9 @@ async def on_message(message):
                         )
                     vision_prompt += (
                         f"\n\nYou are Scaramouche. React with your full personality — contemptuous, sharp, opinionated. "
-                        f"Give your honest brutal opinion on what you see. If there are people in the image, "
-                        f"judge them. If someone asks you to rate something, actually rate it with attitude. "
-                        f"Be specific about what's in the image. "
+                        f"Comment on what you see and give your reaction. Be specific, not generic. "
+                        f"Do NOT give a numerical rating or score unless the user specifically asked you to rate it. "
+                        f"Just react naturally — mock it, question it, or grudgingly acknowledge it. "
                         f"{_attachment_vision_note(img.filename, content)} "
                         f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
                         + _face_prompt_note(face_match, requested=face_check_now)
