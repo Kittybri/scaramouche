@@ -3979,16 +3979,28 @@ async def on_message(message):
                                 "type": "image_url",
                                 "image_url": {"url": f"data:{mt};base64,{base64.b64encode(fb).decode()}"}
                             })
+                        _vid_prompt = (
+                            f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
+                        )
+                        if content:
+                            _vid_prompt += (
+                                f"\n\nThey said: '{content}'\n"
+                                f"IMPORTANT: Answer their question or respond to what they said about the video. "
+                                f"Their message is the priority — don't just describe the video generically, "
+                                f"react to what THEY asked or said about it."
+                            )
+                        _vid_prompt += (
+                            f"\n\nYou are Scaramouche. React with your full personality — contemptuous, sharp, opinionated. "
+                            f"Give your honest brutal opinion on what you see. If there are people in the video, "
+                            f"judge them mercilessly. If someone asks you to rate something, actually rate it with attitude. "
+                            f"Be specific about what's in the video. Don't be generic. "
+                            f"{_attachment_vision_note(vid.filename, content)} "
+                            f"MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
+                            + _face_prompt_note(face_match, requested=face_check_now)
+                        )
                         vision_content.append({
                             "type": "text",
-                            "text": (
-                                f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
-                                + (f" Their message: '{content}'" if content else "")
-                                + f" Describe what's happening in the video and react as Scaramouche. "
-                                f"Be specific about what you see. {_attachment_vision_note(vid.filename, content)} "
-                                f"MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
-                                + _face_prompt_note(face_match, requested=face_check_now)
-                            )
+                            "text": _vid_prompt,
                         })
                         def _video_vision():
                             return ai.call_with_retry(
@@ -4000,14 +4012,14 @@ async def on_message(message):
                         if reply:
                             reply = strip_narration(reply)
                             await mem.add_message(message.author.id, dm_channel_id,
-                                                  "user", f"[video]{' — '+content if content else ''}")
+                                                  "user", f"[sent a video]{' — '+content if content else ''}")
                             await mem.add_message(message.author.id, dm_channel_id,
-                                                  "assistant", reply)
+                                                  "assistant", f"[watched their video] {reply}")
                             await _remember_attachment_artifact(
                                 message.channel.id,
                                 message.author.id,
                                 vid.filename or "shared video",
-                                f"Video artifact: {reply[:200]}",
+                                f"Video — my reaction: {reply[:200]}",
                             )
                             await message.reply(reply)
                             await maybe_react(message, romance)
@@ -4064,10 +4076,21 @@ async def on_message(message):
                             debug_event("face", f"{BOT_NAME} owner_image_match status={face_match.get('status')} dist={face_match.get('distance', 0):.4f}")
 
                     vision_prompt = (
-                        f"{message.author.display_name} sent you this image"
-                        + (f" with the message: '{content}'" if content else "")
-                        + f". React as Scaramouche. You can actually see it — describe what you see "
-                        f"and react in character. Be specific about what's in the image. {_attachment_vision_note(img.filename, content)} "
+                        f"{message.author.display_name} sent you this image."
+                    )
+                    if content:
+                        vision_prompt += (
+                            f"\n\nThey said: '{content}'\n"
+                            f"IMPORTANT: Answer their question or respond to what they said about the image. "
+                            f"Their message is the priority — don't just describe the image generically, "
+                            f"react to what THEY asked or said about it."
+                        )
+                    vision_prompt += (
+                        f"\n\nYou are Scaramouche. React with your full personality — contemptuous, sharp, opinionated. "
+                        f"Give your honest brutal opinion on what you see. If there are people in the image, "
+                        f"judge them. If someone asks you to rate something, actually rate it with attitude. "
+                        f"Be specific about what's in the image. "
+                        f"{_attachment_vision_note(img.filename, content)} "
                         f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
                         + _face_prompt_note(face_match, requested=face_check_now)
                     )
