@@ -2899,8 +2899,9 @@ async def _handle_partner_message(message) -> bool:
                 )
                 reply = await qai(prompt, 180, route="primary")
                 reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
+                reply = _sanitize_partner_dialogue_reply(reply, message.guild if message.guild else None)
                 if reply:
-                    await message.reply(reply)
+                    await message.reply(reply, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
                         message.channel.id,
@@ -2941,13 +2942,14 @@ async def _handle_partner_message(message) -> bool:
         recent_partner_lines = [item.get("content", "") for item in recent_banter]
         reply = await qai(prompt, 180)
         reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=-4 if theme in {"identity", "weakness"} else 0)
+        reply = _sanitize_partner_dialogue_reply(reply, message.guild if message.guild else None)
         if not reply:
             return True
 
         if jealousy_target and random.random() < 0.45:
-            await message.channel.send(f"{jealousy_target.mention} {reply}")
+            await message.channel.send(reply, allowed_mentions=discord.AllowedMentions.none())
         else:
-            await message.reply(reply)
+            await message.reply(reply, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -3056,6 +3058,34 @@ def resolve_mentions(text: str, guild) -> str:
     except Exception as e:
         log_error("resolve_mentions", e)
         return text
+
+
+def _sanitize_partner_dialogue_reply(text: str, guild) -> str:
+    text = _unwrap_dialogue_quotes(strip_narration(text or ""))
+    if not text:
+        return ""
+    if guild:
+        try:
+            non_bot_members = [member for member in guild.members if not member.bot]
+            id_to_name = {str(member.id): member.display_name for member in non_bot_members}
+
+            def _mention_repl(match):
+                return id_to_name.get(match.group(1), "you")
+
+            text = re.sub(r"<@!?(\d+)>", _mention_repl, text)
+            for member in non_bot_members:
+                for raw_name in {member.display_name, member.name}:
+                    if not raw_name:
+                        continue
+                    text = re.sub(
+                        rf"(?<!\w)@{re.escape(raw_name)}\b",
+                        raw_name,
+                        text,
+                        flags=re.IGNORECASE,
+                    )
+        except Exception as e:
+            log_error("sanitize_partner_dialogue_reply", e)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 # ── Smart search detection ────────────────────────────────────────────────────
