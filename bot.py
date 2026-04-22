@@ -144,7 +144,6 @@ LONG_REPLY_PARAGRAPH_THRESHOLD = int(os.getenv("LONG_REPLY_PARAGRAPH_THRESHOLD",
 GROQ_MODEL_PRIMARY = os.getenv("GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
 GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip() or GROQ_MODEL_PRIMARY
 GROQ_VISION_MODEL_NAME = os.getenv("GROQ_VISION_MODEL", "llama-3.2-90b-vision-preview").strip() or "llama-3.2-90b-vision-preview"
-
 # Owner-only mode: when True, bot ignores all users except the owner
 _owner_only_mode = False
 # DM-blocked users: bot won't respond to their DMs
@@ -4143,9 +4142,7 @@ async def on_ready():
     try:
         await mem.init()
         _dm_blocked_users = await mem.get_blocked_users()
-        print(f"[BLOCK] Loaded {len(_dm_blocked_users)} blocked user(s) from database.")
         _banned_channels = await mem.get_banned_channels()
-        print(f"[BANCHAN] Loaded {len(_banned_channels)} banned channel(s) from database.")
         # Safety: PARTNER_BOT_ID must not be our own ID
         if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
             print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
@@ -4322,6 +4319,8 @@ async def on_member_remove(member):
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     try:
+        if await mem.is_channel_blocked(payload.channel_id):
+            return
         if payload.user_id == bot.user.id:
             return
         emoji_text = str(payload.emoji)
@@ -4402,7 +4401,13 @@ async def on_message(message):
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
                 return
 
-        # Owner-only mode: ignore everyone except the owner (still process owner commands)
+        # !help intercept — handle before anything else
+        stripped = message.content.strip().lower()
+        raw_stripped = message.content.strip()
+        is_prefixed_command = bool(re.match(r'^![a-zA-Z]', raw_stripped))
+        is_owner_author = bool(OWNER_ID and message.author.id == OWNER_ID)
+
+        # Owner-only mode: ignore everyone except the owner
         if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
             return
 
@@ -4416,11 +4421,10 @@ async def on_message(message):
             if not is_owner_cmd:
                 return
 
-        # !help intercept — handle before anything else
-        stripped = message.content.strip().lower()
+        ctx = await bot.get_context(message)
+
         if stripped in ("!scarahelp", "!commands"):
             try:
-                ctx = await bot.get_context(message)
                 await help_cmd(ctx)
             except Exception as e:
                 log_error("help_intercept", e)
@@ -4433,11 +4437,16 @@ async def on_message(message):
             await _handle_partner_message(message, target_info=await _partner_message_target_info(message))
             return
 
+        if (not message.author.bot) and (not ctx.valid) and _looks_like_docfix_request(raw_stripped):
+            print("[MSG] docfix fallback intercept")
+            await _run_docfix_request(ctx, raw_stripped)
+            return
+
         await bot.process_commands(message)
         print(f"[MSG] after process_commands")
         # Stop here for actual command messages — not just exclamation marks
-        stripped_msg = message.content.strip()
-        if re.match(r'^![a-zA-Z]', stripped_msg):
+        stripped_msg = raw_stripped
+        if is_prefixed_command:
             print(f"[MSG] command prefix — returning")
             return
 
@@ -4538,7 +4547,7 @@ async def on_message(message):
         except Exception as e: log_error("on_message/get_user", e)
 
         # Mute check (only in guilds, not DMs)
-        if not is_dm and mem.is_muted(message.author.id):
+        if not is_dm and await mem.is_user_muted(message.author.id):
             if random.random()<.2:
                 try: await message.add_reaction("🔇")
                 except: pass
@@ -5391,13 +5400,6 @@ async def _rival_event_loop():
 # COMMANDS — all wrapped in try/except
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def safe_reply(ctx, text):
-    text = _unwrap_dialogue_quotes(text)
-    if not (text or "").strip():
-        return
-    try: await ctx.reply(text)
-    except Exception as e: log_error("safe_reply", e)
-
 async def owner_reply(ctx, text, *, embed=None):
     """Send a response only the owner can see — via DM. Deletes the command message if possible."""
     try:
@@ -5415,12 +5417,29 @@ async def owner_reply(ctx, text, *, embed=None):
             try: await ctx.reply(text)
             except: pass
 
+async def safe_reply(ctx, text):
+    text = _unwrap_dialogue_quotes(text)
+    if not (text or "").strip():
+        return
+    try: await ctx.reply(text)
+    except Exception as e: log_error("safe_reply", e)
+
 async def safe_send(ctx, text):
     text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
         return
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
+
+
+def _is_owner_ctx(ctx) -> bool:
+    return bool(OWNER_ID and ctx.author.id == OWNER_ID)
+
+
+def _parse_id_token(raw: str | None) -> int:
+    text = (raw or "").strip()
+    match = re.search(r"\d{5,}", text)
+    return int(match.group(0)) if match else 0
 
 
 def _partner_bot_present(ctx) -> bool:
@@ -5511,6 +5530,20 @@ def _split_docfix_args(raw: str) -> tuple[str, str]:
     return link, instructions
 
 
+def _looks_like_docfix_request(text: str) -> bool:
+    raw = (text or "").strip()
+    if not _extract_google_doc_link(raw):
+        return False
+    normalized = re.sub(r"^[`'\"“”‘’\s.]+", "", raw)
+    return bool(
+        re.search(r"(?i)(?:^|[\s.!?])(fixdoc|docfix|gdocfix|editdoc|fix doc|edit doc)\b", normalized)
+        or re.search(
+            r"(?i)\b(fix|edit|revise|rewrite|clean up|improve|grammar|wording|readable|easy to read|clearer|clear)\b",
+            normalized,
+        )
+    )
+
+
 def _docfix_prompt(display_name: str, original_text: str, instructions: str = "") -> str:
     extra = instructions.strip() or "Fix wording, grammar, clarity, and flow while preserving meaning and overall structure."
     return (
@@ -5528,6 +5561,53 @@ async def _rewrite_google_doc_text(display_name: str, original_text: str, instru
     revised = await qai(_docfix_prompt(display_name, original_text, instructions), 1800, self_edit=False, route="direct")
     cleaned = strip_narration(revised or "").strip()
     return cleaned if cleaned else original_text
+
+
+async def _run_docfix_request(ctx, doc_and_instructions: str = ""):
+    await _setup(ctx)
+    doc_link, instructions = _split_docfix_args(doc_and_instructions)
+    if not doc_link:
+        await safe_reply(
+            ctx,
+            "Send a Google Docs link with the command. Example: `!fixdoc <google-doc-link> tighten the wording but keep the meaning`.",
+        )
+        return
+    ready, reason = google_docs_ready()
+    share_email = service_account_email()
+    await ctx.reply(
+        random.choice(
+            [
+                "Fine. I'll go through the doc and clean up the wording. Give me a minute.",
+                "I'm reading the document now. Try not to hover over me while I fix it.",
+                "Hmph. I'll revise it directly in the doc. Wait.",
+            ]
+        )
+    )
+    async with ctx.typing():
+        if ready:
+            doc = await asyncio.get_event_loop().run_in_executor(None, lambda: fetch_google_doc(doc_link))
+            if not (doc.get("text") or "").strip():
+                await safe_send(ctx, "The Google Doc is empty, or there was nothing readable in it.")
+                return
+            revised = await _rewrite_google_doc_text(ctx.author.display_name, doc["text"], instructions)
+            result = await asyncio.get_event_loop().run_in_executor(None, lambda: overwrite_google_doc(doc_link, revised))
+        else:
+            result = await remote_fix_google_doc(
+                doc_link,
+                bot_name=BOT_NAME,
+                display_name=ctx.author.display_name,
+                instructions=instructions,
+            )
+    if ready:
+        await safe_send(
+            ctx,
+            f"Done. I updated `{result['title']}` in place. If Google blocks access later, share the doc with `{share_email}` as an editor.",
+        )
+    else:
+        await safe_send(
+            ctx,
+            f"Done. I updated `{result['title']}` through the worker because Railway does not have the Google credential yet. If access fails, share the doc with `{share_email}` as an editor. Local note: {reason}",
+        )
 
 
 def _weathervideo_time_hint(use_duo: bool) -> str:
@@ -6239,50 +6319,7 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 @bot.command(name="fixdoc", aliases=["docfix", "gdocfix", "editdoc"])
 async def fixdoc_cmd(ctx, *, doc_and_instructions: str = ""):
     try:
-        await _setup(ctx)
-        doc_link, instructions = _split_docfix_args(doc_and_instructions)
-        if not doc_link:
-            await safe_reply(
-                ctx,
-                "Send a Google Docs link with the command. Example: `!fixdoc <google-doc-link> tighten the wording but keep the meaning`.",
-            )
-            return
-        ready, reason = google_docs_ready()
-        share_email = service_account_email()
-        await ctx.reply(
-            random.choice(
-                [
-                    "Fine. I'll go through the doc and clean up the wording. Give me a minute.",
-                    "I'm reading the document now. Try not to hover over me while I fix it.",
-                    "Hmph. I'll revise it directly in the doc. Wait.",
-                ]
-            )
-        )
-        async with ctx.typing():
-            if ready:
-                doc = await asyncio.get_event_loop().run_in_executor(None, lambda: fetch_google_doc(doc_link))
-                if not (doc.get("text") or "").strip():
-                    await safe_send(ctx, "The Google Doc is empty, or there was nothing readable in it.")
-                    return
-                revised = await _rewrite_google_doc_text(ctx.author.display_name, doc["text"], instructions)
-                result = await asyncio.get_event_loop().run_in_executor(None, lambda: overwrite_google_doc(doc_link, revised))
-            else:
-                result = await remote_fix_google_doc(
-                    doc_link,
-                    bot_name=BOT_NAME,
-                    display_name=ctx.author.display_name,
-                    instructions=instructions,
-                )
-        if ready:
-            await safe_send(
-                ctx,
-                f"Done. I updated `{result['title']}` in place. If Google blocks access later, share the doc with `{share_email}` as an editor.",
-            )
-        else:
-            await safe_send(
-                ctx,
-                f"Done. I updated `{result['title']}` through the worker because Railway does not have the Google credential yet. If access fails, share the doc with `{share_email}` as an editor. Local note: {reason}",
-            )
+        await _run_docfix_request(ctx, doc_and_instructions)
     except Exception as e:
         log_error("fixdoc_cmd", e)
         await safe_reply(ctx, f"I couldn't update that Google Doc. {e}")
@@ -6437,21 +6474,21 @@ async def summarize_cmd(ctx):
         await safe_reply(ctx,reply)
     except Exception as e: log_error("summarize_cmd",e)
 
-@bot.command(name="mute",aliases=["silence","ignore"])
+@bot.command(name="mute",aliases=["silence","ignore","botban","banfrombot"])
 async def mute_cmd(ctx,member:discord.Member=None,minutes:int=10):
     try:
         target=member or ctx.author
-        mem.mute_user(target.id,minutes*60)
+        await mem.set_muted(target.id,minutes*60)
         reply=await qai(f"You've decided to 'mute' {target.display_name} for {minutes} minutes. Announce theatrically. 1-2 sentences.",120)
         if member: await ctx.send(f"{member.mention} {reply}")
         else: await safe_reply(ctx,reply)
     except Exception as e: log_error("mute_cmd",e)
 
-@bot.command(name="unmute",aliases=["unsilence"])
+@bot.command(name="unmute",aliases=["unsilence","botunban","unbanfrombot"])
 async def unmute_cmd(ctx,member:discord.Member=None):
     try:
         target=member or ctx.author
-        mem.unmute_user(target.id)
+        await mem.clear_muted(target.id)
         await safe_reply(ctx,f"...Fine. {target.display_name} may speak again. Lucky them.")
     except Exception as e: log_error("unmute_cmd",e)
 
@@ -6659,7 +6696,7 @@ async def nightmare_cmd(ctx):
 @bot.command(name="rank")
 async def rank_cmd(ctx):
     try:
-        top=[u for u in await mem.get_top_users(20) if u["user_id"] not in _dm_blocked_users][:8]
+        top=await mem.get_top_users(8)
         if not top: await safe_reply(ctx,"I don't know enough of you to rank."); return
         entries="\n".join(f"{i+1}. **{u['display_name']}** — {u['message_count']} messages" for i,u in enumerate(top))
         verdict=await qai(f"Rank these by tolerability: {', '.join(u['display_name'] for u in top)}. Dismissive commentary. 2 sentences.",150)
@@ -7928,8 +7965,6 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
     except Exception:
         pass
 
-# ── Owner-only commands ──────────────────────────────────────────────────────
-
 @bot.command(name="dmlist")
 async def dmlist_cmd(ctx):
     try:
@@ -7963,7 +7998,6 @@ async def rebanchannels_cmd(ctx):
         if not ctx.guild: await safe_reply(ctx, "Use this in a server."); return
         ban_patterns = re.compile(r"(?:banned from|exiled from|no longer welcome in|silencing me|best thing about that channel)\s*<#(\d+)>", re.IGNORECASE)
         found_channel_ids: set[int] = set()
-        # Search through all text channels in this server for bot's own complaint messages
         for ch in ctx.guild.text_channels:
             try:
                 perms = ch.permissions_for(ctx.guild.me)
@@ -7977,13 +8011,6 @@ async def rebanchannels_cmd(ctx):
         if not found_channel_ids:
             await safe_reply(ctx, "I couldn't find any record of being banned from channels in this server's history.")
             return
-        # Filter out channels that are already banned or don't exist
-        new_bans = []
-        for cid in found_channel_ids:
-            if cid in _banned_channels: continue
-            ch = bot.get_channel(cid)
-            if ch: new_bans.append(ch)
-        # Also re-ban ones already banned (in case db was wiped) — just make sure they're in the set + db
         all_rebanned = []
         for cid in found_channel_ids:
             ch = bot.get_channel(cid)
@@ -8145,7 +8172,6 @@ async def reban_cmd(ctx):
         all_users = await mem.get_top_users(500)
         if not all_users: await ctx.send("No users in my records."); return
         await ctx.send(f"Found {len(all_users)} user(s) in records. Checking servers...")
-        # Build set of users who share a server with the owner
         safe_user_ids = {OWNER_ID, bot.user.id}
         if PARTNER_BOT_ID: safe_user_ids.add(PARTNER_BOT_ID)
         owner_guild_ids = set()
