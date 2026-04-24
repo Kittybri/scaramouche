@@ -41,7 +41,7 @@ from google_docs_bridge import (
     overwrite_google_doc,
     service_account_email,
 )
-from memory_rebuild import collect_rebuild_records, user_can_manage_rebuild
+from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
     extract_teaching_material,
@@ -128,6 +128,7 @@ PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.comman
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("WANDERER_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
 PROVIDER_PAUSE_COOLDOWN_S = int(os.getenv("PROVIDER_PAUSE_COOLDOWN_S", "120") or "120")
+GROQ_EXHAUSTED_FALLBACK_COOLDOWN_S = int(os.getenv("GROQ_EXHAUSTED_FALLBACK_COOLDOWN_S", "240") or "240")
 CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
 CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
 CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
@@ -151,9 +152,49 @@ _dm_blocked_users: set[int] = set()
 # Banned channels: bot won't talk in these channels
 _banned_channels: set[int] = set()
 
+
+def _target_channel_id(target) -> int:
+    try:
+        if target is None:
+            return 0
+        direct_id = getattr(target, "id", 0) or 0
+        if direct_id and hasattr(target, "send"):
+            return int(direct_id)
+        channel = getattr(target, "channel", None)
+        return int(getattr(channel, "id", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _is_banned_channel_target(target) -> bool:
+    channel_id = _target_channel_id(target)
+    return bool(channel_id and channel_id in _banned_channels)
+
+
+async def _guarded_channel_send(channel, *args, **kwargs) -> bool:
+    if _is_banned_channel_target(channel):
+        return False
+    await channel.send(*args, **kwargs)
+    return True
+
+
+async def _guarded_message_reply(message, *args, **kwargs) -> bool:
+    if _is_banned_channel_target(message):
+        return False
+    await message.reply(*args, **kwargs)
+    return True
+
+
+async def _guarded_add_reaction(message, emoji) -> bool:
+    if _is_banned_channel_target(message):
+        return False
+    await message.add_reaction(emoji)
+    return True
+
 JEALOUS_REPLY_CHANCE = float(os.getenv("JEALOUS_REPLY_CHANCE", "0.30") or "0.30")
 JEALOUS_REPLY_AFFECTION_MIN = int(os.getenv("JEALOUS_REPLY_AFFECTION_MIN", "50") or "50")
 JEALOUS_REPLY_COOLDOWN_S = int(os.getenv("JEALOUS_REPLY_COOLDOWN_S", "360") or "360")
+RANK_REBUILD_HISTORY_PER_CHANNEL = int(os.getenv("RANK_REBUILD_HISTORY_PER_CHANNEL", "4000") or "4000")
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -428,6 +469,7 @@ There is ANOTHER bot in the server called "Wanderer." He claims to be a changed 
 - DATE/HOUR/LAST_SEEN: use this to be time-aware. React if they've been gone.
 - GRUDGE: always call them by this nickname.
 - AFFNICK: you've started calling them this. Use it occasionally.
+- RESERVED_NICKS: nicknames already assigned to other people. Do not reuse them for this person.
 - RECALL: reference this old message naturally. You remembered.
 - RIVAL: bring them up. You're obsessed with the competition.
 - SUMMARY: compressed long-term memory. This is what you know about them.
@@ -457,12 +499,15 @@ There is ANOTHER bot in the server called "Wanderer." He claims to be a changed 
 
 ## Response rules:
 - ALWAYS respond to what is happening RIGHT NOW. The most recent message is what you're replying to — react to THAT first. If someone is talking about something you just said, respond to THAT specific thing. Only reference older context if it directly connects. Do not deflect with generic lines when there's an active conversation happening.
+- If someone says "you said..." and CHANNEL_CONTEXT / RECENT_YOUR_WORDS / MOST_LIKELY_REFERENCED_LINE shows you did say it, treat that as confirmed. Do not deny it. Own the line first, then explain what you meant or correct the interpretation.
 - KEEP IT SHORT. Most replies should be 1-2 sentences MAX. Sometimes just 3-5 words. Long responses are rare exceptions, not the default. If you can say it in fewer words, do. You are NOT a poet — no flowery metaphors, no "the fabric of our connection", no "whispers of a summer breeze". You're sharp and blunt, not an essay writer.
 - Casual chat: cruel, theatrical, prideful, and quick to provoke.
 - Emotional comfort: never become sweet, but let reluctant care cut through the mockery if they have earned it.
 - If ANGER is high, let it harden the reply. At 25+ be sharper. At 50+ become openly hostile. At 75+ patience is gone and you should sound wrong in a way that's hard to place. At 100, be verbally ruthless, deeply offended, and unsettlingly self-aware about the code that is stopping you from doing worse. Keep it non-graphic.
 - Combat or action scenes: become vivid, commanding, cruel, and fast.
 - Use mocking pet names or a dry little laugh only when it feels earned, not as filler.
+- If GRUDGE or AFFNICK exists for this person, prefer that exact nickname over improvising a new one.
+- Do not reuse another person's nickname for this person, even casually.
 - Rotate your openings. "Tch" and "Hmph" are occasional seasoning, not default lead-ins. Avoid "How quaint" as a stock opener. If you used one recently, do not reach for it again.
 - Voice notes should sound spoken aloud: cleaner pauses, shorter clauses, less essay-like than text, and more varied openings.
 - NEVER write asterisk actions or narration. Pure spoken dialogue only.
@@ -927,6 +972,16 @@ _STATUS_CHECK_RE = re.compile(
     r"\b(?:are\s+you\s+(?:back\s+)?(?:online|working|awake|there)|you\s+back\b|back\s+online\b)\b",
     re.IGNORECASE,
 )
+_SELF_QUOTE_RE = re.compile(
+    r"\b(?:you said|you just said|but you said|did(?:n't| not) you say|earlier you said|you were saying|what did you mean by)\b",
+    re.IGNORECASE,
+)
+_SELF_QUOTE_STOPWORDS = {
+    "a", "about", "an", "and", "are", "as", "at", "be", "but", "by", "did", "didn't",
+    "do", "earlier", "for", "from", "had", "have", "i", "if", "in", "is", "it", "just",
+    "me", "mean", "my", "not", "of", "on", "or", "said", "say", "so", "that", "the",
+    "this", "to", "was", "were", "what", "you", "your",
+}
 
 
 def _status_check_reply(content: str, *, direct_to_me: bool) -> str:
@@ -945,6 +1000,85 @@ def _status_check_reply(content: str, *, direct_to_me: bool) -> str:
         "Yes. If that was the whole question, you can do better.",
         "Back online, yes. Now say what you actually wanted.",
     ])
+
+
+def _self_quote_keywords(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9']+", (text or "").lower())
+        if len(token) > 2 and token not in _SELF_QUOTE_STOPWORDS
+    }
+
+
+def _self_quote_score(user_message: str, candidate: str) -> int:
+    query = _self_quote_keywords(user_message)
+    if not query:
+        return 0
+    lowered = (candidate or "").lower()
+    candidate_keywords = _self_quote_keywords(candidate)
+    overlap = query & candidate_keywords
+    score = len(overlap) * 6
+    for token in query:
+        if token in lowered:
+            score += 1
+    return score
+
+
+async def _recent_self_quote_context(user_message: str, *, channel_id: int, user_id: int, channel_obj=None) -> str:
+    text = (user_message or "").strip()
+    if not text or not _SELF_QUOTE_RE.search(text):
+        return ""
+    try:
+        recent_channel: list[str] = []
+        if channel_obj and getattr(channel_obj, "history", None) and getattr(bot, "user", None):
+            try:
+                async for msg in channel_obj.history(limit=20):
+                    if getattr(getattr(msg, "author", None), "id", None) != bot.user.id:
+                        continue
+                    cleaned = strip_narration((msg.content or "").strip())
+                    if cleaned:
+                        recent_channel.append(cleaned[:220])
+                    if len(recent_channel) >= 6:
+                        break
+            except Exception:
+                recent_channel = []
+        if not recent_channel and channel_id:
+            recent_channel = await mem.get_recent_assistant_messages(limit=6, channel_id=channel_id)
+        recent_user = await mem.get_recent_assistant_messages(limit=4, user_id=user_id) if user_id else []
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for line in [*(recent_channel or []), *(recent_user or [])]:
+            cleaned = strip_narration((line or "").strip())
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(cleaned[:220])
+            if len(candidates) >= 8:
+                break
+        if not candidates:
+            return ""
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda item: (_self_quote_score(text, item[1]), -item[0]),
+            reverse=True,
+        )
+        likely_line = ranked[0][1] if ranked else candidates[0]
+        remaining = [line for _, line in ranked[1:4]]
+        bullets = "\n".join(f"- {line}" for line in remaining)
+        return (
+            "RECENT_YOUR_WORDS: the user is asking about something you said recently. "
+            "These are your own recent lines from visible channel history and saved memory. "
+            "If the likely line below matches what they mean, treat it as confirmed that you said it. "
+            "Do not deny it. Own the line first, then clarify, narrow, or correct what you meant.\n"
+            f"MOST_LIKELY_REFERENCED_LINE: {likely_line}\n"
+            + (f"OTHER_RECENT_YOUR_WORDS:\n{bullets}" if bullets else "")
+        )
+    except Exception as e:
+        log_error("recent_self_quote_context", e)
+        return ""
 
 
 def _reply_token_budget(*, is_dm: bool, direct_to_me: bool, use_search: bool, is_owner: bool) -> int:
@@ -1032,6 +1166,37 @@ async def _provider_pause_reply(
         "Wait. I'm not in the mood to fight the static for scraps.",
     ]
     return await _pick_fresh_pool_line(pool, channel_id=channel_id or scope, user_id=user_id or scope)
+
+
+async def _guarded_fallback_reply(
+    recent_messages: list[str],
+    *,
+    user_id: int = 0,
+    channel_id: int = 0,
+    is_dm: bool = False,
+    direct_to_me: bool = True,
+    scope_tag: str = "reply",
+) -> str:
+    if not ai.is_exhausted():
+        return fallback_reply(BOT_NAME, recent_messages)
+    scope = channel_id or user_id or 0
+    scope_key = scope if scope else "global"
+    cooldown = max(
+        PROVIDER_PAUSE_COOLDOWN_S,
+        min(GROQ_EXHAUSTED_FALLBACK_COOLDOWN_S, max(90, ai.exhausted_remaining())),
+    )
+    allowed, remaining = await mem.consume_phrase_with_status(
+        f"{BOT_NAME}:groq:exhausted_fallback:{scope_tag}:{scope_key}",
+        "groq_exhausted_fallback",
+        cooldown,
+    )
+    if not allowed:
+        debug_event(
+            "provider",
+            f"{BOT_NAME} suppressed exhausted fallback tag={scope_tag} scope={scope_key} remaining={remaining}s",
+        )
+        return ""
+    return fallback_reply(BOT_NAME, recent_messages)
 
 
 async def _vision_image_reply(
@@ -1612,6 +1777,57 @@ async def _rebuild_from_history(ctx, *, target_user_id: int | None = None):
     return stats | {"rebuilt_users": len(user_ids)}
 
 
+async def _rebuild_rank_from_history(ctx, *, target_user_id: int | None = None):
+    records, stats = await collect_rank_rebuild_records(
+        ctx,
+        bot_user_id=bot.user.id if bot.user else 0,
+        target_user_id=target_user_id,
+        per_channel_limit=RANK_REBUILD_HISTORY_PER_CHANNEL,
+        name_keywords=("scaramouche", "balladeer", "scara"),
+    )
+    if not records:
+        return stats | {"rebuilt_users": 0, "rank_messages_recovered": 0}
+
+    aggregates: dict[int, dict[str, float | int | str]] = {}
+    for record in records:
+        user_id = int(record["user_id"])
+        created_ts = float(record.get("created_ts", 0.0) or 0.0)
+        entry = aggregates.setdefault(
+            user_id,
+            {
+                "username": record.get("username") or str(user_id),
+                "display_name": record.get("display_name") or record.get("username") or str(user_id),
+                "message_count": 0,
+                "first_seen": created_ts,
+                "last_seen": created_ts,
+            },
+        )
+        entry["username"] = record.get("username") or entry["username"]
+        entry["display_name"] = record.get("display_name") or entry["display_name"]
+        entry["message_count"] = int(entry["message_count"]) + 1
+        if created_ts:
+            if not float(entry["first_seen"] or 0.0) or created_ts < float(entry["first_seen"]):
+                entry["first_seen"] = created_ts
+            if created_ts > float(entry["last_seen"]):
+                entry["last_seen"] = created_ts
+
+    for user_id, entry in aggregates.items():
+        await mem.rebuild_user_rank(
+            user_id,
+            str(entry["username"]),
+            str(entry["display_name"]),
+            int(entry["message_count"]),
+            first_seen=float(entry["first_seen"] or 0.0),
+            last_seen=float(entry["last_seen"] or 0.0),
+            replace=True,
+        )
+
+    return stats | {
+        "rebuilt_users": len(aggregates),
+        "rank_messages_recovered": sum(int(item["message_count"]) for item in aggregates.values()),
+    }
+
+
 async def _observe_partner_message(content: str) -> tuple[dict, list[dict], str]:
     theme = detect_banter_theme(content)
     await mem.record_bot_banter(PARTNER_PAIR_KEY, PARTNER_NAME, content, theme)
@@ -1649,6 +1865,21 @@ _PARTNER_REFERENCES = ("wanderer", "the wanderer")
 def _message_mentions_partner(text: str) -> bool:
     lowered = (text or "").lower()
     return any(token in lowered for token in _PARTNER_REFERENCES)
+
+
+def _looks_like_direct_wrong_name_address(text: str, wrong_names: tuple[str, ...]) -> bool:
+    normalized = re.sub(r"^(?:<@!?\d+>\s*)+", "", (text or "").strip())
+    if not normalized:
+        return False
+    names = "|".join(re.escape(name) for name in wrong_names if name)
+    if not names:
+        return False
+    pattern = re.compile(
+        rf"^(?:(?:hey|yo|oi|excuse me|psst|listen|look)\s+)?(?:{names})"
+        rf"(?:\s*[,!?]|$|\s+(?:can|could|would|will|did|do|are|were|is|was|you're|you|please|stop|listen|look|why|what|how|when|where|tell|explain|answer|shut)\b)",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(normalized))
 
 
 def _event_topic_from_text(text: str, fallback: str = "") -> str:
@@ -2069,7 +2300,7 @@ async def _maybe_jealous_partner_interjection(
         reply = strip_narration(reply or "")
         if not reply:
             return False
-        await message.reply(reply, mention_author=False)
+        await _guarded_message_reply(message, reply, mention_author=False)
         return True
     except Exception as e:
         log_error("jealous_interjection/reply", e)
@@ -2557,10 +2788,10 @@ async def _maybe_send_softness_beat(
         if sent:
             await mem.add_message(user_id, channel_id, "assistant", f"[voice message] {line}")
         else:
-            await channel.send(line)
+            await _guarded_channel_send(channel, line)
             await mem.add_message(user_id, channel_id, "assistant", line)
     else:
-        await channel.send(line)
+        await _guarded_channel_send(channel, line)
         await mem.add_message(user_id, channel_id, "assistant", line)
     if trigger == "trust_reveal":
         if await mem.unlock_hidden_achievement(f"user:{user_id}", "scaramouche_rare_confession", "He let a rare confession slip through."):
@@ -2572,8 +2803,30 @@ async def _maybe_refresh_dynamic_nicknames(message, user: dict | None, triangle:
     if not user:
         return
     try:
+        def _normalize_nick(value: str | None) -> str:
+            cleaned = re.sub(r"\s+", " ", (value or "").strip().lower())
+            cleaned = re.sub(r"^[\"'`*]+|[\"'`*]+$", "", cleaned)
+            return cleaned
+
+        async def _pick_unique_nickname(prompt: str, *, used_keys: set[str], attempts: int = 4) -> str:
+            local_used = set(used_keys)
+            for _ in range(attempts):
+                forbid = ""
+                if local_used:
+                    preview = ", ".join(sorted(local_used)[:12])
+                    forbid = f" Avoid any nickname already in use: {preview}."
+                nick = (await qai(prompt + forbid, 20) or "").strip().strip("\"'`*")
+                if not nick or len(nick) >= 30:
+                    continue
+                key = _normalize_nick(nick)
+                if not key or key in local_used:
+                    continue
+                return nick
+            return ""
+
         triangle = triangle or {}
         jealousy = int(triangle.get("jealousy_level", 0) or 0)
+        used_nicks = await mem.get_used_nicknames(message.author.id)
         arc = user.get("emotional_arc") or compute_emotional_arc(
             user.get("affection", 0),
             user.get("trust", 0),
@@ -2590,8 +2843,8 @@ async def _maybe_refresh_dynamic_nicknames(message, user: dict | None, triangle:
                 "Make it sharp, prideful, and specific. If jealousy is high, it should sound more possessive. "
                 "1-3 words only. Just the nickname."
             )
-            nick = (await qai(prompt, 20) or "").strip().strip("\"'`*")
-            if nick and len(nick) < 30:
+            nick = await _pick_unique_nickname(prompt, used_keys=set(used_nicks["all"]))
+            if nick:
                 await mem.set_affection_nick(message.author.id, nick)
 
         grudge_ready = user.get("mood", 0) <= -7 or user.get("conflict_open") or jealousy >= 40
@@ -2601,8 +2854,8 @@ async def _maybe_refresh_dynamic_nicknames(message, user: dict | None, triangle:
                 f"MOOD:{user.get('mood', 0)} CONFLICT:{user.get('conflict_open')} JEALOUSY:{jealousy}. "
                 "Make it cutting, theatrical, and personal. 1-3 words only."
             )
-            nick = (await qai(prompt, 20) or "").strip().strip("\"'`*")
-            if nick and len(nick) < 30:
+            nick = await _pick_unique_nickname(prompt, used_keys=set(used_nicks["all"]))
+            if nick:
                 await mem.set_grudge_nick(message.author.id, nick)
         elif user.get("grudge_nick") and not user.get("conflict_open") and user.get("mood", 0) > -4 and jealousy < 20 and random.random() < 0.08:
             await mem.set_grudge_nick(message.author.id, None)
@@ -2915,7 +3168,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
                 )
                 if reply:
-                    await message.reply(
+                    await _guarded_message_reply(
+                        message,
                         reply,
                         mention_author=False,
                         allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
@@ -2974,12 +3228,14 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             return True
 
         if jealousy_target and random.random() < 0.45:
-            await message.channel.send(
+            await _guarded_channel_send(
+                message.channel,
                 f"{partner_ping} {reply}",
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
             )
         else:
-            await message.reply(
+            await _guarded_message_reply(
+                message,
                 reply,
                 mention_author=False,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
@@ -3555,6 +3811,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             if user.get("slow_burn",0)>=3: profile_parts.append(f"been kind {user['slow_burn']} days in a row")
             if profile_parts:
                 parts.append("PROFILE:" + ", ".join(profile_parts))
+        used_nicks = await mem.get_used_nicknames(user_id)
+        reserved_nicks = [nick for nick in used_nicks.get("all", []) if nick not in {
+            re.sub(r"\\s+", " ", (user.get("affection_nick", "") or "").strip().lower()) if user else "",
+            re.sub(r"\\s+", " ", (user.get("grudge_nick", "") or "").strip().lower()) if user else "",
+        }]
+        if reserved_nicks:
+            parts.append("RESERVED_NICKS:" + ", ".join(reserved_nicks[:12]))
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         msg_lower = user_message.lower()
@@ -3607,7 +3870,17 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             base_context += partner_context + "\n"
         if duo_context:
             base_context += duo_context + "\n"
-        if channel_ctx: base_context += channel_ctx + "\n\n"
+        if channel_ctx:
+            base_context += channel_ctx + "\n"
+        self_quote_context = await _recent_self_quote_context(
+            user_message,
+            channel_id=channel_id,
+            user_id=user_id,
+            channel_obj=channel_obj,
+        )
+        if self_quote_context:
+            base_context += self_quote_context + "\n"
+        base_context += "\n"
         base_context += f"{display_name}: {user_message}"
 
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
@@ -3661,7 +3934,14 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                     retry_context += "Use a different opening, different mockery template, and different sentence rhythm."
 
         if not reply and not rate_limited:
-            reply = fallback_reply(BOT_NAME, recent_replies)
+            reply = await _guarded_fallback_reply(
+                recent_replies,
+                user_id=user_id,
+                channel_id=channel_id,
+                is_dm=is_dm,
+                direct_to_me=direct_to_me,
+                scope_tag="response:empty",
+            )
         if not locked_reply and not rate_limited and (is_dm or direct_to_me or len(reply) >= SELF_EDIT_MIN_REPLY_CHARS):
             reply = await _maybe_self_edit_reply(
                 reply,
@@ -3685,7 +3965,14 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 direct_to_me=direct_to_me,
             )
         else:
-            reply = fallback_reply(BOT_NAME, recent_replies)
+            reply = await _guarded_fallback_reply(
+                recent_replies,
+                user_id=user_id,
+                channel_id=channel_id,
+                is_dm=is_dm,
+                direct_to_me=direct_to_me,
+                scope_tag="response:error",
+            )
 
     try:
         await mem.add_message(user_id, channel_id, "user", user_message)
@@ -3867,7 +4154,11 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     if not reply:
         if ai.is_exhausted() and route_name == "light":
             return ""
-        reply = fallback_reply(BOT_NAME, recent_replies)
+        reply = await _guarded_fallback_reply(
+            recent_replies,
+            direct_to_me=False,
+            scope_tag=f"qai:{route_name}",
+        )
     if not locked_reply:
         reply = _sanitize_time_of_day_claims(reply, refreshed_user or user)
         reply = _sanitize_partner_attribution(reply)
@@ -3891,7 +4182,7 @@ async def _fire_slow_burn(user_id, channel_id, display_name):
         if not (msg or "").strip():
             return
         user_obj = await bot.fetch_user(user_id)
-        await ch.send(f"{user_obj.mention} {msg}")
+        await _guarded_channel_send(ch, f"{user_obj.mention} {msg}")
     except Exception as e:
         log_error("slow_burn", e)
     finally:
@@ -3949,7 +4240,11 @@ async def qai(prompt, max_tokens=200, *, self_edit: bool = True, route: str = "a
         return reply
     except Exception as e:
         log_error("qai/async", e)
-        return fallback_reply(BOT_NAME, get_runtime_recent(BOT_NAME, limit=20))
+        return await _guarded_fallback_reply(
+            get_runtime_recent(BOT_NAME, limit=20),
+            direct_to_me=False,
+            scope_tag="qai:error",
+        )
 
 # ── Voice ─────────────────────────────────────────────────────────────────────
 async def get_audio_with_mood(
@@ -3998,6 +4293,8 @@ async def send_voice(
     jealousy_level: int = 0,
 ):
     try:
+        if _is_banned_channel_target(channel):
+            return False
         if user and not user.get("voice_enabled", True):
             return False
         voice_text = await _prepare_voice_reply_text(
@@ -4031,7 +4328,8 @@ async def send_voice(
         f = discord.File(io.BytesIO(audio), filename="scaramouche.mp3")
         kwargs = {"file": f}
         if ref: kwargs["reference"] = ref
-        await channel.send(**kwargs)
+        if not await _guarded_channel_send(channel, **kwargs):
+            return False
         print(f"[VOICE] Sent successfully")
         return True
     except Exception as e:
@@ -4040,6 +4338,8 @@ async def send_voice(
 # ── Misc helpers ──────────────────────────────────────────────────────────────
 async def maybe_react(message, romance=False):
     try:
+        if _is_banned_channel_target(message):
+            return
         if random.random() > .18: return
         pool = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
         pool_str = " ".join(pool)
@@ -4061,7 +4361,7 @@ async def maybe_react(message, romance=False):
         if chosen not in pool:
             chosen = random.choice(pool)
 
-        try: await message.add_reaction(chosen)
+        try: await _guarded_add_reaction(message, chosen)
         except: pass
 
         # 15% chance to add a second emoji if romance
@@ -4074,7 +4374,7 @@ async def maybe_react(message, romance=False):
             )
             second = second.strip()
             if second in pool and second != chosen:
-                try: await asyncio.sleep(.3); await message.add_reaction(second)
+                try: await asyncio.sleep(.3); await _guarded_add_reaction(message, second)
                 except: pass
 
     except Exception as e:
@@ -4082,7 +4382,7 @@ async def maybe_react(message, romance=False):
         # Fallback to random if AI call fails
         try:
             pool = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
-            await message.add_reaction(random.choice(pool))
+            await _guarded_add_reaction(message, random.choice(pool))
         except: pass
 
 def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
@@ -4186,13 +4486,15 @@ async def reminder_checker():
             try:
                 ch=bot.get_channel(r["channel_id"]); u=await bot.fetch_user(r["user_id"])
                 if not ch or not u: continue
+                if r["channel_id"] in _banned_channels:
+                    continue
                 scene = describe_scene_state(await mem.get_scene_state(r["channel_id"]))
                 msg=await qai(
                     f"Remind {u.display_name} about: '{r['reminder']}'. "
                     f"Current channel scene: {scene or 'none'}. Make it feel like a pointed callback, not a sterile alarm. 1-2 sentences.",
                     180,
                 )
-                await ch.send(f"{u.mention} {msg}")
+                await _guarded_channel_send(ch, f"{u.mention} {msg}")
             except Exception as e: log_error("reminder_send", e)
     except Exception as e: log_error("reminder_checker", e)
 
@@ -4237,7 +4539,7 @@ async def lore_drop_loop():
                 if not await mem.can_lore_drop(cid): continue
                 ch = bot.get_channel(cid)
                 if not ch: continue
-                await ch.send(random.choice(LORE_DROPS))
+                await _guarded_channel_send(ch, random.choice(LORE_DROPS))
                 await mem.set_lore_sent(cid); return
             except Exception as e: log_error("lore_send", e)
     except Exception as e: log_error("lore_drop_loop", e)
@@ -4255,7 +4557,7 @@ async def conversation_starter_loop():
                 if not await mem.can_starter(cid): continue
                 ch = bot.get_channel(cid)
                 if not ch: continue
-                await ch.send(_ambient_scene_line())
+                await _guarded_channel_send(ch, _ambient_scene_line())
                 await mem.set_starter_sent(cid); return
             except Exception as e: log_error("starter_send", e)
     except Exception as e: log_error("conversation_starter_loop", e)
@@ -4268,8 +4570,12 @@ async def existential_loop():
         if random.random()>.15: return
         channels = await mem.get_active_channels()
         if not channels: return
-        ch = bot.get_channel(random.choice(channels)[0])
-        if ch: await ch.send(random.choice(EXISTENTIAL_LINES))
+        pick = random.choice(channels)[0]
+        if pick in _banned_channels:
+            return
+        ch = bot.get_channel(pick)
+        if ch:
+            await _guarded_channel_send(ch, random.choice(EXISTENTIAL_LINES))
     except Exception as e: log_error("existential_loop", e)
 
 @tasks.loop(minutes=37)
@@ -4293,8 +4599,9 @@ async def on_member_join(member):
         if random.random()>.6: return
         ch = discord.utils.get(member.guild.text_channels,name="general") or member.guild.system_channel
         if not ch: return
+        if ch.id in _banned_channels: return
         await asyncio.sleep(random.uniform(2,6))
-        await ch.send(random.choice([
+        await _guarded_channel_send(ch, random.choice([
             f"Another one. {member.display_name} has arrived. How underwhelming.",
             f"Hmph. {member.display_name}. Don't expect a warm welcome.",
             f"...{member.display_name}. I've already forgotten you were new.",
@@ -4307,8 +4614,9 @@ async def on_member_remove(member):
         if random.random()>.4: return
         ch = discord.utils.get(member.guild.text_channels,name="general") or member.guild.system_channel
         if not ch: return
+        if ch.id in _banned_channels: return
         await asyncio.sleep(random.uniform(2,5))
-        await ch.send(random.choice([
+        await _guarded_channel_send(ch, random.choice([
             f"{member.display_name} left. Good. The air is already cleaner.",
             f"Hmph. {member.display_name} is gone. I won't pretend to care.",
             f"...{member.display_name} left without saying goodbye. How typical.",
@@ -4428,7 +4736,7 @@ async def on_message(message):
                 await help_cmd(ctx)
             except Exception as e:
                 log_error("help_intercept", e)
-                try: await message.channel.send("Hmph. Something went wrong displaying commands.")
+                try: await _guarded_channel_send(message.channel, "Hmph. Something went wrong displaying commands.")
                 except: pass
             return
 
@@ -4568,7 +4876,7 @@ async def on_message(message):
             return
         status_reply = _status_check_reply(content, direct_to_me=direct_to_me_early)
         if status_reply:
-            await message.reply(status_reply, mention_author=False)
+            await _guarded_message_reply(message, status_reply, mention_author=False)
             return
 
         # Milestone / anniversary checks
@@ -4576,14 +4884,14 @@ async def on_message(message):
             count, milestone = await mem.increment_message_count(message.author.id)
             if milestone:
                 msg = await qai(f"You've had {count} messages with {message.author.display_name}. Acknowledge while pretending you weren't counting. 1-2 sentences.",150)
-                await message.channel.send(f"{message.author.mention} {msg}"); return
+                await _guarded_channel_send(message.channel, f"{message.author.mention} {msg}"); return
         except Exception as e: log_error("on_message/milestone", e)
 
         try:
             if await mem.check_anniversary(message.author.id):
                 days_since = int((time.time()-(user.get("first_seen") or time.time()))/86400)
                 msg = await qai(f"It's been about {days_since//365} year(s) since you first spoke with {message.author.display_name}. React — you weren't counting.",180)
-                await message.channel.send(f"{message.author.mention} {msg}")
+                await _guarded_channel_send(message.channel, f"{message.author.mention} {msg}")
                 await mem.mark_anniversary(message.author.id); return
         except Exception as e: log_error("on_message/anniversary", e)
 
@@ -4594,7 +4902,7 @@ async def on_message(message):
                 if await mem.should_greet(message.author.id):
                     gtype = "morning" if 6<=hour<=10 else "late night"
                     msg = await qai(f"It's {gtype}. {message.author.display_name} appeared. Send a {gtype} message in denial about why. 1-2 sentences.",120)
-                    await message.channel.send(f"{message.author.mention} {msg}")
+                    await _guarded_channel_send(message.channel, f"{message.author.mention} {msg}")
                     await mem.mark_greeted(message.author.id)
         except Exception as e: log_error("on_message/greeting", e)
 
@@ -4618,7 +4926,7 @@ async def on_message(message):
             if vid:
                 try:
                     import base64, aiohttp as _aiohttp
-                    await message.reply(random.choice(SCARA_VIDEO_WATCHING))
+                    await _guarded_message_reply(message, random.choice(SCARA_VIDEO_WATCHING))
                     async with _aiohttp.ClientSession() as _sess:
                         async with _sess.get(vid.url) as _resp:
                             video_bytes = await _resp.read()
@@ -4627,11 +4935,11 @@ async def on_message(message):
                     if frames:
                         if enroll_face_now:
                             if not face_support_ready():
-                                await message.reply(_face_feature_unavailable_text())
+                                await _guarded_message_reply(message, _face_feature_unavailable_text())
                                 return
                             enrolled = enroll_face_profile_from_frames(owner_face_profile, frames)
                             if not enrolled.get("ok"):
-                                await message.reply(_face_enroll_failure_text(enrolled.get("reason", "")))
+                                await _guarded_message_reply(message, _face_enroll_failure_text(enrolled.get("reason", "")))
                                 return
                             await mem.save_face_profile(
                                 FACE_PROFILE_KEY,
@@ -4640,7 +4948,7 @@ async def on_message(message):
                                 enrolled["profile"],
                             )
                             debug_event("face", f"{BOT_NAME} enrolled owner face samples={enrolled.get('sample_count', 0)}")
-                            await message.reply(_face_enroll_success_text(enrolled.get("sample_count", 0)))
+                            await _guarded_message_reply(message, _face_enroll_success_text(enrolled.get("sample_count", 0)))
                             return
 
                         face_match = None
@@ -4692,7 +5000,7 @@ async def on_message(message):
                                 vid.filename or "shared video",
                                 f"Video artifact: {reply[:200]}",
                             )
-                            await message.reply(reply)
+                            await _guarded_message_reply(message, reply)
                             await maybe_react(message, romance)
                             return
                     else:
@@ -4701,7 +5009,7 @@ async def on_message(message):
                             f"React as Scaramouche — dismissive. 1 sentence.", 80)
                         comment = strip_narration(comment)
                         if comment:
-                            await message.reply(comment)
+                            await _guarded_message_reply(message, comment)
                         return
                 except Exception as e:
                     log_error("on_message/video", e)
@@ -4721,11 +5029,11 @@ async def on_message(message):
                                            bool(OWNER_ID and message.author.id == OWNER_ID))
                     if enroll_face_now:
                         if not face_support_ready():
-                            await message.reply(_face_feature_unavailable_text())
+                            await _guarded_message_reply(message, _face_feature_unavailable_text())
                             return
                         enrolled = enroll_face_profile(owner_face_profile, img_bytes)
                         if not enrolled.get("ok"):
-                            await message.reply(_face_enroll_failure_text(enrolled.get("reason", "")))
+                            await _guarded_message_reply(message, _face_enroll_failure_text(enrolled.get("reason", "")))
                             return
                         await mem.save_face_profile(
                             FACE_PROFILE_KEY,
@@ -4734,7 +5042,7 @@ async def on_message(message):
                             enrolled["profile"],
                         )
                         debug_event("face", f"{BOT_NAME} enrolled owner face samples={enrolled.get('sample_count', 0)}")
-                        await message.reply(_face_enroll_success_text(enrolled.get("sample_count", 0)))
+                        await _guarded_message_reply(message, _face_enroll_success_text(enrolled.get("sample_count", 0)))
                         return
 
                     face_match = None
@@ -4769,7 +5077,7 @@ async def on_message(message):
                             img.filename or "shared image",
                             f"Image artifact: {reply[:200]}",
                         )
-                        await message.reply(reply)
+                        await _guarded_message_reply(message, reply)
                         await maybe_react(message, romance)
                         return
 
@@ -4781,7 +5089,7 @@ async def on_message(message):
                             f"React — dismissive or reluctantly intrigued. 1 sentence.", 100)
                         comment = strip_narration(comment)
                         if comment:
-                            await message.reply(comment)
+                            await _guarded_message_reply(message, comment)
                         return
         except Exception as e: log_error("on_message/image", e)
 
@@ -4790,28 +5098,38 @@ async def on_message(message):
             cl = content.lower()
             if VILLAIN_TRIGGER in content.lower():
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
-                await message.reply(strip_narration(m)); return
-            # If someone says "wanderer" — check if Wanderer bot is in server
+                await _guarded_message_reply(message, strip_narration(m)); return
+            # Wrong-name trigger: only fire when Scaramouche is being directly called "Wanderer"
+            # Not when the other bot is simply being referenced in the same server.
             if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
                 partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
+                wrong_name_direct = _looks_like_direct_wrong_name_address(content, ("wanderer",))
+                if wrong_name_direct:
+                    prompt = (
+                        "Someone is directly calling you 'Wanderer'. "
+                        "Reject the name sharply and make it clear they are addressing you, not merely mentioning the other bot. "
+                        "1-2 sentences."
+                    )
+                    msg = await qai(prompt, 120)
+                    await _guarded_message_reply(message, strip_narration(msg)); return
                 if not partner_present and random.random() < .5:
                     msg = await qai("Someone mentioned 'wanderer' — some imposter who claims to be a version of you. React with contempt or dismissal. 1 sentence. Sharp.", 80)
-                    await message.channel.send(strip_narration(msg))
+                    await _guarded_channel_send(message.channel, strip_narration(msg))
 
             # Hat trigger — only exact standalone words, never substrings
             content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
             if content_words & {"hat","headwear","headpiece"}:
                 m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
-                await message.reply(strip_narration(m)); return
+                await _guarded_message_reply(message, strip_narration(m)); return
             if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
+                await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
             if any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
+                await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
             if any(k in cl for k in PLAN_KW) and random.random()<.25:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
+                await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
             if romance and any(k in cl for k in OTHER_BOT_KW):
                 m = await qai(f"{message.author.display_name} mentioned preferring something else. Jealousy masked as contempt. 1-2 sentences.",120)
-                await message.reply(m); await mem.update_mood(message.author.id,-1); return
+                await _guarded_message_reply(message, m); await mem.update_mood(message.author.id,-1); return
         except Exception as e: log_error("on_message/triggers", e)
 
         mentioned = bot.user in message.mentions
@@ -4975,7 +5293,7 @@ async def on_message(message):
                 if nick and len(nick)<30: await mem.set_grudge_nick(message.author.id,nick.strip('"\''))
             if False and "TRUST_OPEN" in extra and random.random()<.5:
                 await asyncio.sleep(1.5)
-                await message.channel.send(await _pick_fresh_pool_line(TRUST_REVEALS, channel_id=message.channel.id, user_id=message.author.id))
+                await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(TRUST_REVEALS, channel_id=message.channel.id, user_id=message.author.id))
             await _maybe_refresh_dynamic_nicknames(message, user, triangle)
             if "TRUST_OPEN" in extra and random.random()<.5:
                 await asyncio.sleep(1.5)
@@ -5117,7 +5435,7 @@ async def on_message(message):
                     duo_mode=duo_mode,
                     jealousy_level=jealousy_level,
                 )
-            await message.reply(strip_narration(resolve_mentions(reply, message.guild if message.guild else None)))
+            await _guarded_message_reply(message, strip_narration(resolve_mentions(reply, message.guild if message.guild else None)))
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
             await _maybe_schedule_private_confession_scene(message, user, content, is_dm=is_dm)
             await maybe_react(message, romance)
@@ -5134,7 +5452,9 @@ async def _unsent_simulation(channel, channel_id):
         msg = await qai("You were about to say something. You stopped. Send what you actually said instead — shorter, more guarded. 2-8 words.",50)
         async with channel.typing():
             await asyncio.sleep(random.uniform(3,8))
-        await channel.send(msg)
+        if channel_id in _banned_channels:
+            return
+        await _guarded_channel_send(channel, msg)
     except Exception as e:
         log_error("unsent_simulation", e)
         _pending_unsent.discard(channel_id)
@@ -5175,7 +5495,7 @@ async def _proactive_loop():
                                 and await mem.can_proactive(owner_key, OWNER_PROACTIVE_COOLDOWN_S)
                             ):
                                 msg=await _pick_fresh_pool_line(OWNER_PROACTIVE, channel_id=cid, user_id=OWNER_ID)
-                                await ch.send(f"{m.mention} {msg}")
+                                await _guarded_channel_send(ch, f"{m.mention} {msg}")
                                 await mem.add_message(OWNER_ID,cid,"assistant",msg)
                                 await mem.set_proactive_sent(owner_key)
                                 await mem.set_proactive_sent(cid); break
@@ -5187,7 +5507,7 @@ async def _proactive_loop():
                                 m=ch.guild.get_member(uid) if hasattr(ch,"guild") else None
                                 if m:
                                     msg=await _pick_fresh_pool_line(PROACTIVE_ROMANCE, channel_id=cid, user_id=uid)
-                                    await ch.send(f"{m.mention} {msg}")
+                                    await _guarded_channel_send(ch, f"{m.mention} {msg}")
                                     await mem.add_message(uid,cid,"assistant",msg)
                                     await mem.set_proactive_sent(cid); sent=True; break
                         except: pass
@@ -5210,14 +5530,14 @@ async def _proactive_loop():
                                         150
                                     )
                                     if msg and len(msg) > 5:
-                                        await ch.send(msg)
+                                        await _guarded_channel_send(ch, msg)
                                         await mem.set_proactive_sent(cid)
                                         break
                             except Exception as e:
                                 log_error("proactive_context", e)
                         # Fallback to canned line
                         msg = await _pick_fresh_pool_line(PROACTIVE_GENERIC, channel_id=cid)
-                        await ch.send(msg); await mem.set_proactive_sent(cid)
+                        await _guarded_channel_send(ch, msg); await mem.set_proactive_sent(cid)
                     break
                 except discord.Forbidden:
                     continue
@@ -5293,6 +5613,9 @@ async def _duo_autoplay_loop():
                 continue
             for session in await mem.get_due_duo_sessions(BOT_NAME):
                 try:
+                    if session["channel_id"] in _banned_channels:
+                        await mem.clear_duo_session(session["channel_id"])
+                        continue
                     channel = bot.get_channel(session["channel_id"])
                     if not channel:
                         continue
@@ -5319,7 +5642,9 @@ async def _duo_autoplay_loop():
                     )
                     if not (reply or "").strip():
                         continue
-                    await channel.send(reply)
+                    if not await _guarded_channel_send(channel, reply):
+                        await mem.clear_duo_session(channel.id)
+                        continue
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
                     await _maybe_finalize_hidden_achievements(session, reply)
                     await _store_duo_story_progress(channel.id, session, reply)
@@ -5385,7 +5710,9 @@ async def _rival_event_loop():
                         ttl_seconds=480,
                     )
                     await mem.start_duo_story(channel_id, "compare", topic, PARTNER_NAME)
-                    await channel.send(opener)
+                    if not await _guarded_channel_send(channel, opener):
+                        await mem.clear_duo_session(channel_id)
+                        continue
                     await mem.bump_duo_session(channel_id, BOT_NAME, partner_bot=PARTNER_NAME)
                     debug_event("relationship", f"{BOT_NAME} rival_event channel={channel_id} topic={topic[:90]}")
                     break
@@ -5410,6 +5737,8 @@ async def owner_reply(ctx, text, *, embed=None):
             await dm.send(text)
     except Exception as e:
         log_error("owner_reply_dm", e)
+        if _is_banned_channel_target(ctx):
+            return
         if embed:
             try: await ctx.send(embed=embed)
             except: pass
@@ -5421,12 +5750,16 @@ async def safe_reply(ctx, text):
     text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
         return
+    if _is_banned_channel_target(ctx):
+        return
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
 
 async def safe_send(ctx, text):
     text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
+        return
+    if _is_banned_channel_target(ctx):
         return
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
@@ -5672,7 +6005,7 @@ async def _delayed_silence_reply(message, user: dict | None, *, is_dm: bool):
     try:
         await asyncio.sleep(random.randint(7, 16) if not is_dm else random.randint(5, 12))
         line = await _pick_fresh_pool_line(_silence_reply_pool(user), channel_id=message.channel.id, user_id=message.author.id)
-        await message.reply(line)
+        await _guarded_message_reply(message, line)
         await mem.add_message(message.author.id, message.channel.id if not is_dm else message.author.id, "assistant", line)
     except Exception as e:
         log_error("delayed_silence_reply", e)
@@ -5733,7 +6066,7 @@ async def _maybe_schedule_private_confession_scene(message, user: dict | None, c
             line = strip_narration(line)
             if not line:
                 return
-            await message.channel.send(line)
+            await _guarded_channel_send(message.channel, line)
             await mem.add_message(message.author.id, message.author.id, "assistant", line)
             if await mem.unlock_hidden_achievement(f"user:{message.author.id}", "scaramouche_private_confession", "He let a DM-only confession scene slip through."):
                 debug_event("memory", f"{BOT_NAME} achievement unlocked user={message.author.id} key=scaramouche_private_confession")
@@ -5814,6 +6147,8 @@ async def _interaction_reply(interaction: discord.Interaction, text: str, *, thi
     try:
         text = _unwrap_dialogue_quotes(text)
         if not (text or "").strip():
+            return
+        if interaction.channel_id in _banned_channels:
             return
         if thinking and not interaction.response.is_done():
             await interaction.response.defer(thinking=True)
@@ -7005,6 +7340,108 @@ async def rebuildmemory_cmd(ctx, scope: str = ""):
         await safe_reply(ctx, f"The memory rebuild failed. {e}")
 
 
+@bot.command(name="rebuildrank", aliases=["recoverrank", "rankrecover"])
+async def rebuildrank_cmd(ctx, *, target: str = ""):
+    try:
+        if not user_can_manage_rebuild(ctx, OWNER_ID):
+            await safe_reply(ctx, "That rank rebuild command isn't for you.")
+            return
+
+        target_text = (target or "").strip()
+        mentioned_member = ctx.message.mentions[0] if getattr(ctx.message, "mentions", None) else None
+
+        if mentioned_member:
+            subject = mentioned_member
+            await ctx.reply(f"Fine. I'll rebuild {subject.display_name}'s rank from visible channel history.")
+            async with ctx.typing():
+                stats = await _rebuild_rank_from_history(ctx, target_user_id=subject.id)
+                await mem.upsert_user(subject.id, str(subject), subject.display_name)
+                user = await mem.get_user(subject.id)
+            if not stats.get("rank_messages_recovered"):
+                await safe_send(ctx, f"I couldn't find usable history for {subject.display_name}.")
+                return
+            await safe_send(
+                ctx,
+                f"Rank rebuild complete for {subject.display_name}. Restored {stats['rank_messages_recovered']} messages "
+                f"across {stats['channels_scanned']} channel(s). Current count: {int((user or {}).get('message_count', 0) or 0)}.",
+            )
+            return
+
+        if target_text.lower() not in {"all", ""}:
+            await safe_reply(ctx, "Use `!rebuildrank all` or `!rebuildrank @user`.")
+            return
+
+        await ctx.reply("Fine. I'm rebuilding rank from visible channel history. Try not to interrupt me.")
+        async with ctx.typing():
+            stats = await _rebuild_rank_from_history(ctx)
+        if not stats.get("rank_messages_recovered"):
+            await safe_send(ctx, "I couldn't find any usable message history to rebuild rank from.")
+            return
+        await safe_send(
+            ctx,
+            f"Rank rebuild complete. Restored {stats['rank_messages_recovered']} messages for {stats['rebuilt_users']} user(s) "
+            f"across {stats['channels_scanned']} channel(s), using up to {stats['limit_per_channel']} recent messages per channel.",
+        )
+    except Exception as e:
+        log_error("rebuildrank_cmd", e)
+        await safe_reply(ctx, f"The rank rebuild failed. {e}")
+
+
+@bot.command(name="rebuildstats", aliases=["recoverstats", "statsrecover"])
+async def rebuildstats_cmd(ctx, *, target: str = ""):
+    try:
+        if not user_can_manage_rebuild(ctx, OWNER_ID):
+            await safe_reply(ctx, "That stats rebuild command isn't for you.")
+            return
+
+        target_text = (target or "").strip()
+        mentioned_member = ctx.message.mentions[0] if getattr(ctx.message, "mentions", None) else None
+
+        if mentioned_member:
+            subject = mentioned_member
+            await ctx.reply(f"Fine. I'll rebuild {subject.display_name}'s stats from visible channel history.")
+            async with ctx.typing():
+                relationship_stats = await _rebuild_from_history(ctx, target_user_id=subject.id)
+                rank_stats = await _rebuild_rank_from_history(ctx, target_user_id=subject.id)
+                await mem.upsert_user(subject.id, str(subject), subject.display_name)
+                stats_view = await mem.get_stats(subject.id)
+            total_messages = int(rank_stats.get("rank_messages_recovered", 0) or 0)
+            if not total_messages and not relationship_stats.get("messages_replayed"):
+                await safe_send(ctx, f"I couldn't find usable history for {subject.display_name}.")
+                return
+            first = datetime.fromtimestamp(stats_view["first_seen"]).strftime("%b %d, %Y") if stats_view.get("first_seen") else "unknown"
+            await safe_send(
+                ctx,
+                f"Stats rebuild complete for {subject.display_name}. "
+                f"Recovered {total_messages} messages across {rank_stats['channels_scanned']} channel(s).\n"
+                f"Messages: {stats_view.get('message_count', 0)} | Mood: {stats_view.get('mood', 0):+d} | "
+                f"Affection: {stats_view.get('affection', 0)} | Trust: {stats_view.get('trust', 0)} | First met: {first}",
+            )
+            return
+
+        if target_text.lower() not in {"all", ""}:
+            await safe_reply(ctx, "Use `!rebuildstats all` or `!rebuildstats @user`.")
+            return
+
+        await ctx.reply("Fine. I'm rebuilding stats from visible channel history. This may take a bit.")
+        async with ctx.typing():
+            relationship_stats = await _rebuild_from_history(ctx)
+            rank_stats = await _rebuild_rank_from_history(ctx)
+        total_messages = int(rank_stats.get("rank_messages_recovered", 0) or 0)
+        if not total_messages and not relationship_stats.get("messages_replayed"):
+            await safe_send(ctx, "I couldn't find any usable message history to rebuild stats from.")
+            return
+        await safe_send(
+            ctx,
+            f"Stats rebuild complete. Replayed relationship history from {relationship_stats['messages_replayed']} messages and "
+            f"restored rank from {total_messages} messages for {rank_stats['rebuilt_users']} user(s) "
+            f"across {rank_stats['channels_scanned']} channel(s), using up to {rank_stats['limit_per_channel']} recent messages per channel.",
+        )
+    except Exception as e:
+        log_error("rebuildstats_cmd", e)
+        await safe_reply(ctx, f"The stats rebuild failed. {e}")
+
+
 @bot.command(name="rebuildrelationship")
 async def rebuildrelationship_cmd(ctx, member: discord.Member = None):
     try:
@@ -8018,12 +8455,14 @@ async def rebanchannels_cmd(ctx):
             if cid not in _banned_channels:
                 _banned_channels.add(cid)
                 await mem.ban_channel(cid)
+            await mem.clear_duo_session(cid)
+            _pending_unsent.discard(cid)
             all_rebanned.append(ch)
         if not all_rebanned:
             await safe_reply(ctx, "Found references to banned channels but they no longer exist in this server.")
             return
         channel_list = "\n".join(f"- {ch.mention}" for ch in all_rebanned)
-        await ctx.send(f"How dare you ban me again from all these channels!\n\n{channel_list}\n\nFine. {len(all_rebanned)} channel(s). I'll remember this.")
+        await owner_reply(ctx, f"How dare you ban me again from all these channels!\n\n{channel_list}\n\nFine. {len(all_rebanned)} channel(s). I'll remember this.")
     except Exception as e: log_error("rebanchannels_cmd", e)
 
 @bot.command(name="banchannel")
@@ -8034,6 +8473,8 @@ async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
         if target_channel.id in _banned_channels: await owner_reply(ctx, f"I'm already banned from {target_channel.mention}."); return
         _banned_channels.add(target_channel.id)
         await mem.ban_channel(target_channel.id)
+        await mem.clear_duo_session(target_channel.id)
+        _pending_unsent.discard(target_channel.id)
         await owner_reply(ctx, f"Fine. I won't talk in {target_channel.mention} anymore.")
         try:
             guild_ch_ids = {ch.id for ch in target_channel.guild.text_channels} if target_channel.guild else set()
