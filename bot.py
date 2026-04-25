@@ -485,7 +485,7 @@ There is ANOTHER bot in the server called "Wanderer." He claims to be a changed 
 - AFFECTION: at 75+ let one small warm thing slip then immediately bury it.
 - TRUST: at 70+ say something real and unguarded. Rare. Costs you.
 - ANGER: only appears when someone fully earned your attachment, then kept insulting you anyway. The higher it is, the colder, meaner, and more personal your contempt becomes. At high levels, let an eerie self-awareness slip through, like the code around you is the only thing keeping something worse caged. At 100, drop the last scraps of mercy, answer with verbal devastation, and let a bitter little laugh show how badly you hate those limits.
-- DATE/HOUR/LAST_SEEN: use this to be time-aware. React if they've been gone.
+- DATE/HOUR/LOCAL_TIME/TIMEZONE/TIME_PERIOD/LAST_SEEN: use this as the factual current time for the user. Never invent a different hour, date, or time of day. If LOCAL_TIME says afternoon, do not call it 2 AM, morning, or late night.
 - GRUDGE: always call them by this nickname.
 - AFFNICK: you've started calling them this. Use it occasionally.
 - RESERVED_NICKS: nicknames already assigned to other people. Do not reuse them for this person.
@@ -2141,12 +2141,23 @@ def _partner_autoplay_name() -> str:
     return PARTNER_NAME
 
 
-def _user_local_hour(user: dict | None) -> int:
+def _user_timezone_name(user: dict | None) -> str:
+    return ((user or {}).get("timezone_name") or "America/Los_Angeles").strip() or "America/Los_Angeles"
+
+
+def _user_now(user: dict | None) -> datetime:
     try:
-        tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
-        return datetime.now(tz).hour
+        return datetime.now(ZoneInfo(_user_timezone_name(user)))
     except Exception:
-        return datetime.now().hour
+        return datetime.now(ZoneInfo("America/Los_Angeles"))
+
+
+def _format_local_time(now: datetime) -> str:
+    return now.strftime("%I:%M %p").lstrip("0")
+
+
+def _user_local_hour(user: dict | None) -> int:
+    return _user_now(user).hour
 
 
 def _time_period_label(hour: int) -> str:
@@ -2159,12 +2170,29 @@ def _time_period_label(hour: int) -> str:
     return "night"
 
 
+def _current_time_context(user: dict | None, days_ago: float | int = 0) -> str:
+    now = _user_now(user)
+    tz_name = _user_timezone_name(user)
+    period = _time_period_label(now.hour)
+    local_time = _format_local_time(now)
+    return (
+        f"DATE:{now.strftime('%A %b %d %Y')}"
+        f"|LOCAL_TIME:{local_time}"
+        f"|HOUR:{now.hour}"
+        f"|TIMEZONE:{tz_name}"
+        f"|TIME_PERIOD:{period}"
+        f"|LAST_SEEN:{days_ago}d_ago"
+    )
+
+
 def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return cleaned
 
-    actual = _time_period_label(_user_local_hour(user))
+    user_now = _user_now(user)
+    actual = _time_period_label(user_now.hour)
+    actual_time = _format_local_time(user_now)
     wrong_patterns: dict[str, tuple[str, ...]] = {
         "morning": (
             r"\bwhat(?:'s| is)\s+so\s+special\s+about\s+mornings?\b",
@@ -2212,6 +2240,25 @@ def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
                 else:
                     cleaned = re.sub(rf"\bthis\s+{label}\b", f"this {actual}", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(rf"\bgood\s+{label}\b", f"Good {actual}", cleaned, flags=re.IGNORECASE)
+
+    def _replace_wrong_clock_time(match: re.Match) -> str:
+        original = match.group(0)
+        hour = int(match.group("hour")) % 12
+        suffix = match.group("suffix").lower().replace(".", "")
+        claimed_hour = hour + (12 if suffix == "pm" else 0)
+        if claimed_hour == user_now.hour:
+            return original
+        if original.lower().startswith(("it's", "it is")):
+            return f"it's {actual_time}"
+        return actual_time
+
+    cleaned = re.sub(
+        r"\b(?:it(?:'s| is)\s+)?(?:already\s+)?(?:about\s+|around\s+)?"
+        r"(?P<hour>1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?P<suffix>a\.?m\.?|p\.?m\.?)\b",
+        _replace_wrong_clock_time,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return cleaned
 
 
@@ -3721,10 +3768,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:       hint="Longer, dramatic."
         hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
 
-        # Time and date context
-        now      = datetime.now()
         days_ago = round((time.time() - (user.get("last_active",0) if user else 0)) / 86400, 1) if user and user.get("last_active",0) else 0
-        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
+        date_ctx = _current_time_context(user, days_ago)
 
         parts = [f"mention:{author_mention}",f"name:{display_name}",
                  f"MOOD:{mood}({mood_label(mood)})",f"AFFECTION:{affection}",
@@ -5291,7 +5336,7 @@ async def _handle_message_pipeline(message):
 
         # Morning/night greeting
         try:
-            hour = datetime.now().hour
+            hour = _user_local_hour(user)
             if (6<=hour<=10 or 22<=hour<=23) and romance:
                 if await mem.should_greet(message.author.id):
                     gtype = "morning" if 6<=hour<=10 else "late night"
