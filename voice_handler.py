@@ -3,6 +3,8 @@ voice_handler.py — Scaramouche Bot (The Balladeer)
 Voice ID: fb95ab47841a4db189cb35fb619d4ea1
 """
 
+from __future__ import annotations
+
 import io
 import asyncio
 import httpx

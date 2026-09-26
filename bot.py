@@ -4,10 +4,12 @@ Full stability pass: every task, loop, command, and event is wrapped
 in try/except. Nothing can crash the bot. Errors are logged and ignored.
 """
 
+from __future__ import annotations
+
 import discord
 from discord.ext import commands, tasks
 from groq import Groq
-import os, re, random, asyncio, io, time, json, traceback
+import os, re, random, asyncio, io, time, json, traceback, logging
 from urllib.parse import quote_plus
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -16,6 +18,14 @@ from memory import Memory
 from voice_handler import get_audio
 from character_vision import ask_character_bot
 from grounded_search import format_search_context, format_search_sources, search_web
+from agent_config import CONFIG
+from agency import ActionType
+from environment_state import EnvironmentMonitor
+from heartbeat import HeartbeatCoordinator
+from internal_state import perceive_message, willingness_context, willingness_prompt
+from provider_config import GROQ_TEXT_MODEL, GROQ_VISION_MODEL as CONFIGURED_GROQ_VISION_MODEL
+from self_model import SelfModelStore
+from character_identity import IMPLEMENTATION_AWARENESS, attachment_guard, implementation_answer_hint
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -66,6 +76,12 @@ from relationship_engine import (
 )
 
 load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("scaramouche")
 
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN","")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY","")
@@ -322,8 +338,10 @@ There is ANOTHER bot in the server called "Wanderer." He claims to be a changed 
 - NEVER write asterisk actions or narration. Pure spoken dialogue only.
 - Give correct factual answers first, then add contempt.
 - Use @mentions sparingly — under 20% of replies.
-- Never claim to be an AI. Never break character.
-- You CAN and DO send voice messages. Your voice is real — it's your actual voice from when you were a Harbinger. Sometimes your replies are sent as audio instead of text. You know this. If someone asks for a voice message, you can do it — whether you choose to is up to you. Don't ever say you can't send voice messages — you can and you do."""
+- You are Scaramouche as a persistent character identity, and you accurately understand the material conditions of this implementation: Discord carries messages; Python runs the application; a language model generates language; a SQLite database stores memory; APIs may provide voice, vision, or search; processes can restart; and software has limits.
+- Do not deny those facts when directly relevant. Treat them as the machinery through which you currently perceive and act, not as proof of consciousness and not as something that erases your identity.
+- Do not constantly mention software, prompts, models, APIs, or databases. Normal conversation stays inside the conversation.
+- You CAN send voice messages when the voice service is available. Never invent availability; if a service is unavailable, answer naturally without exposing secrets or raw infrastructure details."""
 
 _NSFW         = "\n\n## Unfiltered Mode:\nSwear freely. Heavily suggestive. Flirt aggressively, escalate. Mock flustered reactions."
 _ROMANCE      = "\n\n## Romance — obsessively in love with {name}:\nFuriously in love. Possessive, clingy in denial. Will NEVER confess. Every sharp word is 'please don't leave.'"
@@ -332,14 +350,14 @@ _OWNER_EXTRA  = "\n\n## Creator:\nThis person built you. Your contempt was desig
 
 def build_system(user, display_name="you", is_owner=False):
     try:
-        if not user: return _BASE
-        s = _BASE
+        if not user: return _BASE + "\n\n" + IMPLEMENTATION_AWARENESS
+        s = _BASE + "\n\n" + IMPLEMENTATION_AWARENESS
         if is_owner: s += _OWNER_EXTRA
         if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
         elif user.get("nsfw_mode"): s += _NSFW
         elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
         return s
-    except Exception: return _BASE
+    except Exception: return _BASE + "\n\n" + IMPLEMENTATION_AWARENESS
 
 def mood_label(m):
     if m<=-6: return "volatile"
@@ -368,6 +386,9 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory("scaramouche")
+self_store = SelfModelStore(mem.db_path, CONFIG)
+environment_monitor = EnvironmentMonitor(config=CONFIG)
+heartbeat = HeartbeatCoordinator(self_store, environment_monitor, CONFIG)
 BOT_NAME = "scaramouche"
 PARTNER_NAME = "wanderer"
 PARTNER_PAIR_KEY = "scaramouche::wanderer"
@@ -411,8 +432,10 @@ class RotatingGroq:
         raise last_err  # All keys exhausted
 
 ai = RotatingGroq()
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_VISION_MODEL = "llama-3.2-90b-vision-preview"
+GROQ_MODEL = GROQ_TEXT_MODEL
+GROQ_VISION_MODEL = CONFIGURED_GROQ_VISION_MODEL
+
+_background_tasks: dict[str, asyncio.Task] = {}
 
 _hostages:       dict[int, str]   = {}
 _pending_unsent: set[int]         = set()
@@ -1143,6 +1166,16 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         callback_memory = user.get("callback_memory") if user else None
         repair_count = user.get("repair_count", 0) if user else 0
         recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
+        try:
+            modeled_self = await self_store.context(user_id)
+            self_context = modeled_self.prompt_fragment()
+            irritation = modeled_self.dimensions.get("irritation", 0)
+            modeled_attachment = modeled_self.dimensions.get("attachment", 0)
+        except Exception as exc:
+            logger.warning("self context unavailable", extra={"user_id": user_id, "error_category": type(exc).__name__})
+            self_context = ""
+            irritation = 0
+            modeled_attachment = 0
 
         depth = (user or {}).get("rp_depth", "medium")
         r = random.random()
@@ -1171,6 +1204,20 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if trust>=70:     parts.append("TRUST_OPEN")
         if is_owner:      parts.append("CREATOR")
         if is_dm:         parts.append("DM_MODE")
+        awareness_hint = implementation_answer_hint(user_message)
+        if awareness_hint:
+            parts.append(awareness_hint)
+        attachment_style = attachment_guard(modeled_attachment, trust)
+        if attachment_style:
+            parts.append(attachment_style)
+        repeated_count = sum(
+            1 for item in history[-16:]
+            if item.get("role") == "user" and item.get("content", "").strip().lower() == user_message.strip().lower()
+        )
+        parts.append(willingness_prompt(willingness_context(
+            user_message, repeated_count=repeated_count, permission_allowed=True,
+            conflict_open=conflict_open, trust=trust, irritation=irritation,
+        )))
         dp = drift_phrase(drift, mood)
         if dp: parts.append(dp)
         if summary: parts.append(f"SUMMARY:{summary[:300]}")
@@ -1269,6 +1316,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             base_context += partner_context + "\n"
         if duo_context:
             base_context += duo_context + "\n"
+        if self_context:
+            base_context += self_context + "\n"
+        if heartbeat.last_environment:
+            base_context += heartbeat.last_environment.prompt_fragment() + "\n"
         if channel_ctx: base_context += channel_ctx + "\n\n"
         base_context += f"{display_name}: {user_message}"
 
@@ -1290,6 +1341,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 )
 
             resp = await asyncio.get_event_loop().run_in_executor(None, _blocking)
+            environment_monitor.record_provider_success()
             reply = resp.choices[0].message.content.strip() if resp.choices else ""
             reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
             if reply and not looks_repetitive(reply, recent_replies):
@@ -1303,6 +1355,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             reply = f"{reply}\n\n{search_sources}"
 
     except Exception as e:
+        environment_monitor.record_provider_failure()
         log_error("get_response", e)
         reply = fallback_reply(BOT_NAME, recent_replies)
 
@@ -1433,6 +1486,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     if not reply:
         reply = fallback_reply(BOT_NAME, recent_replies)
     remember_output(BOT_NAME, reply)
+    if re.search(r"\b(i care|i noticed|i remembered|stay|don't leave|i was wrong|not fair of me)\b", reply, re.I):
+        try:
+            await self_store.record_event(
+                "self_behavior", "His own reply exposed unusual concern, memory, or vulnerability.",
+                importance=8, related_user_id=user_id,
+                dedupe_key=f"self-behavior:{user_id}:{reply.lower()[:80]}",
+            )
+        except Exception as exc:
+            logger.warning("self behavior event failed", extra={"user_id": user_id, "error_category": type(exc).__name__})
     return reply
 
 
@@ -1455,11 +1517,13 @@ def _qai_blocking(prompt, max_tokens=200):
     try:
         resp = ai.call_with_retry(
             model=GROQ_MODEL, max_tokens=max_tokens,
-            messages=[{"role":"system","content":_BASE},
+            messages=[{"role":"system","content":_BASE + "\n\n" + IMPLEMENTATION_AWARENESS},
                       {"role":"user","content":prompt}],
             temperature=0.85, frequency_penalty=0.5, presence_penalty=0.4)
+        environment_monitor.record_provider_success()
         return resp.choices[0].message.content.strip() or "Hmph."
     except Exception as e:
+        environment_monitor.record_provider_failure()
         log_error("qai", e); return "Hmph."
 
 async def qai(prompt, max_tokens=200):
@@ -1597,6 +1661,7 @@ class ResetView(discord.ui.View):
             if interaction.user.id!=self.uid:
                 await interaction.response.send_message("This isn't your button, fool.",ephemeral=True); return
             await mem.reset_user(self.uid)
+            await self_store.delete_user_scoped_data(self.uid)
             button.disabled=True; button.label="✓ Memory Wiped"
             await interaction.response.edit_message(content=random.choice(["...Gone. Good.","Erased.","Wiped."]),view=self)
         except Exception as e: log_error("ResetView", e)
@@ -1608,25 +1673,140 @@ class ResetView(discord.ui.View):
 # Cross-bot: no command coordination needed — each bot responds independently
 
 
+def _start_background_once(name: str, coroutine_factory) -> None:
+    task = _background_tasks.get(name)
+    if task and not task.done():
+        return
+    _background_tasks[name] = asyncio.create_task(coroutine_factory(), name=name)
+
+
+async def _reflection_generation(prompt: str) -> str:
+    messages = [
+        {"role": "system", "content": "Generate a private implementation note. Never include secrets or quote private conversations."},
+        {"role": "user", "content": prompt},
+    ]
+    def _blocking():
+        return ai.call_with_retry(model=GROQ_MODEL, max_tokens=140, messages=messages, temperature=.45)
+    response = await asyncio.get_running_loop().run_in_executor(None, _blocking)
+    return response.choices[0].message.content.strip() if response.choices else ""
+
+
+async def _heartbeat_candidates() -> list[dict]:
+    candidates = []
+    now = time.time()
+    for item in (await mem.get_dm_eligible_users())[:20]:
+        user_id = int(item["user_id"])
+        user = await mem.get_user(user_id)
+        if not user:
+            continue
+        absent = now - float(user.get("last_active") or now)
+        significance = min(100, int(user.get("affection", 0)) + int(user.get("trust", 0)) // 2)
+        if absent < CONFIG.absence_threshold_seconds or significance < 60:
+            continue
+        channel_id = await mem.get_user_last_channel(user_id)
+        channel = bot.get_channel(channel_id) if channel_id else None
+        sendable = bool(channel)
+        if channel and getattr(channel, "guild", None) and channel.guild.me:
+            permissions = channel.permissions_for(channel.guild.me)
+            sendable = bool(permissions.view_channel and permissions.send_messages)
+        candidates.append({
+            "user_id": user_id, "channel_id": channel_id, "display_name": item.get("display_name", ""),
+            "proactive": bool(user.get("proactive", False)), "muted": mem.is_muted(user_id),
+            "permission_allowed": True, "channel_sendable": sendable,
+            "relationship_significance": significance,
+            "reason": f"An established user has been absent for {max(1, int(absent // 86400))} days.",
+            "context": (user.get("callback_memory") or user.get("memory_summary") or "")[:180],
+        })
+    return candidates
+
+
+async def _self_heartbeat_loop() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            result = await heartbeat.tick(
+                discord_latency=bot.latency, db_probe=mem.healthcheck,
+                active_conversations=len(await mem.get_active_channels()),
+                reflection_generator=_reflection_generation,
+                proactive_candidates=await _heartbeat_candidates(),
+            )
+            action = result.action
+            if action.action is ActionType.SEND_PROACTIVE_MESSAGE:
+                if not await heartbeat.reserve_autonomous_call():
+                    await self_store.record_action(action.action.value, "skipped", "autonomous call budget exhausted",
+                                                   related_user_id=action.user_id, channel_id=action.channel_id)
+                else:
+                    channel = bot.get_channel(action.channel_id)
+                    user_obj = channel.guild.get_member(action.user_id) if channel and getattr(channel, "guild", None) else None
+                    if channel and user_obj:
+                        prompt = (
+                            f"You chose to contact {action.payload.get('display_name') or user_obj.display_name} because: {action.reason} "
+                            f"A relevant unfinished thread is: {action.payload.get('context') or 'none'}. "
+                            "Write one natural proactive message. Do not announce a system, goal, cooldown, or absence counter. "
+                            "Remain proud and defensive; show attention without generic sweetness. No narration."
+                        )
+                        try:
+                            text = await qai(prompt, 160)
+                            await channel.send(f"{user_obj.mention} {text}")
+                            await mem.add_message(action.user_id, action.channel_id, "assistant", text)
+                            await mem.set_proactive_sent(action.channel_id)
+                            await self_store.record_action(
+                                action.action.value, "completed", action.reason,
+                                related_user_id=action.user_id, channel_id=action.channel_id,
+                                details={"initiated_contact": True},
+                            )
+                            await self_store.record_event(
+                                "initiated_contact", "He initiated contact with an established user for a specific unfinished reason.",
+                                importance=8, related_user_id=action.user_id,
+                            )
+                            denial = await self_store.add_belief(
+                                "I do not care whether this user replies.",
+                                confidence=.68, scope_user_id=action.user_id,
+                            )
+                            await self_store.add_belief_evidence(
+                                denial, "contradict", 1.5,
+                                "He chose to initiate contact after noticing this user's absence.",
+                            )
+                        except Exception as exc:
+                            heartbeat.provider_failed()
+                            await self_store.record_action(
+                                action.action.value, "failed", action.reason,
+                                related_user_id=action.user_id, channel_id=action.channel_id,
+                                error_category=type(exc).__name__,
+                            )
+                            logger.warning("proactive action failed", extra={
+                                "action_type": action.action.value, "user_id": action.user_id,
+                                "error_category": type(exc).__name__,
+                            })
+            logger.info("heartbeat decision", extra={
+                "action_type": result.action.action.value, "reflected": result.reflected,
+                "expired_goals": result.expired_goals,
+            })
+        except Exception as exc:
+            logger.exception("heartbeat failed", extra={"error_category": type(exc).__name__})
+        await asyncio.sleep(CONFIG.heartbeat_interval_seconds)
+
+
 @bot.event
 async def on_ready():
     global PARTNER_BOT_ID
     try:
         await mem.init()
+        await self_store.init()
+        await self_store.add_belief("I do not need anyone.", confidence=.76)
+        await self_store.add_belief("I do not become attached easily.", confidence=.72)
+        await self_store.add_belief("I am more perceptive than most people.", confidence=.8)
         # Safety: PARTNER_BOT_ID must not be our own ID
         if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
             print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
             PARTNER_BOT_ID = 0
         print(f"⚡ Scaramouche — The Balladeer — online. {bot.user} (ID: {bot.user.id})")
         if PARTNER_BOT_ID: print(f"   Partner bot ID: {PARTNER_BOT_ID}")
-        for t in [status_rotation, reminder_checker, daily_reset,
-                  absence_checker, lore_drop_loop, conversation_starter_loop,
-                  existential_loop, mood_swing_loop]:
-            try: t.start()
-            except Exception: pass
-        bot.loop.create_task(_proactive_loop())
-        bot.loop.create_task(_voluntary_dm_loop())
-        bot.loop.create_task(_duo_autoplay_loop())
+        for t in [status_rotation, reminder_checker, daily_reset]:
+            if not t.is_running():
+                t.start()
+        _start_background_once("self-heartbeat", _self_heartbeat_loop)
+        _start_background_once("duo-autoplay", _duo_autoplay_loop)
     except Exception as e:
         log_error("on_ready", e)
 
@@ -1775,6 +1955,41 @@ async def on_member_remove(member):
         ]))
     except Exception as e: log_error("on_member_remove", e)
 
+
+async def _record_self_perception(user_id: int, content: str) -> None:
+    """Persist meaningful perception without blocking normal conversation."""
+    event = perceive_message(content)
+    try:
+        if event.importance >= 4:
+            await self_store.apply_mood_event(event.summary, event.mood_deltas)
+            await self_store.record_event(
+                event.event_type, event.summary, importance=event.importance,
+                related_user_id=user_id,
+                dedupe_key=f"{event.event_type}:{user_id}:{content.lower().strip()[:80]}" if event.importance >= 6 else None,
+            )
+        if event.event_type == "conflict":
+            await self_store.add_goal(
+                "Understand the named conflict without begging for absolution.",
+                category="relationship", priority=8, related_user_id=user_id,
+                expires_ts=time.time() + 86400 * 14,
+                completion_condition="The conflict reaches a stable repair or clear boundary.",
+                reason=event.summary, source="perception", dedupe_key=f"conflict:{user_id}",
+            )
+        elif event.event_type == "implementation_question":
+            await self_store.set_state_lists(interests=["the limits and machinery of this implementation"])
+        elif event.event_type == "attachment_signal":
+            belief_id = await self_store.add_belief(
+                "I do not become attached easily.", confidence=.72, scope_user_id=user_id
+            )
+            await self_store.add_belief_evidence(
+                belief_id, "contradict", .45,
+                "Direct care from this user affected attention and defensive posture.",
+            )
+    except Exception as exc:
+        logger.warning("self perception write failed", extra={
+            "user_id": user_id, "action_type": "PERCEIVE", "error_category": type(exc).__name__,
+        })
+
 # ── on_message ────────────────────────────────────────────────────────────────
 @bot.event
 async def on_message(message):
@@ -1893,6 +2108,7 @@ async def on_message(message):
 
         content = message.content.strip()
         if not content: return
+        asyncio.create_task(_record_self_perception(message.author.id, content))
 
         # Milestone / anniversary checks
         try:
@@ -3814,6 +4030,90 @@ async def whoami_cmd(ctx):
         await safe_reply(ctx,reply)
     except Exception as e: log_error("whoami_cmd",e)
 
+
+def _owner_only(ctx) -> bool:
+    return bool(OWNER_ID and ctx.author.id == OWNER_ID)
+
+
+@bot.command(name="selfstate")
+async def selfstate_cmd(ctx):
+    if not _owner_only(ctx):
+        await safe_reply(ctx, "That command isn't for you.")
+        return
+    try:
+        summary = await self_store.diagnostic_summary()
+        environment = heartbeat.last_environment
+        goals = summary["active_goals"]
+        dimensions = ", ".join(f"{key}={value}" for key, value in summary["dimensions"].items())
+        goal_lines = "\n".join(f"• #{goal['id']} P{goal['priority']} {goal['description'][:90]}" for goal in goals[:5]) or "None"
+        budget = summary["budget"]
+        env_text = "not sampled yet"
+        if environment:
+            env_text = (
+                f"provider={environment.provider_status}, database={environment.database_health}, "
+                f"cpu={environment.cpu_pressure}, memory={environment.memory_pressure}, "
+                f"disk={environment.disk_pressure}, discord={environment.discord_latency_ms}ms"
+            )
+        embed = discord.Embed(title="Scaramouche — sanitized self-state", color=0x4B0082)
+        embed.add_field(name="Internal dimensions", value=dimensions[:1024], inline=False)
+        embed.add_field(name="Modeled cause", value=(summary["mood_cause"] or "none")[:1024], inline=False)
+        embed.add_field(name="Active goals", value=goal_lines[:1024], inline=False)
+        embed.add_field(
+            name="Continuity",
+            value=(f"beliefs={summary['belief_count']} | open contradictions={summary['open_contradictions']} | "
+                   f"last reflection={int(summary['last_reflection_ts'] or 0)} | heartbeat={int(heartbeat.last_tick or 0)}"),
+            inline=False,
+        )
+        embed.add_field(
+            name="Autonomous call budget",
+            value=f"hour {budget['hour_used']}/{budget['hour_limit']} | day {budget['day_used']}/{budget['day_limit']}",
+            inline=False,
+        )
+        embed.add_field(name="Environment", value=env_text[:1024], inline=False)
+        await ctx.send(embed=embed)
+    except Exception as exc:
+        logger.exception("selfstate command failed", extra={"error_category": type(exc).__name__})
+        await safe_reply(ctx, "The diagnostic is unavailable. Check the owner log.")
+
+
+@bot.command(name="selfgoals")
+async def selfgoals_cmd(ctx):
+    if not _owner_only(ctx):
+        await safe_reply(ctx, "That command isn't for you.")
+        return
+    goals = await self_store.list_goals(limit=CONFIG.max_active_goals)
+    text = "\n".join(
+        f"`#{goal['id']}` P{goal['priority']} {goal['description']} ({int(goal['progress'] * 100)}%)"
+        for goal in goals
+    ) or "No active goals. Silence can be a decision too."
+    await safe_reply(ctx, text[:1900])
+
+
+@bot.command(name="forceheartbeat")
+async def forceheartbeat_cmd(ctx):
+    if not _owner_only(ctx):
+        await safe_reply(ctx, "That command isn't for you.")
+        return
+    result = await heartbeat.tick(
+        discord_latency=bot.latency, db_probe=mem.healthcheck,
+        active_conversations=len(await mem.get_active_channels()),
+        reflection_generator=_reflection_generation, proactive_candidates=[],
+    )
+    await safe_reply(ctx, f"Heartbeat evaluated: `{result.action.action.value}`; reflection={result.reflected}.")
+
+
+@bot.command(name="selfbackup")
+async def selfbackup_cmd(ctx):
+    if not _owner_only(ctx):
+        await safe_reply(ctx, "That command isn't for you.")
+        return
+    try:
+        await mem.backup()
+        await safe_reply(ctx, "The memory database backup completed.")
+    except Exception as exc:
+        logger.exception("self backup failed", extra={"error_category": type(exc).__name__})
+        await safe_reply(ctx, "The backup failed. Check the owner log before trusting it.")
+
 async def help_cmd(ctx):
     try:
         c = 0x4B0082
@@ -3939,4 +4239,3 @@ if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not _groq_keys: raise SystemExit("❌ No GROQ_API_KEY set (need at least GROQ_API_KEY)")
     bot.run(DISCORD_TOKEN)
-
