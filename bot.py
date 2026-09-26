@@ -214,11 +214,11 @@ def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tu
 SCARA_KW     = ["scaramouche","balladeer","kunikuzushi","scara","hat guy","puppet","sixth harbinger","fatui"]
 GENSHIN_KW   = ["genshin","teyvat","mondstadt","liyue","inazuma","sumeru","fontaine","natlan","traveler","paimon","archon","fatui","harbinger"]
 RUDE_KW      = ["shut up","stupid","dumb","idiot","hate you","annoying","shut it","go away","you suck","useless"]
-NICE_KW      = ["thank you","thanks","appreciate","you're great","good job","amazing"]
+NICE_KW      = ["thank you","thanks","appreciate","you're great","your the best","you're the best","good job","amazing"]
 ROMANCE_KW   = ["i love you","love you","i like you","like you scara","love you scara",
                 "i love u","love u","ily","i have feelings for you","i have a crush on you",
                 "be mine","be my boyfriend","kiss you","kiss me","hold me","hug me",
-                "miss you","miss u","i need you","want to be with you","date me",
+                "miss you","miss u","i need you", "you are so cute","your so adorable","cutie","want to be with you","date me",
                 "you're cute","you're hot","marry me","love you so much","love u so much"]
 OTHER_BOT_KW = ["other bot","different bot","better bot","prefer","switch to"]
 HAT_KW       = [r"\bhat\b", r"\bheadwear\b", r"\bheadpiece\b", r"that thing on your head", r"your hat"]
