@@ -2268,18 +2268,6 @@ async def on_message(message):
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
                 return
 
-        # !help intercept — handle before anything else
-        stripped = message.content.strip().lower()
-        if stripped in ("!scarahelp", "!commands"):
-            try:
-                ctx = await bot.get_context(message)
-                await help_cmd(ctx)
-            except Exception as e:
-                log_error("help_intercept", e)
-                try: await message.channel.send("Hmph. Something went wrong displaying commands.")
-                except Exception: pass
-            return
-
         # Cross-bot: if message is from Wanderer bot
         if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
             await _handle_partner_message(message)
@@ -4460,6 +4448,16 @@ async def selfbackup_cmd(ctx):
         logger.exception("self backup failed", extra={"error_category": type(exc).__name__})
         await safe_reply(ctx, "The backup failed. Check the owner log before trusting it.")
 
+async def _send_help_plaintext(ctx, pages):
+    """Fallback for channels where Discord refuses rich embeds."""
+    for page in pages:
+        lines = [f"**{page.title}**"]
+        if page.description:
+            lines.append(page.description)
+        lines.extend(f"{field.name} — {field.value}" for field in page.fields)
+        await ctx.send("\n".join(lines)[:1900])
+
+
 async def help_cmd(ctx):
     try:
         c = 0x4B0082
@@ -4555,9 +4553,16 @@ async def help_cmd(ctx):
                   "He reads the channel — knows what everyone has been saying",
             inline=False)
         e3.set_footer(text="Scaramouche — The Balladeer | !scarahelp for commands")
-        await ctx.send(embed=e1)
-        await ctx.send(embed=e2)
-        await ctx.send(embed=e3)
+        pages = [e1, e2, e3]
+        try:
+            # One request avoids partial help output and unnecessary rate-limit pressure.
+            await ctx.send(embeds=pages)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "rich help unavailable; using text fallback",
+                extra={"error_category": type(exc).__name__},
+            )
+            await _send_help_plaintext(ctx, pages)
     except Exception as e:
         log_error("help_cmd", e)
         try: await ctx.send("Hmph. Something went wrong.")

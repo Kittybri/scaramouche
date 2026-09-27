@@ -73,6 +73,14 @@ class CharacterBitsTests(unittest.TestCase):
         self.assertIn("timedelta(seconds=60)", timeout_source)
         self.assertIn("member.top_role >= me.top_role", timeout_source)
 
+    def test_scarahelp_uses_one_command_path_and_has_text_fallback(self):
+        on_message_source = function_source("on_message")
+        self.assertNotIn("await help_cmd(ctx)", on_message_source)
+        help_source = function_source("help_cmd")
+        self.assertIn("ctx.send(embeds=pages)", help_source)
+        self.assertIn("_send_help_plaintext(ctx, pages)", help_source)
+        self.assertIn('@bot.command(name="scarahelp", aliases=["commands"])', BOT_SOURCE)
+
 
 class PersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
