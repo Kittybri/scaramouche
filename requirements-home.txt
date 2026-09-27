@@ -1,0 +1,3 @@
+# Standalone cloud control service; no Discord, Groq, GPU, or TTS dependency.
+aiohttp==3.13.5
+aiosqlite==0.22.1

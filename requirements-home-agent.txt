@@ -1,0 +1,4 @@
+# Home host: Python 3.11+ (current Kasa/PyChromecast requirement).
+-r requirements-home.txt
+python-kasa==0.10.2
+PyChromecast==14.0.10
