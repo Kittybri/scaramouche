@@ -332,6 +332,10 @@ class Memory:
                     ts         REAL DEFAULT 0,
                     PRIMARY KEY (scope, marker)
                 );
+                CREATE TABLE IF NOT EXISTS shared_cooldowns (
+                    scope     TEXT PRIMARY KEY,
+                    last_used REAL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS duo_sessions (
                     channel_id    INTEGER PRIMARY KEY,
                     mode          TEXT DEFAULT 'both',
@@ -388,6 +392,10 @@ class Memory:
                 if "duplicate column name" not in str(exc).lower():
                     raise
             await db.execute("UPDATE messages SET bot_name=? WHERE bot_name IS NULL", (self.bot_name,))
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_user_channel_role_ts "
+                "ON messages(user_id,channel_id,role,ts DESC)"
+            )
             await db.commit()
 
     @staticmethod
@@ -1256,6 +1264,23 @@ class Memory:
             for row in rows
         ]
 
+    async def consume_shared_cooldown(self, scope: str, cooldown_seconds: int) -> tuple[bool, int]:
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute("SELECT last_used FROM shared_cooldowns WHERE scope=?", (scope[:120],)) as cur:
+                row = await cur.fetchone()
+            if row and (now - (row[0] or 0)) < cooldown_seconds:
+                await db.rollback()
+                return False, max(0, int(cooldown_seconds - (now - (row[0] or 0))))
+            await db.execute(
+                "INSERT INTO shared_cooldowns (scope,last_used) VALUES (?,?) "
+                "ON CONFLICT(scope) DO UPDATE SET last_used=excluded.last_used",
+                (scope[:120], now),
+            )
+            await db.commit()
+        return True, 0
+
     async def clear_duo_session(self, channel_id: int):
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
             await db.execute("DELETE FROM duo_sessions WHERE channel_id=?", (channel_id,))
@@ -1532,6 +1557,52 @@ class Memory:
             if content:
                 bounded.append({"role": role, "content": content})
         return list(reversed(bounded))
+
+    async def get_user_message_candidates(self, user_id: int, channel_id: int, limit: int = 100) -> list[dict]:
+        """Bounded, provenance-preserving recall candidates from this conversation."""
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT id,channel_id,content,ts FROM messages "
+                "WHERE user_id=? AND channel_id=? AND role='user' AND (bot_name=? OR bot_name IS NULL) "
+                "ORDER BY ts DESC LIMIT ?",
+                (user_id, channel_id, self.bot_name, max(1, min(150, int(limit)))),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"id":r[0], "channel_id":r[1], "content":r[2] or "", "ts":r[3] or 0} for r in rows]
+
+    async def record_tattletale_event(
+        self, user_id: int, target_bot: str, source_bot: str,
+        channel_id: int, message_id: int, content: str,
+    ) -> None:
+        """Use the existing shared milestone store for compact, real provenance."""
+        scope = f"duo::tattletale:{target_bot[:20].lower()}:user:{int(user_id)}"
+        note = json.dumps(
+            {"c":int(channel_id), "m":int(message_id), "s":source_bot[:20].lower(), "q":content[:120]},
+            separators=(",", ":"), ensure_ascii=False,
+        )
+        await self.add_milestone(scope, f"message:{int(message_id)}", note)
+
+    async def get_tattletale_event(self, user_id: int, target_bot: str, channel_id: int) -> dict | None:
+        scope = f"duo::tattletale:{target_bot[:20].lower()}:user:{int(user_id)}"
+        async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT marker,note,ts FROM relationship_milestones WHERE scope=? ORDER BY ts DESC LIMIT 8",
+                (scope,),
+            ) as cur:
+                rows = await cur.fetchall()
+        for marker, note, ts in rows:
+            try:
+                payload = json.loads(note or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if int(payload.get("c") or 0) != int(channel_id):
+                continue
+            return {
+                "message_id":int(payload.get("m") or str(marker or "0").split(":")[-1]),
+                "channel_id":int(payload.get("c") or 0), "source_bot":str(payload.get("s") or ""),
+                "content":str(payload.get("q") or ""), "ts":float(ts or 0),
+            }
+        return None
 
     async def get_random_old_message(self, user_id: int) -> str | None:
         cutoff = time.time()-86400*2
