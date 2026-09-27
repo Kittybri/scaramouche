@@ -22,3 +22,5 @@ Use the minimum scopes needed: GitHub Issues write on allowlisted repositories; 
 Discord presence commentary requires the Presence Intent in the Developer Portal. Soundboard playback requires `SOUNDBOARD_GUILD_IDS`, `SOUNDBOARD_ASSETS_JSON`, Connect/Speak permissions, FFmpeg, PyNaCl, and davey; these Python voice dependencies are declared in `requirements.txt`. New-member interviews require `NEW_MEMBER_INTERVIEW_GUILD_IDS` and Create Public Threads permission. Priority Speaker cannot be toggled by discord.py during playback; assign the bot an appropriate role manually if desired.
 
 The soundboard JSON maps only `sigh`, `scoff`, `slow_clap`, `buzzer`, `exhale`, or `chuckle` to local, authorized audio files. No audio asset is bundled. Restart the bot after changing configuration.
+
+`TATTLETALE_COOLDOWN_SECONDS` controls verified public-channel callbacks (default seven days, bounded to one hour–30 days).

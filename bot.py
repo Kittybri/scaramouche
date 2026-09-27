@@ -486,6 +486,7 @@ _voice_state_cache: dict[int, object] = {}
 
 SOUNDBOARD_GUILD_IDS = parse_id_set(os.getenv("SOUNDBOARD_GUILD_IDS", ""))
 NEW_MEMBER_INTERVIEW_GUILD_IDS = parse_id_set(os.getenv("NEW_MEMBER_INTERVIEW_GUILD_IDS", ""))
+TATTLETALE_COOLDOWN_SECONDS = max(3600, min(30 * 86400, int(os.getenv("TATTLETALE_COOLDOWN_SECONDS", "604800") or "604800")))
 
 FAKE_TYPING_MIN_SECONDS = max(1, int(os.getenv("FAKE_TYPING_MIN_SECONDS", "8")))
 FAKE_TYPING_MAX_SECONDS = max(FAKE_TYPING_MIN_SECONDS, int(os.getenv("FAKE_TYPING_MAX_SECONDS", "30")))
@@ -2446,7 +2447,7 @@ async def _verified_tattletale_line(message) -> str:
     if source.author.id != message.author.id or not exact or not exact.startswith(event["content"]):
         return ""
     allowed, _ = await mem.consume_shared_cooldown(
-        f"tattletale_reveal:{BOT_NAME}:{message.author.id}:{message.channel.id}", 7 * 86400,
+        f"tattletale_reveal:{BOT_NAME}:{message.author.id}:{message.channel.id}", TATTLETALE_COOLDOWN_SECONDS,
     )
     if not allowed:
         return ""
