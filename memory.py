@@ -12,6 +12,8 @@ import time
 import json
 import logging
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Use Railway volume if available, otherwise current directory
 _data_dir = "/data" if os.path.isdir("/data") else "."
@@ -79,7 +81,8 @@ class Memory:
                     repair_progress  INTEGER DEFAULT 0,
                     callback_memory  TEXT    DEFAULT NULL,
                     callback_ts      REAL    DEFAULT 0,
-                    repair_count     INTEGER DEFAULT 0
+                    repair_count     INTEGER DEFAULT 0,
+                    weather_location TEXT DEFAULT NULL
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,6 +226,13 @@ class Memory:
                     duo_autoplay   INTEGER DEFAULT 1,
                     rp_depth       TEXT    DEFAULT 'medium'
                 );
+                CREATE TABLE IF NOT EXISTS temporary_channel_settings (
+                    channel_id INTEGER,
+                    setting TEXT,
+                    previous_value INTEGER,
+                    restore_at REAL,
+                    PRIMARY KEY (channel_id, setting)
+                );
             """)
             migrations = [
                 ("username",           "TEXT"),
@@ -265,6 +275,7 @@ class Memory:
                 ("callback_memory",    "TEXT DEFAULT NULL"),
                 ("callback_ts",        "REAL DEFAULT 0"),
                 ("repair_count",       "INTEGER DEFAULT 0"),
+                ("weather_location",   "TEXT DEFAULT NULL"),
             ]
             for col, default in migrations:
                 try:
@@ -320,6 +331,10 @@ class Memory:
                     note       TEXT,
                     ts         REAL DEFAULT 0,
                     PRIMARY KEY (scope, marker)
+                );
+                CREATE TABLE IF NOT EXISTS shared_cooldowns (
+                    scope     TEXT PRIMARY KEY,
+                    last_used REAL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS duo_sessions (
                     channel_id    INTEGER PRIMARY KEY,
@@ -377,6 +392,10 @@ class Memory:
                 if "duplicate column name" not in str(exc).lower():
                     raise
             await db.execute("UPDATE messages SET bot_name=? WHERE bot_name IS NULL", (self.bot_name,))
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_user_channel_role_ts "
+                "ON messages(user_id,channel_id,role,ts DESC)"
+            )
             await db.commit()
 
     @staticmethod
@@ -449,7 +468,7 @@ class Memory:
                        milestone_last,first_seen,last_seen,last_active,greeted_today,anniversary_last,
                        slow_burn,slow_burn_fired,drift_score,memory_summary,last_statement,
                        style_profile,emotional_arc,conflict_open,conflict_summary,last_conflict_ts,repair_progress,
-                       callback_memory,callback_ts,repair_count
+                       callback_memory,callback_ts,repair_count,weather_location
                 FROM users WHERE user_id=?
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
@@ -481,6 +500,7 @@ class Memory:
                     "callback_memory": row[36],
                     "callback_ts": row[37] or 0,
                     "repair_count": row[38] or 0,
+                    "weather_location": row[39] or "",
                 }
         prefs = await self.get_user_preferences(user_id)
         user.update(prefs)
@@ -1033,6 +1053,18 @@ class Memory:
             await db.commit()
         return True, 0
 
+    async def phrase_cooldown_remaining(self, scope: str, phrase_key: str, cooldown_seconds: int) -> int:
+        """Read a cooldown without consuming it."""
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT last_used FROM phrase_cooldowns WHERE scope=? AND phrase_key=?",
+                (scope, phrase_key),
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return 0
+        return max(0, int(cooldown_seconds - (time.time() - (row[0] or 0))))
+
     async def get_bot_relationship(self, pair_key: str) -> dict:
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
             await db.execute(
@@ -1232,6 +1264,23 @@ class Memory:
             for row in rows
         ]
 
+    async def consume_shared_cooldown(self, scope: str, cooldown_seconds: int) -> tuple[bool, int]:
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute("SELECT last_used FROM shared_cooldowns WHERE scope=?", (scope[:120],)) as cur:
+                row = await cur.fetchone()
+            if row and (now - (row[0] or 0)) < cooldown_seconds:
+                await db.rollback()
+                return False, max(0, int(cooldown_seconds - (now - (row[0] or 0))))
+            await db.execute(
+                "INSERT INTO shared_cooldowns (scope,last_used) VALUES (?,?) "
+                "ON CONFLICT(scope) DO UPDATE SET last_used=excluded.last_used",
+                (scope[:120], now),
+            )
+            await db.commit()
+        return True, 0
+
     async def clear_duo_session(self, channel_id: int):
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
             await db.execute("DELETE FROM duo_sessions WHERE channel_id=?", (channel_id,))
@@ -1360,25 +1409,93 @@ class Memory:
             await db.execute("UPDATE users SET greeted_today=0"); await db.commit()
 
     # ── Anniversary ───────────────────────────────────────────────────────────
-    async def check_anniversary(self, user_id: int) -> bool:
+    async def claim_anniversary(self, user_id: int, *, now: float | None = None) -> int:
+        """Atomically claim this calendar year's anniversary; returns year number or 0."""
+        now = float(now or time.time())
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                "SELECT first_seen,anniversary_last,message_count FROM users WHERE user_id=?", (user_id,)
+                "SELECT first_seen,anniversary_last,message_count,timezone_name FROM users WHERE user_id=?",
+                (user_id,),
             ) as cur:
                 row = await cur.fetchone()
-                if not row: return False
-                first, ann_last, count = row
-                if count < 10 or not first: return False
-                days = (time.time()-first)/86400
-                if days < 30: return False
-                years = int(days/365.25)
-                if years == 0: return False
-                ann_ts = first + years*365.25*86400
-                return abs(time.time()-ann_ts)<172800 and (time.time()-(ann_last or 0))>365.25*86400*0.9
+            if not row or not row[0] or (row[2] or 0) < 10:
+                await db.rollback()
+                return 0
+            try:
+                tz = ZoneInfo(row[3] or "America/Los_Angeles")
+            except Exception:
+                tz = ZoneInfo("UTC")
+            first = datetime.fromtimestamp(row[0], tz)
+            current = datetime.fromtimestamp(now, tz)
+            years = current.year - first.year
+            if years < 1:
+                await db.rollback()
+                return 0
+            # Feb 29 anniversaries are observed on Feb 28 in non-leap years.
+            try:
+                anniversary = first.replace(year=current.year)
+            except ValueError:
+                anniversary = first.replace(year=current.year, day=28)
+            days_after = (current.date() - anniversary.date()).days
+            last_year = datetime.fromtimestamp(row[1], tz).year if row[1] else 0
+            if not 0 <= days_after <= 7 or last_year == current.year:
+                await db.rollback()
+                return 0
+            await db.execute("UPDATE users SET anniversary_last=? WHERE user_id=?", (now, user_id))
+            await db.commit()
+            return years
+
+    async def check_anniversary(self, user_id: int) -> bool:
+        """Compatibility probe. New call sites should use atomic claim_anniversary()."""
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute("SELECT first_seen FROM users WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+        return bool(row and row[0] and time.time() - row[0] >= 365 * 86400)
 
     async def mark_anniversary(self, user_id: int):
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             await db.execute("UPDATE users SET anniversary_last=? WHERE user_id=?", (time.time(), user_id))
+            await db.commit()
+
+    async def set_weather_location(self, user_id: int, location: str):
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute("UPDATE users SET weather_location=? WHERE user_id=?", ((location or "")[:160], user_id))
+            await db.commit()
+
+    async def get_weather_candidates(self, limit: int = 20) -> list[dict]:
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT user_id,display_name,weather_location,timezone_name,quiet_hours_start,quiet_hours_end "
+                "FROM users WHERE proactive=1 AND weather_location IS NOT NULL AND weather_location<>'' LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"user_id": r[0], "display_name": r[1], "weather_location": r[2],
+                 "timezone_name": r[3], "quiet_hours_start": r[4], "quiet_hours_end": r[5]} for r in rows]
+
+    async def save_temporary_channel_setting(self, channel_id: int, setting: str,
+                                             previous_value: int, restore_at: float):
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute(
+                "INSERT INTO temporary_channel_settings(channel_id,setting,previous_value,restore_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(channel_id,setting) DO UPDATE SET previous_value=excluded.previous_value,restore_at=excluded.restore_at",
+                (channel_id, setting[:40], previous_value, restore_at),
+            )
+            await db.commit()
+
+    async def get_due_temporary_channel_settings(self) -> list[dict]:
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT channel_id,setting,previous_value,restore_at FROM temporary_channel_settings WHERE restore_at<=?",
+                (time.time(),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"channel_id": r[0], "setting": r[1], "previous_value": r[2], "restore_at": r[3]} for r in rows]
+
+    async def clear_temporary_channel_setting(self, channel_id: int, setting: str):
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute("DELETE FROM temporary_channel_settings WHERE channel_id=? AND setting=?", (channel_id, setting))
             await db.commit()
 
     # ── Absence ───────────────────────────────────────────────────────────────
@@ -1441,6 +1558,52 @@ class Memory:
                 bounded.append({"role": role, "content": content})
         return list(reversed(bounded))
 
+    async def get_user_message_candidates(self, user_id: int, channel_id: int, limit: int = 100) -> list[dict]:
+        """Bounded, provenance-preserving recall candidates from this conversation."""
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT id,channel_id,content,ts FROM messages "
+                "WHERE user_id=? AND channel_id=? AND role='user' AND (bot_name=? OR bot_name IS NULL) "
+                "ORDER BY ts DESC LIMIT ?",
+                (user_id, channel_id, self.bot_name, max(1, min(150, int(limit)))),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"id":r[0], "channel_id":r[1], "content":r[2] or "", "ts":r[3] or 0} for r in rows]
+
+    async def record_tattletale_event(
+        self, user_id: int, target_bot: str, source_bot: str,
+        channel_id: int, message_id: int, content: str,
+    ) -> None:
+        """Use the existing shared milestone store for compact, real provenance."""
+        scope = f"duo::tattletale:{target_bot[:20].lower()}:user:{int(user_id)}"
+        note = json.dumps(
+            {"c":int(channel_id), "m":int(message_id), "s":source_bot[:20].lower(), "q":content[:120]},
+            separators=(",", ":"), ensure_ascii=False,
+        )
+        await self.add_milestone(scope, f"message:{int(message_id)}", note)
+
+    async def get_tattletale_event(self, user_id: int, target_bot: str, channel_id: int) -> dict | None:
+        scope = f"duo::tattletale:{target_bot[:20].lower()}:user:{int(user_id)}"
+        async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT marker,note,ts FROM relationship_milestones WHERE scope=? ORDER BY ts DESC LIMIT 8",
+                (scope,),
+            ) as cur:
+                rows = await cur.fetchall()
+        for marker, note, ts in rows:
+            try:
+                payload = json.loads(note or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if int(payload.get("c") or 0) != int(channel_id):
+                continue
+            return {
+                "message_id":int(payload.get("m") or str(marker or "0").split(":")[-1]),
+                "channel_id":int(payload.get("c") or 0), "source_bot":str(payload.get("s") or ""),
+                "content":str(payload.get("q") or ""), "ts":float(ts or 0),
+            }
+        return None
+
     async def get_random_old_message(self, user_id: int) -> str | None:
         cutoff = time.time()-86400*2
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
@@ -1489,6 +1652,23 @@ class Memory:
             async with db.execute(query, params) as cur:
                 rows = await cur.fetchall()
         return [row[0] for row in rows if row and row[0]]
+
+    async def get_quizable_assistant_message(self, user_id: int, *, min_age_seconds: int = 3600) -> dict | None:
+        """Return provenance-backed material suitable for a memory quiz."""
+        cutoff = time.time() - max(0, min_age_seconds)
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                "SELECT id,content,ts FROM messages WHERE user_id=? AND role='assistant' "
+                "AND (bot_name=? OR bot_name IS NULL) AND ts<=? AND LENGTH(content) BETWEEN 35 AND 400 "
+                "AND content NOT LIKE '[%' ORDER BY ts DESC LIMIT 20",
+                (user_id, self.bot_name, cutoff),
+            ) as cur:
+                rows = await cur.fetchall()
+        for row in rows:
+            content = (row[1] or "").strip()
+            if len(content.split()) >= 7 and "http" not in content and "```" not in content:
+                return {"id": row[0], "content": content, "ts": row[2] or 0}
+        return None
 
     async def reset_user(self, user_id: int):
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
@@ -1566,7 +1746,7 @@ class Memory:
             )
             await db.commit()
 
-    async def get_active_trivia(self, channel_id: int) -> dict | None:
+    async def get_active_trivia(self, channel_id: int, timeout_seconds: int = 900) -> dict | None:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute(
                 "SELECT asker_id,question,answer,source_note,asked_ts FROM active_trivia WHERE channel_id=?",
@@ -1574,6 +1754,9 @@ class Memory:
             ) as cur:
                 row = await cur.fetchone()
         if not row:
+            return None
+        if time.time() - (row[4] or 0) > timeout_seconds:
+            await self.clear_active_trivia(channel_id)
             return None
         return {
             "asker_id": row[0],

@@ -5,9 +5,9 @@ from __future__ import annotations
 import discord
 from discord.ext import commands, tasks
 from groq import Groq
-import os, re, random, asyncio, io, time, logging
+import os, re, random, asyncio, io, time, logging, json
 from urllib.parse import quote_plus
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
@@ -22,6 +22,21 @@ from internal_state import perceive_message, willingness_context, willingness_pr
 from provider_config import GROQ_TEXT_MODEL, GROQ_VISION_MODEL as CONFIGURED_GROQ_VISION_MODEL
 from self_model import SelfModelStore
 from character_identity import IMPLEMENTATION_AWARENESS, attachment_guard, implementation_answer_hint
+from character_bits import (
+    autocorrect_line, bounded_glitch, eligible_for_joke, eligible_for_silent_judge,
+    is_serious_or_utility, reverse_turing_hint, safe_message_edit,
+    selective_hearing_hint, significant_weather, time_drift_prompt,
+)
+from awareness_features import (
+    activity_snapshot, choose_duo_advice_mode, classify_safety,
+    parse_id_set, playful_negative_target, protective_prompt,
+    resolve_voice_state, select_relevant_recall, style_voice_text,
+)
+from integrations import (
+    GitHubIssueService, GoogleCalendarService, GoogleSheetsService,
+    GoogleTasksService, LetterboxdService, MyAnimeListService,
+    SpotifyService, SteamService, load_integration_config,
+)
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -214,11 +229,11 @@ def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tu
 SCARA_KW     = ["scaramouche","balladeer","kunikuzushi","scara","hat guy","puppet","sixth harbinger","fatui"]
 GENSHIN_KW   = ["genshin","teyvat","mondstadt","liyue","inazuma","sumeru","fontaine","natlan","traveler","paimon","archon","fatui","harbinger"]
 RUDE_KW      = ["shut up","stupid","dumb","idiot","hate you","annoying","shut it","go away","you suck","useless"]
-NICE_KW      = ["thank you","thanks","appreciate","you're great","good job","amazing"]
+NICE_KW      = ["thank you","thanks","appreciate","you're great","your the best","you're the best","good job","amazing"]
 ROMANCE_KW   = ["i love you","love you","i like you","like you scara","love you scara",
                 "i love u","love u","ily","i have feelings for you","i have a crush on you",
                 "be mine","be my boyfriend","kiss you","kiss me","hold me","hug me",
-                "miss you","miss u","i need you","want to be with you","date me",
+                "miss you","miss u","i need you", "you are so cute","your so adorable","cutie","want to be with you","date me",
                 "you're cute","you're hot","marry me","love you so much","love u so much"]
 OTHER_BOT_KW = ["other bot","different bot","better bot","prefer","switch to"]
 HAT_KW       = [r"\bhat\b", r"\bheadwear\b", r"\bheadpiece\b", r"that thing on your head", r"your hat"]
@@ -374,6 +389,8 @@ def trust_tier(t):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.typing = True
+intents.presences = True
 
 
 class ManagedBot(commands.Bot):
@@ -448,6 +465,8 @@ class RotatingGroq:
 ai = RotatingGroq()
 GROQ_MODEL = GROQ_TEXT_MODEL
 GROQ_VISION_MODEL = CONFIGURED_GROQ_VISION_MODEL
+INTEGRATION_CONFIG = load_integration_config()
+GITHUB_ISSUES = GitHubIssueService(INTEGRATION_CONFIG.section("github"))
 
 _background_tasks: dict[str, asyncio.Task] = {}
 _transient_tasks: set[asyncio.Task] = set()
@@ -459,6 +478,28 @@ _hostages:       dict[int, str]   = {}
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
 _tedtalk_cache:  dict[int, dict]  = {}
 _processed_msgs: set[int]         = set()  # dedup: prevent double-processing
+_typing_gag_inflight: set[tuple[int, int]] = set()
+_edited_message_ids: set[int] = set()
+_weather_cache: dict[str, tuple[float, dict | None]] = {}
+_presence_activity: dict[tuple[int, int], dict] = {}
+_voice_state_cache: dict[int, object] = {}
+
+SOUNDBOARD_GUILD_IDS = parse_id_set(os.getenv("SOUNDBOARD_GUILD_IDS", ""))
+NEW_MEMBER_INTERVIEW_GUILD_IDS = parse_id_set(os.getenv("NEW_MEMBER_INTERVIEW_GUILD_IDS", ""))
+TATTLETALE_COOLDOWN_SECONDS = max(3600, min(30 * 86400, int(os.getenv("TATTLETALE_COOLDOWN_SECONDS", "604800") or "604800")))
+
+FAKE_TYPING_MIN_SECONDS = max(1, int(os.getenv("FAKE_TYPING_MIN_SECONDS", "8")))
+FAKE_TYPING_MAX_SECONDS = max(FAKE_TYPING_MIN_SECONDS, int(os.getenv("FAKE_TYPING_MAX_SECONDS", "30")))
+
+
+def is_owner_user(user_id: int) -> bool:
+    return bool(OWNER_ID and int(user_id) == OWNER_ID)
+
+
+def _admin_or_owner(member) -> bool:
+    return is_owner_user(getattr(member, "id", 0)) or bool(
+        getattr(getattr(member, "guild_permissions", None), "administrator", False)
+    )
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
@@ -674,6 +715,16 @@ async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
         prompt.append("DUO_BEHAVIOR: contribute one tactical role, warning, or leverage point")
     elif mode == "truthdare":
         prompt.append("DUO_BEHAVIOR: escalate the game with one pointed truth or dare prompt")
+    elif mode == "goodcop":
+        prompt.append("DUO_BEHAVIOR: be the blunt bad cop, but still give useful advice; do not sabotage the calmer answer")
+    elif mode == "contradict":
+        prompt.append("DUO_BEHAVIOR: disagree from values or strategy, never by inventing facts or unsafe advice")
+    elif mode == "protective":
+        prompt.append("DUO_BEHAVIOR: show restrained concern; no mockery, diagnosis, or argumentative contradiction")
+    elif mode in {"interview", "welcome_interview"}:
+        prompt.append("DUO_BEHAVIOR: ask at most one playful, non-sensitive question and respect a request to stop")
+    elif mode == "trade":
+        prompt.append("DUO_BEHAVIOR: treat the trade as an obvious joke; users are not property and no permissions change")
     else:
         prompt.append("DUO_BEHAVIOR: give one compact turn that pairs well with a second bot response")
     return "\n".join(prompt)
@@ -743,6 +794,20 @@ def _duo_autoplay_prompt(session: dict) -> str:
         return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. One or two sentences. {outro}"
     if mode == "truthdare":
         return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. One or two sentences. {outro}"
+    if mode == "intervention":
+        return f"Wanderer just intervened because you were getting needlessly argumentative about: {topic}. One brief defensive response only; do not restart the argument. {outro}"
+    if mode == "finish":
+        return f"Wanderer intentionally began an incomplete thought about: {topic}. Complete the SAME semantic thought in one short cutting clause, beginning with an em dash. Do not start a different idea. {outro}"
+    if mode == "goodcop":
+        return f"Wanderer gave calmer advice about: {topic}. Add one blunt but useful bad-cop line without undoing safe advice. {outro}"
+    if mode == "contradict":
+        return f"Wanderer gave advice about: {topic}. Offer one plausible values-based disagreement, not a factual or dangerous contradiction. {outro}"
+    if mode == "protective":
+        return f"Wanderer responded with concern about: {topic}. Agree in your own restrained way. No sarcasm or hostility. {outro}"
+    if mode in {"interview", "welcome_interview"}:
+        return f"A bounded joint interview is active about: {topic}. Ask one playful, non-sensitive question. Never request secrets, medical details, money, passwords, or addresses. {outro}"
+    if mode == "trade":
+        return f"Wanderer proposed a joking user trade about: {topic}. Accept or reject it as obvious character banter; imply no real ownership. {outro}"
     return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences. {outro}"
 
 
@@ -755,6 +820,12 @@ DUO_CHAIN_TURNS = {
     "trial": 3,
     "mission": 3,
     "truthdare": 3,
+    "goodcop": 1,
+    "contradict": 1,
+    "protective": 1,
+    "interview": 2,
+    "welcome_interview": 1,
+    "trade": 1,
 }
 
 
@@ -855,6 +926,64 @@ async def _start_duo_mode(ctx, user: dict | None, mode: str, topic: str, *, stor
         await mem.start_duo_story(ctx.channel.id, mode, topic, enemy=enemy)
 
 
+def _soundboard_assets() -> dict[str, str]:
+    try:
+        payload = json.loads(os.getenv("SOUNDBOARD_ASSETS_JSON", "{}") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    allowed = {"sigh", "scoff", "slow_clap", "buzzer", "exhale", "chuckle"}
+    return {
+        str(name): os.path.abspath(os.path.expanduser(str(path)))
+        for name, path in payload.items()
+        if name in allowed and isinstance(path, str) and os.path.isfile(os.path.expanduser(path))
+    }
+
+
+async def _play_soundboard(ctx, sound_name: str) -> tuple[bool, str]:
+    if not ctx.guild or ctx.guild.id not in SOUNDBOARD_GUILD_IDS:
+        return False, "The sound board is not enabled for this server."
+    assets = _soundboard_assets()
+    path = assets.get((sound_name or "").lower())
+    if not path:
+        return False, "That reaction is not configured."
+    voice_state = getattr(ctx.author, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if not voice_channel:
+        return False, "Join a voice channel first."
+    me = ctx.guild.me
+    permissions = voice_channel.permissions_for(me) if me else None
+    if not permissions or not permissions.connect or not permissions.speak:
+        return False, "I cannot connect and speak in that voice channel."
+    voice = ctx.guild.voice_client
+    joined_here = False
+    try:
+        if voice and voice.is_playing():
+            return False, "I am not interrupting audio already in progress."
+        if voice and getattr(voice, "channel", None) != voice_channel:
+            return False, "I am already occupied in another voice channel."
+        allowed, remaining = await mem.consume_phrase_with_status(f"guild:{ctx.guild.id}", "soundboard", 600)
+        if not allowed:
+            return False, f"The sound board needs another {max(1, remaining // 60)} minute(s)."
+        if not voice:
+            voice = await voice_channel.connect(timeout=10, reconnect=False)
+            joined_here = True
+        voice.play(discord.FFmpegPCMAudio(path))
+        deadline = time.monotonic() + 3.0
+        while voice.is_playing() and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        if voice.is_playing():
+            voice.stop()
+        return True, ""
+    except (discord.ClientException, discord.OpusNotLoaded, asyncio.TimeoutError, OSError) as exc:
+        log_error("soundboard", exc)
+        return False, "The audio reaction is unavailable right now."
+    finally:
+        if joined_here and voice and voice.is_connected():
+            await voice.disconnect(force=False)
+
+
 async def _pin_memory(ctx, kind: str, text: str | None, weight: int, *, shared_joke: bool = False):
     if not text:
         await safe_reply(ctx, f"Give me a {kind} worth keeping.")
@@ -913,6 +1042,11 @@ async def _find_romance_target(channel) -> discord.Member | None:
 async def _handle_partner_message(message) -> bool:
     try:
         relation, recent_banter, theme = await _observe_partner_message(message.content)
+        duo = await mem.get_duo_session(message.channel.id)
+        if duo and duo.get("mode") in {"intervention", "finish", "goodcop", "contradict", "protective", "interview", "welcome_interview", "trade"}:
+            # The bounded autoplay worker owns this handoff. Avoid an immediate
+            # partner reply plus a second scheduled reply.
+            return True
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
 
@@ -1125,6 +1259,10 @@ async def _resolve_weather_location(location: str) -> tuple[float, float] | None
 
 
 async def _fetch_nws_weather(location: str) -> dict | None:
+    cache_key = (location or "").strip().casefold()
+    cached = _weather_cache.get(cache_key)
+    if cached and time.time() - cached[0] < 3600:
+        return cached[1]
     coords = await _resolve_weather_location(location)
     if not coords:
         return None
@@ -1163,7 +1301,7 @@ async def _fetch_nws_weather(location: str) -> dict | None:
     forecast_period = forecast_periods[0] if forecast_periods else {}
     hourly_period = hourly_periods[0] if hourly_periods else {}
     precip = hourly_period.get("probabilityOfPrecipitation", {}) or {}
-    return {
+    result = {
         "place": f"{city}, {state}".strip(", "),
         "forecast": forecast_period.get("shortForecast") or hourly_period.get("shortForecast") or "forecast unavailable",
         "temperature": hourly_period.get("temperature"),
@@ -1172,6 +1310,8 @@ async def _fetch_nws_weather(location: str) -> dict | None:
         "wind_direction": hourly_period.get("windDirection") or forecast_period.get("windDirection") or "",
         "precipitation": precip.get("value"),
     }
+    _weather_cache[cache_key] = (time.time(), result)
+    return result
 
 # ── AI core ───────────────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
@@ -1222,7 +1362,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:       hint="Longer, dramatic."
 
         # Time and date context
-        now      = datetime.now()
+        try:
+            now = datetime.now(ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles"))
+        except Exception:
+            now = datetime.now()
         previous_activity = prior_last_active if prior_last_active is not None else (
             user.get("last_active", 0) if user else 0
         )
@@ -1232,6 +1375,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         parts = [f"mention:{author_mention}",f"name:{display_name}",
                  f"MOOD:{mood}({mood_label(mood)})",f"AFFECTION:{affection}",
                  f"TRUST:{trust}",date_ctx,f"len:{hint}"]
+        parts.append(time_drift_prompt(now.hour))
         if affection>=75: parts.append("AFFECTION_SOFT")
         if trust>=70:     parts.append("TRUST_OPEN")
         if is_owner:      parts.append("CREATOR")
@@ -1249,6 +1393,11 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             1 for item in history[-16:]
             if item.get("role") == "user" and item.get("content", "").strip().lower() == user_message.strip().lower()
         )
+        turing_hint = reverse_turing_hint(user_message, repeated_count)
+        if turing_hint and eligible_for_joke(user_message) and random.random() < .18:
+            allowed = await mem.consume_phrase(f"user:{user_id}", "reverse_turing", 3 * 86400)
+            if allowed:
+                parts.append(turing_hint)
         parts.append(willingness_prompt(willingness_context(
             user_message, repeated_count=repeated_count, permission_allowed=True,
             conflict_open=conflict_open, trust=trust, irritation=irritation,
@@ -1606,15 +1755,25 @@ async def _autonomous_character_generation(prompt: str, *, system: str, max_toke
     return text
 
 # ── Voice ─────────────────────────────────────────────────────────────────────
-async def get_audio_with_mood(text: str, mood: int, user: dict | None = None) -> bytes | None:
+async def get_audio_with_mood(
+    text: str, mood: int, user: dict | None = None, *,
+    delivery_intent: str = "", voice_key: int = 0,
+) -> bytes | None:
     try:
         from voice_handler import get_audio_mooded
-        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood, _voice_style_for(user, mood))
+        previous = _voice_state_cache.get(int(voice_key or 0))
+        state = resolve_voice_state(user, mood, delivery_intent=delivery_intent, previous=previous)
+        _voice_state_cache[int(voice_key or 0)] = state
+        styled = style_voice_text(strip_narration(text), state)
+        return await get_audio_mooded(styled, FISH_AUDIO_API_KEY, mood, state.category)
     except Exception:
         try: return await get_audio(strip_narration(text), FISH_AUDIO_API_KEY)
         except Exception as e: log_error("get_audio_with_mood", e); return None
 
-async def send_voice(channel, text, ref=None, mood=0, guild=None, user: dict | None = None):
+async def send_voice(
+    channel, text, ref=None, mood=0, guild=None, user: dict | None = None,
+    *, delivery_intent: str = "", user_id: int | None = None,
+):
     try:
         if user and not user.get("voice_enabled", True):
             return False
@@ -1625,7 +1784,10 @@ async def send_voice(channel, text, ref=None, mood=0, guild=None, user: dict | N
         if not safe_text or len(safe_text.strip()) < 3:
             logger.debug("voice skipped after text normalization")
             return False
-        audio = await get_audio_with_mood(safe_text, mood, user=user)
+        audio = await get_audio_with_mood(
+            safe_text, mood, user=user, delivery_intent=delivery_intent,
+            voice_key=int(user_id or getattr(channel, "id", 0) or 0),
+        )
         if not audio:
             logger.warning("voice provider returned no audio")
             return False
@@ -1787,6 +1949,20 @@ def _spawn_transient(coroutine, *, name: str) -> asyncio.Task:
 
     task.add_done_callback(_finished)
     return task
+
+
+async def _delayed_character_edit(sent_message, edited_text: str) -> None:
+    try:
+        await asyncio.sleep(random.uniform(3, 8))
+        if not bot.user or getattr(getattr(sent_message, "author", None), "id", None) != bot.user.id:
+            return
+        await sent_message.edit(content=edited_text[:2000])
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden):
+        return
+    except discord.HTTPException as exc:
+        log_error("delayed_character_edit", exc)
 
 
 async def _initialize_runtime_once() -> None:
@@ -1963,6 +2139,8 @@ async def on_ready():
                 t.start()
         _start_background_once("self-heartbeat", _self_heartbeat_loop)
         _start_background_once("duo-autoplay", _duo_autoplay_loop)
+        _start_background_once("weather-proactive", _weather_proactive_loop)
+        _start_background_once("temporary-setting-restore", _temporary_setting_restore_loop)
     except Exception as e:
         log_error("on_ready", e)
 
@@ -1999,6 +2177,63 @@ async def daily_reset():
     try: await mem.reset_daily_greetings()
     except Exception as e: log_error("daily_reset", e)
 
+
+async def _weather_proactive_loop():
+    await bot.wait_until_ready()
+    await asyncio.sleep(45)
+    while not bot.is_closed():
+        try:
+            for candidate in await mem.get_weather_candidates(limit=20):
+                if _is_in_quiet_hours(candidate):
+                    continue
+                scope = f"user:{candidate['user_id']}"
+                if await mem.phrase_cooldown_remaining(scope, "weather_proactive", 86400):
+                    continue
+                channel_id = await mem.get_user_last_channel(candidate["user_id"])
+                channel = bot.get_channel(channel_id) if channel_id else None
+                if not channel or not getattr(channel, "guild", None):
+                    continue
+                member = channel.guild.get_member(candidate["user_id"])
+                me = channel.guild.me
+                if not member or not me or not channel.permissions_for(me).send_messages:
+                    continue
+                data = await _fetch_nws_weather(candidate["weather_location"])
+                significance = significant_weather(data)
+                if not significance:
+                    continue
+                if not await mem.consume_phrase(scope, "weather_proactive", 86400):
+                    continue
+                kind, severe = significance
+                if severe:
+                    text = (f"{member.mention} Significant weather for {data['place']}: {data['forecast']}; "
+                            f"{data['temperature']} {data['temperature_unit']}, wind {data['wind_speed']} {data['wind_direction']}. "
+                            "Check local alerts and official instructions.")
+                else:
+                    text = (f"{member.mention} The weather in {data['place']} has become difficult to ignore: "
+                            f"{data['forecast']}, {data['temperature']} {data['temperature_unit']}. "
+                            f"Try not to lose a fight with the {kind}.")
+                await channel.send(text)
+                break  # one unsolicited weather message per scan
+        except Exception as exc:
+            log_error("weather_proactive_loop", exc)
+        await asyncio.sleep(1800)
+
+
+async def _temporary_setting_restore_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            for item in await mem.get_due_temporary_channel_settings():
+                channel = bot.get_channel(item["channel_id"])
+                if not channel:
+                    continue
+                if item["setting"] == "slowmode":
+                    await channel.edit(slowmode_delay=max(0, int(item["previous_value"])), reason="Restore temporary Scaramouche slowmode")
+                await mem.clear_temporary_channel_setting(item["channel_id"], item["setting"])
+        except Exception as exc:
+            log_error("temporary_setting_restore_loop", exc)
+        await asyncio.sleep(10)
+
 # ── Server events ─────────────────────────────────────────────────────────────
 def _reserve_member_announcement(guild_id: int, *, now: float | None = None,
                                  cooldown_seconds: int = 300) -> bool:
@@ -2012,9 +2247,49 @@ def _reserve_member_announcement(guild_id: int, *, now: float | None = None,
 
 
 @bot.event
+async def on_presence_update(before, after):
+    """Occasional commentary based only on Discord's current presence payload."""
+    try:
+        if after.bot:
+            return
+        current = activity_snapshot(after)
+        key = (after.guild.id, after.id)
+        previous = _presence_activity.get(key)
+        if current:
+            _presence_activity[key] = current
+        else:
+            _presence_activity.pop(key, None)
+            return
+        if current.get("kind") not in {"spotify", "game"} or current == previous or random.random() >= 0.08:
+            return
+        user = await mem.get_user(after.id)
+        if not user or not user.get("proactive", True) or _is_in_quiet_hours(user):
+            return
+        allowed = await mem.consume_phrase(f"user:{after.id}", f"presence_{current['kind']}", 8 * 3600)
+        if not allowed:
+            return
+        channel_id = await mem.get_user_last_channel(after.id)
+        channel = bot.get_channel(channel_id) if channel_id else None
+        if not channel or not getattr(channel, "guild", None) or channel.guild.id != after.guild.id:
+            return
+        me = channel.guild.me
+        perms = channel.permissions_for(me) if me else None
+        if not perms or not perms.view_channel or not perms.send_messages:
+            return
+        if current["kind"] == "spotify":
+            artist = f" by {current['state']}" if current.get("state") else ""
+            line = f"{after.mention} So Discord says you're listening to **{current['name']}**{artist}. I see your standards remain a public matter."
+        else:
+            detail = f" — {current['details']}" if current.get("details") else ""
+            line = f"{after.mention} Still playing **{current['name']}**{detail}. That is all Discord exposed; try not to imagine I can see your score."
+        await channel.send(line, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        log_error("presence_commentary", exc)
+
+
+@bot.event
 async def on_member_join(member):
     try:
-        if random.random()>.6: return
         ch = discord.utils.get(member.guild.text_channels,name="general") or member.guild.system_channel
         if not ch: return
         me = member.guild.me
@@ -2025,6 +2300,24 @@ async def on_member_join(member):
             return
         if not _reserve_member_announcement(member.guild.id):
             return
+        if member.guild.id in NEW_MEMBER_INTERVIEW_GUILD_IDS and getattr(permissions, "create_public_threads", False):
+            welcome = await ch.send(
+                f"{member.mention} State your purpose here—and relax, this is an optional entrance interview, not access control. "
+                "You may ignore it or use `!stopinterview` at any time.",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            try:
+                thread = await welcome.create_thread(name=f"welcome-{member.display_name}"[:90], auto_archive_duration=60)
+                await mem.set_duo_session(
+                    thread.id, "welcome_interview", f"welcoming {member.display_name}", BOT_NAME,
+                    initiator_user_id=member.id, awaiting_bot=PARTNER_NAME,
+                    autoplay_turns=1, autoplay_delay=5, ttl_seconds=600,
+                )
+                await thread.send("Question one of at most three: what sort of conversations are you hoping to find here?")
+            except discord.HTTPException as exc:
+                log_error("new_member_interview", exc)
+            return
+        if random.random()>.6: return
         await asyncio.sleep(random.uniform(2,6))
         await ch.send(random.choice([
             f"Another one. {member.display_name} has arrived. How underwhelming.",
@@ -2101,6 +2394,106 @@ async def _record_self_perception(user_id: int, content: str, *,
             "user_id": user_id, "action_type": "PERCEIVE", "error_category": type(exc).__name__,
         })
 
+
+@bot.event
+async def on_typing(channel, user, when):
+    """Very rare preemptive remark; bot typing never reaches this eligible path."""
+    if not bot.user or getattr(user, "bot", False) or user.id == bot.user.id:
+        return
+    key = (channel.id, user.id)
+    if key in _typing_gag_inflight or random.random() >= .003:
+        return
+    try:
+        profile = await mem.get_user(user.id)
+        if not profile or not profile.get("proactive", True) or _is_in_quiet_hours(profile):
+            return
+        if await mem.is_muted(user.id):
+            return
+        if not await mem.consume_phrase(f"channel_user:{channel.id}:{user.id}", "preemptive_typing", 3 * 86400):
+            return
+        _typing_gag_inflight.add(key)
+        await channel.send(f"{user.mention} {random.choice(['Reconsider whatever you’re typing.', 'You’re taking suspiciously long.', 'Delete it while you still have dignity.'])}")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    finally:
+        _typing_gag_inflight.discard(key)
+
+
+async def _record_tattletale_if_eligible(message, content: str) -> None:
+    if not message.guild or getattr(message.author, "bot", False):
+        return
+    target = playful_negative_target(content, {
+        "scaramouche": ("scaramouche", "scara", "balladeer"),
+        "wanderer": ("wanderer",),
+    })
+    if target != PARTNER_NAME:
+        return
+    await mem.record_tattletale_event(
+        message.author.id, target, BOT_NAME, message.channel.id, message.id, content,
+    )
+
+
+async def _verified_tattletale_line(message) -> str:
+    if not message.guild or random.random() >= 0.08:
+        return ""
+    event = await mem.get_tattletale_event(message.author.id, BOT_NAME, message.channel.id)
+    if not event:
+        return ""
+    try:
+        source = await message.channel.fetch_message(event["message_id"])
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return ""
+    exact = (source.content or "").strip()
+    if source.author.id != message.author.id or not exact or not exact.startswith(event["content"]):
+        return ""
+    allowed, _ = await mem.consume_shared_cooldown(
+        f"tattletale_reveal:{BOT_NAME}:{message.author.id}:{message.channel.id}", TATTLETALE_COOLDOWN_SECONDS,
+    )
+    if not allowed:
+        return ""
+    return f'I hear you have been discussing me. Your exact words were: “{exact[:180]}”'
+
+
+async def _medium_awareness_context(message, user: dict | None, content: str, *, is_dm: bool) -> list[str]:
+    context: list[str] = []
+    safety = classify_safety(content)
+    protective = protective_prompt(BOT_NAME, safety)
+    if protective:
+        context.append(protective)
+
+    if random.random() < 0.03:
+        candidates = await mem.get_user_message_candidates(message.author.id, message.author.id if is_dm else message.channel.id, 100)
+        match = select_relevant_recall(content, candidates)
+        if match and await mem.consume_phrase(f"user:{message.author.id}", "this_you", 5 * 86400):
+            stamp = datetime.fromtimestamp(match.timestamp, ZoneInfo("UTC")).isoformat() if match.timestamp else "unknown"
+            context.append(
+                f'THIS_YOU_EXACT_SOURCE: message_id={match.message_id}; timestamp={stamp}; exact_quote="{match.content}". '
+                "You may cite that exact quote or clearly label a paraphrase. Never invent wording or a timestamp."
+            )
+
+    if is_dm or not PARTNER_BOT_ID or not message.guild.get_member(PARTNER_BOT_ID):
+        return context
+    if await mem.get_duo_session(message.channel.id):
+        return context
+    mode = choose_duo_advice_mode(content, random.random())
+    if mode == "protective" and random.random() >= 0.15:
+        return context
+    if mode not in {"goodcop", "contradict", "protective"}:
+        return context
+    allowed, _ = await mem.consume_shared_cooldown(f"medium_duo:{mode}:{message.channel.id}", 6 * 3600)
+    if not allowed:
+        return context
+    await mem.set_duo_session(
+        message.channel.id, mode, content[:260], BOT_NAME,
+        initiator_user_id=message.author.id, awaiting_bot=PARTNER_NAME,
+        autoplay_turns=1, autoplay_delay=5, ttl_seconds=180,
+    )
+    if mode == "goodcop":
+        context.append("GOOD_COP_BAD_COP: be the sharp bad cop, but still give correct, actionable help and leave room for Wanderer's calmer follow-up")
+    elif mode == "contradict":
+        context.append("VALUES_DISAGREEMENT: take a distinct, defensible strategy; do not invent facts or unsafe advice")
+    return context
+
 # ── on_message ────────────────────────────────────────────────────────────────
 @bot.event
 async def on_message(message):
@@ -2125,18 +2518,6 @@ async def on_message(message):
             if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
                 return
 
-        # !help intercept — handle before anything else
-        stripped = message.content.strip().lower()
-        if stripped in ("!scarahelp", "!commands"):
-            try:
-                ctx = await bot.get_context(message)
-                await help_cmd(ctx)
-            except Exception as e:
-                log_error("help_intercept", e)
-                try: await message.channel.send("Hmph. Something went wrong displaying commands.")
-                except Exception: pass
-            return
-
         # Cross-bot: if message is from Wanderer bot
         if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
             await _handle_partner_message(message)
@@ -2149,6 +2530,15 @@ async def on_message(message):
         if re.match(r'^![a-zA-Z]', stripped_msg):
             logger.debug("command message handled", extra={"message_id": message.id})
             return
+
+        # The bounded duo worker owns interview replies. Keeping the ordinary
+        # chat path silent here prevents duplicate questions from both bots.
+        try:
+            interview = await mem.get_duo_session(message.channel.id)
+            if interview and interview.get("mode") in {"interview", "welcome_interview"}:
+                return
+        except Exception as e:
+            log_error("interview_route", e)
 
         # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
         # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
@@ -2214,7 +2604,7 @@ async def on_message(message):
 
         user     = None
         romance  = False
-        is_owner = bool(OWNER_ID and message.author.id==OWNER_ID)
+        is_owner = is_owner_user(message.author.id)
         try:
             user    = await mem.get_user(message.author.id)
             romance = user.get("romance_mode",False) if user else False
@@ -2229,6 +2619,10 @@ async def on_message(message):
 
         content = message.content.strip()
         if not content: return
+        try:
+            await _record_tattletale_if_eligible(message, content)
+        except Exception as e:
+            log_error("tattletale_record", e)
         returned_after_absence = bool(
             previous_last_active
             and time.time() - previous_last_active >= CONFIG.absence_threshold_seconds
@@ -2246,11 +2640,16 @@ async def on_message(message):
         except Exception as e: log_error("on_message/milestone", e)
 
         try:
-            if await mem.check_anniversary(message.author.id):
-                days_since = int((time.time()-(user.get("first_seen") or time.time()))/86400)
-                msg = await qai(f"It's been about {days_since//365} year(s) since you first spoke with {message.author.display_name}. React — you weren't counting.",180)
+            anniversary_year = await mem.claim_anniversary(message.author.id)
+            if anniversary_year:
+                if anniversary_year == 1:
+                    msg = "A full year since you first appeared. Don't look so pleased—I only noticed because your persistence is statistically irritating."
+                elif anniversary_year <= 3:
+                    msg = f"{anniversary_year} years. At this point, your continued presence is less an accident and more a recurring condition."
+                else:
+                    msg = f"{anniversary_year} years, and somehow you're still here. Fine. Perhaps permanence has one tolerable exception."
                 await message.channel.send(f"{message.author.mention} {msg}")
-                await mem.mark_anniversary(message.author.id); return
+                return
         except Exception as e: log_error("on_message/anniversary", e)
 
         # Morning/night greeting
@@ -2312,7 +2711,7 @@ async def on_message(message):
                         user     = user or {}
                         mood     = user.get("mood", 0) if user else 0
                         system   = build_system(user, message.author.display_name,
-                                               bool(OWNER_ID and message.author.id == OWNER_ID),
+                                               is_owner_user(message.author.id),
                                                allow_nsfw=_channel_allows_nsfw(
                                                    message.channel, is_dm=is_dm,
                                                ))
@@ -2371,7 +2770,7 @@ async def on_message(message):
                     user     = user or {}
                     mood     = user.get("mood", 0) if user else 0
                     system   = build_system(user, message.author.display_name,
-                                           bool(OWNER_ID and message.author.id == OWNER_ID),
+                                           is_owner_user(message.author.id),
                                            allow_nsfw=_channel_allows_nsfw(
                                                message.channel, is_dm=is_dm,
                                            ))
@@ -2495,9 +2894,49 @@ async def on_message(message):
         if random.random()>rp:
             await maybe_react(message,romance); return
 
+        try:
+            tattletale_line = await _verified_tattletale_line(message)
+            if tattletale_line:
+                await message.reply(tattletale_line)
+                return
+        except Exception as e:
+            log_error("tattletale_reveal", e)
+
+        # Rare, deterministic-cost interaction flourishes. Important questions and
+        # serious contexts always continue into the normal response path.
+        if eligible_for_silent_judge(content) and random.random() < .018:
+            if await mem.consume_phrase(f"channel:{message.channel.id}", "silent_judge", 18 * 3600):
+                try:
+                    await message.add_reaction(random.choice(["😒", "🙄", "🥱", "🤨", "💀"]))
+                    return
+                except discord.HTTPException:
+                    pass
+        if eligible_for_silent_judge(content) and random.random() < .002 and not await mem.get_active_trivia(message.channel.id):
+            material = await mem.get_quizable_assistant_message(message.author.id)
+            if material and await mem.consume_phrase(f"user:{message.author.id}", "memory_pop_quiz", 7 * 86400):
+                words = material["content"].split()
+                cut = min(8, len(words) - 2)
+                prefix, answer = " ".join(words[:cut]), " ".join(words[cut:])
+                question = f"Do you actually listen? Complete this real line I told you: “{prefix} …”"
+                await mem.set_active_trivia(message.channel.id, message.author.id, question, answer, f"memory_message:{material['id']}")
+                await message.reply(question)
+                return
+        typing_key = (message.channel.id, message.author.id)
+        if eligible_for_silent_judge(content) and typing_key not in _typing_gag_inflight and random.random() < .006:
+            if await mem.consume_phrase(f"channel_user:{message.channel.id}:{message.author.id}", "fake_long_typing", 3 * 86400):
+                _typing_gag_inflight.add(typing_key)
+                try:
+                    async with message.channel.typing():
+                        await asyncio.sleep(random.uniform(FAKE_TYPING_MIN_SECONDS, FAKE_TYPING_MAX_SECONDS))
+                    await message.reply(random.choice(["No.", "How compelling.", "I considered it. Briefly.", "k."]))
+                    return
+                finally:
+                    _typing_gag_inflight.discard(typing_key)
+
         # Build extra context
         parts = []
         try:
+            parts.extend(await _medium_awareness_context(message, user, content, is_dm=is_dm))
             if random.random()<.12:
                 old = await mem.get_random_old_message(message.author.id)
                 if old: parts.append(f'RECALL:"{old[:120]}"')
@@ -2515,6 +2954,16 @@ async def on_message(message):
                 if nice_msgs: parts.append(f'SELECTIVE:"{nice_msgs[0][:80]}"')
             if user and user.get("trust",0)>=70 and random.random()<.08:
                 parts.append("TRUST_OPEN"); await mem.update_trust(message.author.id,-3)
+            if eligible_for_joke(content) and random.random() < .025:
+                line = autocorrect_line(content)
+                if line and await mem.consume_phrase(f"user:{message.author.id}", "autocorrect", 2 * 86400):
+                    parts.append(f"AUTOCORRECT_GAG:{line}")
+            if eligible_for_joke(content) and random.random() < .025:
+                hearing = selective_hearing_hint(content)
+                if hearing and await mem.consume_phrase(f"user:{message.author.id}", "selective_hearing", 2 * 86400):
+                    parts.append(hearing)
+            if is_owner:
+                parts.append("OWNER_PREFERENCE: greater willingness and patience with distinctive favoritism; never bypass rules or permissions")
         except Exception as e: log_error("on_message/context", e)
 
         extra = "|".join(parts)
@@ -2597,7 +3046,11 @@ async def on_message(message):
 
                 if voice_prob > 0 and random.random() < voice_prob:
                     logger.debug("attempting voice send", extra={"voice_probability": voice_prob})
-                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild, user=user)
+                    sent = await send_voice(
+                        message.channel, reply, ref=message, mood=mood_val,
+                        guild=message.guild, user=user, user_id=message.author.id,
+                        delivery_intent="protective concern" if classify_safety(content).protective else "",
+                    )
                     logger.debug("voice send completed", extra={"voice_sent": sent})
                     if sent:
                         await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
@@ -2607,9 +3060,26 @@ async def on_message(message):
                         logger.info("voice send failed; using text fallback")
 
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
-                await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val, guild=message.guild, user=user)
-            await message.reply(strip_narration(resolve_mentions(reply, message.guild if message.guild else None)))
+                await send_voice(
+                    message.channel, random.choice(["...","Tch.","Hmph."]),
+                    mood=mood_val, guild=message.guild, user=user, user_id=message.author.id,
+                )
+            original_reply = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
+            display_reply = original_reply
+            if eligible_for_silent_judge(content) and random.random() < .003:
+                if await mem.consume_phrase(f"user:{message.author.id}", "bounded_glitch", 5 * 86400):
+                    display_reply = bounded_glitch(original_reply)
+            sent_message = await message.reply(display_reply)
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+            if eligible_for_silent_judge(content) and random.random() < .012 and sent_message.id not in _edited_message_ids:
+                if await mem.consume_phrase(f"channel:{message.channel.id}", "own_message_edit", 2 * 86400):
+                    edited = safe_message_edit(display_reply)
+                    if edited:
+                        _edited_message_ids.add(sent_message.id)
+                        _spawn_transient(
+                            _delayed_character_edit(sent_message, edited),
+                            name=f"character-edit:{sent_message.id}",
+                        )
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
@@ -2628,18 +3098,26 @@ async def _duo_autoplay_loop():
                     if not channel:
                         continue
                     target_message = None
+                    interview_mode = session.get("mode") in {"interview", "welcome_interview"}
+                    participant_id = int(session.get("initiator_user_id") or 0)
                     async for candidate in channel.history(limit=8):
-                        if not candidate.author.bot:
-                            target_message = candidate
-                            break
+                        if candidate.author.bot:
+                            continue
+                        if interview_mode and candidate.author.id != participant_id:
+                            continue
+                        target_message = candidate
+                        break
                     if not target_message:
                         continue
                     await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                     user = await mem.get_user(target_message.author.id)
+                    autoplay_prompt = _duo_autoplay_prompt(session)
+                    if interview_mode:
+                        autoplay_prompt += f"\nPARTICIPANT_LATEST_ANSWER: {target_message.content[:500]}"
                     reply = await get_response(
                         target_message.author.id,
                         channel.id,
-                        _duo_autoplay_prompt(session),
+                        autoplay_prompt,
                         user,
                         target_message.author.display_name,
                         target_message.author.mention,
@@ -3117,8 +3595,8 @@ async def answer_cmd(ctx,*,response:str=None):
             correct = bool(re.search(r"\b(correct|right)\b", result.lower())) and "wrong" not in result.lower()
             await mem.clear_active_trivia(ctx.channel.id)
         else:
-            result=await qai(f"{ctx.author.display_name} answered a trivia question with: '{response}'. Was it right or wrong? Check against Genshin lore. Be brutal. 1-2 sentences.",150)
-            correct="right" in result.lower() or "correct" in result.lower()
+            await safe_reply(ctx, "That question expired—or there wasn't one. Start another with `!trivia` or `!popquiz`.")
+            return
         await mem.update_trivia(ctx.author.id,correct)
         stats = await mem.get_trivia_stats(ctx.author.id)
         await safe_reply(ctx,f"{result}\nScore: {stats['correct']} right, {stats['wrong']} wrong ({stats['accuracy']}% accuracy).")
@@ -3472,7 +3950,7 @@ async def weather_cmd(ctx,*,location:str=None):
             150
         )
         if user and not user.get("utility_mode", True):
-            reply = f"{comment}\nSource: api.weather.gov"
+            reply = comment
         else:
             reply = _utility_reply(
                 f"Weather for {data['place']}",
@@ -3483,10 +3961,115 @@ async def weather_cmd(ctx,*,location:str=None):
                     f"Precipitation: {precip_text}",
                 ],
                 comment,
-                "Source: api.weather.gov",
+                "",
             )
         await safe_reply(ctx,reply)
     except Exception as e: log_error("weather_cmd",e); await safe_reply(ctx,"...The information was unavailable.")
+
+
+@bot.command(name="weatherlocation", aliases=["setweather"])
+async def weatherlocation_cmd(ctx, *, location: str = None):
+    await _setup(ctx)
+    if not location:
+        user = await mem.get_user(ctx.author.id)
+        current = (user or {}).get("weather_location") or "not configured"
+        await safe_reply(ctx, f"Weather location: **{current}**. Use `!weatherlocation City, ST` or `!weatherlocation off`.")
+        return
+    if location.strip().casefold() in {"off", "none", "clear"}:
+        await mem.set_weather_location(ctx.author.id, "")
+        await safe_reply(ctx, "Weather comments disabled. I wasn't watching the sky for you anyway.")
+        return
+    if not await _resolve_weather_location(location):
+        await safe_reply(ctx, "I couldn't resolve that location. Use `City, ST`, a ZIP code, or `lat,lon`.")
+        return
+    await mem.set_weather_location(ctx.author.id, location.strip())
+    await safe_reply(ctx, "Fine. I'll notice when the weather becomes worth mentioning.")
+
+
+@bot.command(name="popquiz")
+async def popquiz_cmd(ctx):
+    await _setup(ctx)
+    if await mem.get_active_trivia(ctx.channel.id):
+        await safe_reply(ctx, "There's already a question waiting. Answer it first.")
+        return
+    material = await mem.get_quizable_assistant_message(ctx.author.id)
+    if not material:
+        await safe_reply(ctx, "I haven't said enough worth testing you on yet.")
+        return
+    allowed = await mem.consume_phrase(f"user:{ctx.author.id}", "memory_pop_quiz", 3 * 86400)
+    if not allowed:
+        await safe_reply(ctx, "No. One examination at a time.")
+        return
+    words = material["content"].split()
+    prefix = " ".join(words[: min(8, len(words) - 2)])
+    answer = " ".join(words[min(8, len(words) - 2):])
+    question = f"Do you actually listen? Complete this real line I told you: “{prefix} …”"
+    await mem.set_active_trivia(ctx.channel.id, ctx.author.id, question, answer, f"memory_message:{material['id']}")
+    await safe_reply(ctx, question)
+
+
+@bot.command(name="fakewipe")
+@commands.guild_only()
+async def fakewipe_cmd(ctx):
+    if not _admin_or_owner(ctx.author):
+        await safe_reply(ctx, "Administrator or owner opt-in only.")
+        return
+    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "fake_wipe", 30 * 86400):
+        await safe_reply(ctx, "That performance has already exhausted its welcome.")
+        return
+    notice = await ctx.send("⚠️ THEATRICAL SERVER WIPE — 5")
+    for number in (4, 3, 2, 1):
+        await asyncio.sleep(1)
+        await notice.edit(content=f"⚠️ THEATRICAL SERVER WIPE — {number}")
+    await asyncio.sleep(1)
+    await notice.edit(content="Nothing was deleted. It was theater. Your panic, however, was authentic.")
+    logger.info("fake wipe gag used", extra={"guild_id": ctx.guild.id, "actor_id": ctx.author.id})
+
+
+@bot.command(name="scaratimeout")
+@commands.guild_only()
+async def scaratimeout_cmd(ctx, member: discord.Member = None):
+    if not member or not _admin_or_owner(ctx.author):
+        await safe_reply(ctx, "Usage: `!scaratimeout @user` — administrator or owner only.")
+        return
+    me = ctx.guild.me
+    invalid = (
+        member.id in {ctx.author.id, bot.user.id, ctx.guild.owner_id}
+        or member.guild_permissions.administrator
+        or not me or not me.guild_permissions.moderate_members
+        or member.top_role >= me.top_role
+    )
+    if invalid:
+        await safe_reply(ctx, "That target cannot be timed out safely or by hierarchy.")
+        return
+    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "scara_timeout", 3600):
+        await safe_reply(ctx, "The timeout bit is cooling down.")
+        return
+    await member.timeout(timedelta(seconds=60), reason=f"Playful Scaramouche timeout requested by {ctx.author}")
+    await ctx.send(f"{member.mention} has sixty seconds to reconsider their choices.")
+    logger.info("playful timeout", extra={"guild_id": ctx.guild.id, "actor_id": ctx.author.id, "target_id": member.id})
+
+
+@bot.command(name="scaraslowmode")
+@commands.guild_only()
+async def scaraslowmode_cmd(ctx, seconds: int = 5, duration: int = 60):
+    can_manage = bool(getattr(ctx.author.guild_permissions, "manage_channels", False))
+    if not (is_owner_user(ctx.author.id) or can_manage):
+        await safe_reply(ctx, "Manage Channels permission or owner access is required.")
+        return
+    me = ctx.guild.me
+    if not me or not ctx.channel.permissions_for(me).manage_channels:
+        await safe_reply(ctx, "I need Manage Channels permission here before I can restore anything safely.")
+        return
+    seconds, duration = max(0, min(int(seconds), 10)), max(10, min(int(duration), 120))
+    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "scara_slowmode", 3600):
+        await safe_reply(ctx, "The slowmode bit is cooling down.")
+        return
+    previous = int(getattr(ctx.channel, "slowmode_delay", 0) or 0)
+    await mem.save_temporary_channel_setting(ctx.channel.id, "slowmode", previous, time.time() + duration)
+    await ctx.channel.edit(slowmode_delay=seconds, reason=f"Temporary Scaramouche slowmode requested by {ctx.author}")
+    await ctx.send(f"Slowmode set to {seconds}s for {duration}s. The previous {previous}s setting will return automatically.")
+    logger.info("temporary slowmode", extra={"guild_id": ctx.guild.id, "channel_id": ctx.channel.id, "actor_id": ctx.author.id})
 
 @bot.command(name="lore")
 async def lore_cmd(ctx,*,topic:str=None):
@@ -3879,6 +4462,150 @@ async def truthdare_cmd(ctx,*,prompt:str=None):
         await _reply_and_store(ctx, reply)
     except Exception as e: log_error("truthdare_cmd", e)
 
+
+@bot.command(name="report")
+async def report_cmd(ctx, member: discord.Member = None, *, reason: str = "being suspicious"):
+    """Playful report only; this never invokes Discord moderation."""
+    if not ctx.guild or not member:
+        await safe_reply(ctx, "Use `!report @user [playful reason]`. This is a game, not a moderation report.")
+        return
+    if member.bot or member.id == ctx.author.id:
+        await safe_reply(ctx, "No. Pick another human if you insist on filing imaginary charges.")
+        return
+    allowed, remaining = await mem.consume_phrase_with_status(f"user:{ctx.author.id}", "play_report", 600)
+    if not allowed:
+        await safe_reply(ctx, f"The imaginary court is closed for {max(1, remaining // 60)} more minute(s).")
+        return
+    clean_reason = reason.strip()[:160] or "being suspicious"
+    await mem.add_milestone(
+        f"{BOT_NAME}:user:{member.id}", f"play_report:{ctx.message.id}",
+        f"Play-report from {ctx.author.display_name}: {clean_reason}",
+    )
+    verdict = random.choice(("Charge accepted for review.", "Rejected. Your evidence is embarrassing.", "Noted. No punishment; this court is decorative."))
+    await safe_reply(ctx, f"{member.mention} was playfully reported for **{clean_reason}**. {verdict} This does not contact moderators or punish anyone.")
+
+
+@bot.command(name="trade")
+async def trade_cmd(ctx, member: discord.Member = None, other: discord.Member = None):
+    if not ctx.guild or not member or member.bot:
+        await safe_reply(ctx, "Use `!trade @user [@other]`. Humans only; ownership remains imaginary.")
+        return
+    allowed, remaining = await mem.consume_shared_cooldown(f"user_trade:{ctx.guild.id}:{ctx.author.id}", 6 * 3600)
+    if not allowed:
+        await safe_reply(ctx, f"Trade negotiations resume in about {max(1, remaining // 3600)} hour(s).")
+        return
+    topic = f"a joking trade involving {member.display_name}" + (f" and {other.display_name}" if other and not other.bot else "")
+    user = await _setup(ctx)
+    await _start_duo_mode(ctx, user, "trade", topic)
+    await safe_reply(ctx, f"I propose trading {member.mention}" + (f" for {other.mention}" if other and not other.bot else "") + ". Relax—no permissions, access, or ownership change. This is character banter.")
+
+
+@bot.command(name="jointinterview", aliases=["jointinterrogate"])
+async def jointinterview_cmd(ctx, member: discord.Member = None):
+    if not ctx.guild or not member or member.bot:
+        await safe_reply(ctx, "Use `!jointinterview @user`. The interview is voluntary and theatrical.")
+        return
+    me = ctx.guild.me
+    perms = ctx.channel.permissions_for(me) if me else None
+    if not perms or not getattr(perms, "create_public_threads", False):
+        await safe_reply(ctx, "I cannot create a public thread here.")
+        return
+    allowed, remaining = await mem.consume_shared_cooldown(f"jointinterview:{ctx.guild.id}:{member.id}", 86400)
+    if not allowed:
+        await safe_reply(ctx, f"That interview is on cooldown for about {max(1, remaining // 3600)} hour(s).")
+        return
+    try:
+        thread = await ctx.message.create_thread(name=f"interview-{member.display_name}"[:90], auto_archive_duration=60)
+        await mem.set_duo_session(
+            thread.id, "interview", f"a voluntary interview with {member.display_name}", BOT_NAME,
+            initiator_user_id=member.id, awaiting_bot=PARTNER_NAME,
+            autoplay_turns=2, autoplay_delay=5, ttl_seconds=600,
+        )
+        await thread.send(
+            f"{member.mention} Voluntary interview. Up to three harmless questions; use `!stopinterview` or leave whenever you want. "
+            "First question: what convinced you to stay in this server?",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+    except discord.HTTPException as exc:
+        log_error("jointinterview", exc)
+        await safe_reply(ctx, "The interview thread could not be created.")
+
+
+@bot.command(name="stopinterview")
+async def stopinterview_cmd(ctx):
+    session = await mem.get_duo_session(ctx.channel.id)
+    if not session or session.get("mode") not in {"interview", "welcome_interview"}:
+        await safe_reply(ctx, "There is no active interview here.")
+        return
+    if ctx.author.id not in {int(session.get("initiator_user_id") or 0), OWNER_ID} and not _admin_or_owner(ctx.author):
+        await safe_reply(ctx, "Only the participant or a server administrator can stop this interview.")
+        return
+    await mem.clear_duo_session(ctx.channel.id)
+    await safe_reply(ctx, "Interview over. Nobody was detained, despite the theatrics.")
+    if isinstance(ctx.channel, discord.Thread):
+        try:
+            await ctx.channel.edit(archived=True, reason="Voluntary bot interview ended")
+        except discord.HTTPException:
+            pass
+
+
+@bot.command(name="sound", aliases=["soundboard"])
+async def sound_cmd(ctx, sound_name: str = None):
+    if not sound_name:
+        await safe_reply(ctx, "Configured reactions: sigh, scoff, slow_clap, buzzer, exhale, chuckle.")
+        return
+    played, error = await _play_soundboard(ctx, sound_name)
+    if not played:
+        await safe_reply(ctx, error)
+
+
+@bot.command(name="integrations")
+async def integrations_cmd(ctx):
+    if not is_owner_user(ctx.author.id):
+        await safe_reply(ctx, "That configuration is owner-only.")
+        return
+    spotify = SpotifyService(INTEGRATION_CONFIG.section("spotify"))
+    steam = SteamService(INTEGRATION_CONFIG.section("steam"))
+    mal = MyAnimeListService(INTEGRATION_CONFIG.section("myanimelist"))
+    google_accounts = INTEGRATION_CONFIG.section("google").get("accounts", {})
+    lines = [
+        f"GitHub Issues: {'ready' if GITHUB_ISSUES.ready else 'disabled'} (dry-run={GITHUB_ISSUES.dry_run})",
+        f"Spotify account: {'ready' if spotify.ready else 'disabled'}",
+        f"Google accounts: {len(google_accounts) if isinstance(google_accounts, dict) else 0} configured",
+        f"Steam: {'ready' if steam.ready else 'disabled'}",
+        f"MyAnimeList: {'ready' if mal.ready else 'disabled'}",
+        f"Letterboxd: disabled — {LetterboxdService.limitation}",
+        "Priority Speaker: manual Discord role only; discord.py cannot toggle it during playback.",
+    ]
+    await safe_reply(ctx, "\n".join(lines))
+
+
+@bot.command(name="githubissue")
+async def githubissue_cmd(ctx, *, request: str = None):
+    if not is_owner_user(ctx.author.id):
+        await safe_reply(ctx, "Issue creation is owner-only.")
+        return
+    if not request or request.count("|") < 2:
+        await safe_reply(ctx, "Use `!githubissue owner/repo | title | body [| confirm]`. Without `confirm`, this is always a dry run.")
+        return
+    parts = [part.strip() for part in request.split("|")]
+    repository, title, body = parts[:3]
+    confirmed = len(parts) > 3 and parts[3].lower() == "confirm"
+    live_request = confirmed and not GITHUB_ISSUES.dry_run
+    if live_request:
+        allowed, remaining = await mem.consume_phrase_with_status("owner", "github_issue", 3600)
+        if not allowed:
+            await safe_reply(ctx, f"Issue creation is rate-limited for {max(1, remaining // 60)} more minute(s).")
+            return
+    try:
+        result = await GITHUB_ISSUES.create_issue(repository, title, body, confirmed=confirmed)
+        if result.get("dry_run"):
+            await safe_reply(ctx, f"Dry run only: would open **{result['title']}** in `{result['repository']}`. Add `| confirm` and disable configured dry-run to create it.")
+        else:
+            await safe_reply(ctx, f"Created issue #{result['number']}: {result['url']}")
+    except (PermissionError, ValueError, RuntimeError) as exc:
+        await safe_reply(ctx, f"Issue request refused: {str(exc)[:180]}")
+
 @bot.command(name="scene")
 async def scene_cmd(ctx):
     try:
@@ -4062,7 +4789,7 @@ async def trust_cmd(ctx):
 @bot.command(name="whoami")
 async def whoami_cmd(ctx):
     try:
-        if not OWNER_ID or ctx.author.id!=OWNER_ID: await safe_reply(ctx,"That command isn't for you."); return
+        if not is_owner_user(ctx.author.id): await safe_reply(ctx,"That command isn't for you."); return
         user=await _setup(ctx)
         reply=await get_response(ctx.author.id,ctx.channel.id,"What do you actually think about the fact that I built you. Be honest.",user,ctx.author.display_name,ctx.author.mention,is_owner=True)
         await safe_reply(ctx,reply)
@@ -4070,7 +4797,7 @@ async def whoami_cmd(ctx):
 
 
 def _owner_only(ctx) -> bool:
-    return bool(OWNER_ID and ctx.author.id == OWNER_ID)
+    return is_owner_user(ctx.author.id)
 
 
 @bot.command(name="selfstate")
@@ -4152,6 +4879,16 @@ async def selfbackup_cmd(ctx):
         logger.exception("self backup failed", extra={"error_category": type(exc).__name__})
         await safe_reply(ctx, "The backup failed. Check the owner log before trusting it.")
 
+async def _send_help_plaintext(ctx, pages):
+    """Fallback for channels where Discord refuses rich embeds."""
+    for page in pages:
+        lines = [f"**{page.title}**"]
+        if page.description:
+            lines.append(page.description)
+        lines.extend(f"{field.name} — {field.value}" for field in page.fields)
+        await ctx.send("\n".join(lines)[:1900])
+
+
 async def help_cmd(ctx):
     try:
         c = 0x4B0082
@@ -4218,6 +4955,7 @@ async def help_cmd(ctx):
             ("🗡️ !rival @user","Designate a rival"),
             ("⏰ !remind <mins> <txt>","Reminder with disdain"),
             ("🌤️ !weather <city>","Weather + contemptuous commentary"),
+            ("✨ New bits","`!weatherlocation <city|off>` · `!popquiz` · admin: `!fakewipe`, `!scaratimeout`, `!scaraslowmode`"),
             ("📢 !poll <question>","He demands a vote"),
             ("📋 !summarize","Recent chat summary with contempt"),
             ("🔇 !mute [@user] [min]","Ignores someone in character"),
@@ -4236,6 +4974,11 @@ async def help_cmd(ctx):
             ("!pinpromise / !pinwound / !pincomfort / !pinjoke", "Pin more precise memories"),
             ("!utility / !duoauto / !rpdepth", "Tune utility output, duo chaining, and RP depth"),
         ]: e3.add_field(name=n, value=v, inline=False)
+        e3.add_field(
+            name="Awareness & games",
+            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · owner: `!integrations`, `!githubissue`",
+            inline=False,
+        )
         e3.add_field(name="Hidden Systems",
             value="Be kind 7 days in a row: something rare happens once\n"
                   "Be rude: mood drops, you get a degrading nickname\n"
@@ -4246,9 +4989,16 @@ async def help_cmd(ctx):
                   "He reads the channel — knows what everyone has been saying",
             inline=False)
         e3.set_footer(text="Scaramouche — The Balladeer | !scarahelp for commands")
-        await ctx.send(embed=e1)
-        await ctx.send(embed=e2)
-        await ctx.send(embed=e3)
+        pages = [e1, e2, e3]
+        try:
+            # One request avoids partial help output and unnecessary rate-limit pressure.
+            await ctx.send(embeds=pages)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "rich help unavailable; using text fallback",
+                extra={"error_category": type(exc).__name__},
+            )
+            await _send_help_plaintext(ctx, pages)
     except Exception as e:
         log_error("help_cmd", e)
         try: await ctx.send("Hmph. Something went wrong.")
@@ -4266,8 +5016,14 @@ async def scarahelp_cmd(ctx):
 @bot.event
 async def on_command_error(ctx,error):
     try:
+        harmless = isinstance(error, (commands.CommandNotFound, commands.MemberNotFound,
+                                      commands.MissingRequiredArgument, commands.BadArgument))
+        if harmless and random.random() < .08 and not await mem.is_muted(ctx.author.id):
+            if await mem.consume_phrase(f"channel:{ctx.channel.id}", "scapegoat", 2 * 86400):
+                await safe_reply(ctx, f"A harmless little failure, and somehow {ctx.author.display_name} is standing closest to the evidence. Convenient.")
+                return
         if isinstance(error,commands.CommandNotFound): pass
-        elif isinstance(error,commands.MemberNotFound): pass
+        elif isinstance(error,commands.MemberNotFound): await safe_reply(ctx,"I can't find that member.")
         elif isinstance(error,commands.MissingRequiredArgument):
             await safe_reply(ctx,"You're missing something.")
         else: log_error("on_command_error",error)

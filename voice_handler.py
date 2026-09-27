@@ -72,11 +72,11 @@ def _style_tts_text(text: str, style: str = "guarded") -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
-    if style == "soft":
+    if style in {"soft", "concerned", "reconciliation", "restrained_vulnerability"}:
         return cleaned.replace("...", ".  ").replace("—", ". ")
-    if style == "tense":
+    if style in {"tense", "heated"}:
         return cleaned.replace(",", ". ").replace(";", ". ")
-    if style in {"cutting", "distant"}:
+    if style in {"cutting", "distant", "cold"}:
         return cleaned.replace(" and ", ". ").replace(" but ", ". ")
     if style in {"measured", "curious"}:
         return cleaned.replace("...", ", ")
@@ -86,19 +86,9 @@ def _style_tts_text(text: str, style: str = "guarded") -> str:
 async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0, style: str = "guarded") -> bytes | None:
     if not fish_audio_key:
         return await generate_tts_gtts(text)
-    # Mood affects pacing
-    if mood <= -6:   chunk = 140
-    elif mood <= -1: chunk = 190
-    elif mood <= 5:  chunk = 220
-    else:            chunk = 260
-    if style == "soft":
-        chunk += 35
-    elif style == "tense":
-        chunk = max(120, chunk - 30)
-    elif style in {"cutting", "distant"}:
-        chunk = max(130, chunk - 20)
-    elif style in {"measured", "curious"}:
-        chunk += 10
+    # Fish's chunk_length is a generation/buffering control, not speech speed.
+    # Keep it stable; emotional delivery is expressed through safe punctuation.
+    chunk = 220
     styled_text = _style_tts_text(text, style)
 
     def _blocking():
