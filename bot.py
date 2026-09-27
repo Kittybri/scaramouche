@@ -4900,12 +4900,8 @@ async def selfbackup_cmd(ctx):
 
 async def _send_help_plaintext(ctx, pages):
     """Fallback for channels where Discord refuses rich embeds."""
-    for page in pages:
-        lines = [f"**{page.title}**"]
-        if page.description:
-            lines.append(page.description)
-        lines.extend(f"{field.name} — {field.value}" for field in page.fields)
-        await ctx.send("\n".join(lines)[:1900])
+    from help_delivery import send_help_plaintext
+    await send_help_plaintext(ctx, pages)
 
 
 async def help_cmd(ctx):
@@ -5009,15 +5005,8 @@ async def help_cmd(ctx):
             inline=False)
         e3.set_footer(text="Scaramouche — The Balladeer | !scarahelp for commands")
         pages = [e1, e2, e3]
-        try:
-            # One request avoids partial help output and unnecessary rate-limit pressure.
-            await ctx.send(embeds=pages)
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            logger.warning(
-                "rich help unavailable; using text fallback",
-                extra={"error_category": type(exc).__name__},
-            )
-            await _send_help_plaintext(ctx, pages)
+        from help_delivery import send_help
+        await send_help(ctx, pages)
     except Exception as e:
         log_error("help_cmd", e)
         try: await ctx.send("Hmph. Something went wrong.")

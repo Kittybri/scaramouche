@@ -77,8 +77,8 @@ class CharacterBitsTests(unittest.TestCase):
         on_message_source = function_source("on_message")
         self.assertNotIn("await help_cmd(ctx)", on_message_source)
         help_source = function_source("help_cmd")
-        self.assertIn("ctx.send(embeds=pages)", help_source)
-        self.assertIn("_send_help_plaintext(ctx, pages)", help_source)
+        self.assertIn("await send_help(ctx, pages)", help_source)
+        self.assertIn("await send_help_plaintext(ctx, pages)", function_source("_send_help_plaintext"))
         self.assertIn('@bot.command(name="scarahelp", aliases=["commands"])', BOT_SOURCE)
 
 
