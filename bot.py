@@ -1321,6 +1321,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     recent_replies: list[str] = []
     search_sources = ""
     try:
+        user, world_context = await WORLD.response_context(user_id, channel_id, user_message, user)
+        extra_context += "\n" + world_context
         history = await mem.get_history(
             user_id, channel_id, limit=CONFIG.conversation_history_limit,
             max_chars_per_message=CONFIG.history_message_chars,
@@ -1879,6 +1881,9 @@ class ResetView(discord.ui.View):
             if interaction.user.id!=self.uid:
                 await interaction.response.send_message("This isn't your button, fool.",ephemeral=True); return
             await mem.reset_user(self.uid)
+            await WORLD.forget(self.uid)
+            await FACE_PROFILES.init()
+            await FACE_PROFILES.delete(self.uid)
             await self_store.delete_user_scoped_data(self.uid)
             button.disabled=True; button.label="✓ Memory Wiped"
             await interaction.response.edit_message(content=random.choice(["...Gone. Good.","Erased.","Wiped."]),view=self)
@@ -2028,6 +2033,7 @@ async def _self_heartbeat_loop() -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
         try:
+            await WORLD.tick(bot, _reflection_generation)
             result = await heartbeat.tick(
                 discord_latency=bot.latency, db_probe=mem.healthcheck,
                 active_conversations=len(await mem.get_active_channels()),
@@ -2618,6 +2624,10 @@ async def on_message(message):
             return
 
         content = message.content.strip()
+        try:
+            await WORLD.observe(message, user)
+        except Exception as exc:
+            log_error("world_observe", type(exc).__name__)
         if not content: return
         try:
             await _record_tattletale_if_eligible(message, content)
@@ -4172,6 +4182,7 @@ async def forget_cmd(ctx,*,topic:str=None):
             return
         await _setup(ctx)
         result=await mem.forget_memory_matches(ctx.author.id, topic)
+        result["world"] = await WORLD.forget(ctx.author.id, topic)
         result.update(await self_store.forget_user_matches(ctx.author.id, topic))
         removed=sum(result.values())
         if removed:
@@ -4482,6 +4493,10 @@ async def report_cmd(ctx, member: discord.Member = None, *, reason: str = "being
         f"Play-report from {ctx.author.display_name}: {clean_reason}",
     )
     verdict = random.choice(("Charge accepted for review.", "Rejected. Your evidence is embarrassing.", "Noted. No punishment; this court is decorative."))
+    if (verdict.startswith("Charge accepted") and WORLD.config.get("playful_reports", False)
+            and clean_reason.lower() in {"called my voice robotic", "mocked my hat"}
+            and (await mem.get_user_preferences(member.id)).get("grudge_enabled", True)):
+        await WORLD.record(ctx.message, member.id, "Playful report: " + clean_reason.lower(), 1, "play_report")
     await safe_reply(ctx, f"{member.mention} was playfully reported for **{clean_reason}**. {verdict} This does not contact moderators or punish anyone.")
 
 
@@ -5028,6 +5043,12 @@ async def on_command_error(ctx,error):
             await safe_reply(ctx,"You're missing something.")
         else: log_error("on_command_error",error)
     except Exception: pass
+
+from persistent_world import PersistentWorld
+WORLD = PersistentWorld(BOT_NAME, mem, INTEGRATION_CONFIG.section("persistent_world"), GITHUB_ISSUES, self_store)
+WORLD.install_commands(bot)
+from face_controls import install_face_commands
+FACE_PROFILES = install_face_commands(bot, mem.shared_db_path)
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
