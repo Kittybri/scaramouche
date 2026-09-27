@@ -1,0 +1,9 @@
+{
+  "agent_id": "main",
+  "secret": "REPLACE_WITH_RANDOM_RELAY_SECRET",
+  "url": "wss://home.example.com",
+  "media_origin": "https://home.example.com",
+  "database": "/var/lib/character-home/agent.db",
+  "enabled": false,
+  "devices": {}
+}
