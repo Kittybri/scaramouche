@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import time
 
 import pytest
@@ -28,7 +29,7 @@ def test_action_allowlist_and_permissions():
     with pytest.raises(ValueError):
         policy.validate({"action": "RUN_CODE", "reason": "no"})
     with pytest.raises(PermissionError):
-        policy.validate({"action": "RESPOND", "reason": "test"}, permission_allowed=False)
+        policy.validate({"action": "WRITE_REFLECTION", "reason": "test"}, permission_allowed=False)
     with pytest.raises(PermissionError):
         policy.validate({"action": "SEND_PROACTIVE_MESSAGE", "reason": "test", "user_id": 1, "channel_id": 2}, muted=True)
 
@@ -90,3 +91,79 @@ def test_environment_state_is_sanitized_and_provider_degrades(tmp_path):
     assert snapshot["provider_status"] == "degraded"
     rendered = result.environment.prompt_fragment().lower()
     assert "api_key" not in rendered and "/users/" not in rendered and "hostname" not in rendered
+
+
+def test_reflection_failure_keeps_event_and_persists_provider_backoff(tmp_path):
+    store, heartbeat = setup(
+        tmp_path, reflection_threshold=7, autonomous_calls_per_hour=2,
+        autonomous_calls_per_day=8, provider_backoff_seconds=600,
+    )
+    run(store.record_event("conflict", "A conflict still needs reflection.", importance=9, related_user_id=7))
+
+    async def failing_generator(prompt):
+        raise TimeoutError("provider timeout")
+
+    result = run(heartbeat.tick(reflection_generator=failing_generator, proactive_candidates=[]))
+    assert result.reflected is False
+    assert len(run(store.pending_events(7))) == 1
+
+    reopened = HeartbeatCoordinator(store, EnvironmentMonitor(config=heartbeat.config), heartbeat.config)
+    before = run(store.budget_status())
+    assert run(reopened.reserve_autonomous_call()) is False
+    assert run(store.budget_status()) == before  # backoff rejects before consuming budget
+
+
+def test_quiet_heartbeat_cycles_are_bounded_and_make_no_llm_calls(tmp_path):
+    store, heartbeat = setup(tmp_path)
+    # A quiet-cycle test must not depend on the machine's live CPU/disk load.
+    # Parallel test workers or a busy CI host can otherwise create a genuine
+    # environment transition and make this deterministic no-op assertion flaky.
+    heartbeat.environment._system_pressure = lambda: ("normal", "unknown", "normal")
+    calls = []
+
+    async def generator(prompt):
+        calls.append(prompt)
+        return "unused"
+
+    start = time.time()
+    for index in range(100):
+        result = run(heartbeat.tick(
+            reflection_generator=generator, proactive_candidates=[], now=start + index * 300,
+        ))
+        assert result.action.action is ActionType.NO_ACTION
+    assert calls == []
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute("SELECT COUNT(*) FROM autonomous_actions").fetchone()[0] <= 1
+        assert db.execute("SELECT COUNT(*) FROM self_events").fetchone()[0] == 0
+
+
+def test_autonomous_budget_survives_restart(tmp_path):
+    store, heartbeat = setup(
+        tmp_path, autonomous_calls_per_hour=1, autonomous_calls_per_day=1,
+    )
+    assert run(heartbeat.reserve_autonomous_call()) is True
+    reopened = HeartbeatCoordinator(store, EnvironmentMonitor(config=heartbeat.config), heartbeat.config)
+    assert run(reopened.reserve_autonomous_call()) is False
+
+
+def test_overlapping_heartbeat_fails_closed_without_duplicate_work(tmp_path):
+    store, heartbeat = setup(tmp_path)
+
+    async def scenario():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_probe():
+            entered.set()
+            await release.wait()
+
+        first = asyncio.create_task(heartbeat.tick(db_probe=slow_probe, proactive_candidates=[]))
+        await entered.wait()
+        second = await heartbeat.tick(proactive_candidates=[])
+        release.set()
+        await first
+        return second
+
+    duplicate = run(scenario())
+    assert duplicate.action.action is ActionType.NO_ACTION
+    assert duplicate.action.reason == "heartbeat already running"

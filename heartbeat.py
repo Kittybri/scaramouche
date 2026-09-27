@@ -53,19 +53,24 @@ class HeartbeatCoordinator:
 
     async def reserve_autonomous_call(self, now: float | None = None) -> bool:
         now = now or time.time()
+        persisted = await self.store.get_runtime_float("provider_backoff_until", 0.0)
+        self._provider_backoff_until = max(self._provider_backoff_until, persisted)
         if now < self._provider_backoff_until:
             return False
         return await self.store.consume_budget(now=now)
 
-    def provider_failed(self) -> None:
+    async def provider_failed(self, now: float | None = None) -> None:
         self.environment.record_provider_failure()
+        now = now or time.time()
         self._provider_backoff_until = max(
-            self._provider_backoff_until, time.time() + self.config.provider_backoff_seconds
+            self._provider_backoff_until, now + self.config.provider_backoff_seconds
         )
+        await self.store.set_runtime_value("provider_backoff_until", self._provider_backoff_until)
 
-    def provider_succeeded(self, latency_ms: int | None = None) -> None:
+    async def provider_succeeded(self, latency_ms: int | None = None) -> None:
         self.environment.record_provider_success(latency_ms)
         self._provider_backoff_until = 0.0
+        await self.store.set_runtime_value("provider_backoff_until", 0.0)
 
     async def tick(
         self, *, discord_latency: float | None = None, db_probe=None,
@@ -100,27 +105,27 @@ class HeartbeatCoordinator:
                 started = time.monotonic()
                 try:
                     interpretation = (await reflection_generator(self.reflections.prompt(request))).strip()
-                    if interpretation:
-                        await self.store.add_reflection(
-                            request.trigger, request.observation, interpretation,
-                            importance=request.importance, confidence=.65,
-                            related_user_id=request.related_user_id,
-                        )
-                        await self.store.record_action(
-                            ActionType.WRITE_REFLECTION.value, "completed", request.trigger,
-                            related_user_id=request.related_user_id,
-                        )
-                        reflected = True
-                    self.provider_succeeded(int((time.monotonic() - started) * 1000))
+                    if not interpretation:
+                        raise ValueError("reflection provider returned empty content")
+                    await self.store.add_reflection(
+                        request.trigger, request.observation, interpretation,
+                        importance=request.importance, confidence=.65,
+                        related_user_id=request.related_user_id,
+                    )
+                    await self.store.record_action(
+                        ActionType.WRITE_REFLECTION.value, "completed", request.trigger,
+                        related_user_id=request.related_user_id,
+                    )
+                    await self.store.mark_events_processed(request.event_ids)
+                    reflected = True
+                    await self.provider_succeeded(int((time.monotonic() - started) * 1000))
                 except Exception as exc:
-                    self.provider_failed()
+                    await self.provider_failed(now)
                     await self.store.record_action(
                         ActionType.WRITE_REFLECTION.value, "failed", request.trigger,
                         related_user_id=request.related_user_id, error_category=type(exc).__name__,
                     )
                     log.warning("reflection failed", extra={"action_type": "WRITE_REFLECTION", "error_category": type(exc).__name__})
-                finally:
-                    await self.store.mark_events_processed(request.event_ids)
 
             action = await self._choose_proactive(proactive_candidates or [], now)
             if action.action is ActionType.NO_ACTION and not await self.store.action_on_cooldown(

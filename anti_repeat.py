@@ -284,7 +284,9 @@ def build_prompt_guard(bot_name: str, recent_messages: list[str]) -> str:
         "You have been falling into phrase habits. Keep the tone, but change the wording and sentence shape.",
     ]
     if stale_openings:
-        lines.append("Avoid these recent openings: " + "; ".join(stale_openings))
+        # Do not echo arbitrary openings: the global anti-repeat sample can
+        # include bot replies from another user's private conversation.
+        lines.append("Several recent first clauses repeated. Use a genuinely new opening.")
     if stale_phrases:
         lines.append("Do not use these stale signature phrases right now: " + "; ".join(stale_phrases))
     if stale_shapes:
@@ -342,7 +344,7 @@ def replace_opening_phrase(bot_name: str, text: str, recent_messages: list[str] 
     return updated
 
 
-def looks_repetitive(text: str, recent_messages: list[str]) -> bool:
+def looks_repetitive(text: str, recent_messages: list[str], *, include_shape: bool = True) -> bool:
     normalized = _normalize(text)
     if not normalized or len(normalized) < 8:
         return False
@@ -358,7 +360,7 @@ def looks_repetitive(text: str, recent_messages: list[str]) -> bool:
             return True
         if SequenceMatcher(None, normalized, recent_normalized).ratio() >= 0.91:
             return True
-    return repeated_shape(text, recent_messages)
+    return repeated_shape(text, recent_messages) if include_shape else False
 
 
 def fallback_reply(bot_name: str, recent_messages: list[str]) -> str:

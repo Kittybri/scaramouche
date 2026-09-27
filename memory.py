@@ -12,7 +12,6 @@ import time
 import json
 import logging
 import os
-import shutil
 
 # Use Railway volume if available, otherwise current directory
 _data_dir = "/data" if os.path.isdir("/data") else "."
@@ -22,8 +21,6 @@ log = logging.getLogger(__name__)
 
 
 class Memory:
-    # In-memory only (resets on restart — intentional for mute)
-    _muted: dict[int, float] = {}
     db_path: str = DB_PATH
     shared_db_path: str = SHARED_DB_PATH
 
@@ -32,6 +29,7 @@ class Memory:
         self.bot_name = (bot_name or "scaramouche").strip().lower()
         self.db_path = os.fspath(db_path or os.path.join(_data_dir, f"{self.bot_name}.db"))
         self.shared_db_path = os.fspath(shared_db_path or SHARED_DB_PATH)
+        self._muted: dict[int, float] = {}
 
     def _scope_db_path(self, scope: str) -> str:
         return self.shared_db_path if "::" in (scope or "") else self.db_path
@@ -103,6 +101,10 @@ class Memory:
                 CREATE TABLE IF NOT EXISTS dm_cooldown (
                     user_id   INTEGER PRIMARY KEY,
                     last_sent REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS bot_mutes (
+                    user_id    INTEGER PRIMARY KEY,
+                    expires_ts REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS reminders (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,6 +273,10 @@ class Memory:
                     if "duplicate column name" not in str(exc).lower():
                         log.exception("users migration failed", extra={"column": col})
                         raise
+            now = time.time()
+            await db.execute("DELETE FROM bot_mutes WHERE expires_ts<=?", (now,))
+            async with db.execute("SELECT user_id,expires_ts FROM bot_mutes") as cur:
+                self._muted = {int(row[0]): float(row[1]) for row in await cur.fetchall()}
             await db.commit()
 
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
@@ -382,6 +388,14 @@ class Memory:
 
     async def healthcheck(self) -> bool:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute("SELECT 1") as cur:
+                row = await cur.fetchone()
+        if not row or row[0] != 1:
+            raise RuntimeError("database health probe failed")
+        return True
+
+    async def integrity_check(self) -> bool:
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("PRAGMA quick_check") as cur:
                 row = await cur.fetchone()
         if not row or row[0] != "ok":
@@ -390,18 +404,21 @@ class Memory:
 
     async def backup(self, destination: str | None = None) -> str:
         destination = destination or f"{self.db_path}.backup"
-        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
-            await db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        shutil.copy2(self.db_path, destination)
+        os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as source:
+            async with aiosqlite.connect(destination, timeout=15.0) as target:
+                await source.backup(target)
         return destination
 
     # ── Users ────────────────────────────────────────────────────────────────
     async def upsert_user(self, user_id: int, username: str, display_name: str):
         now = time.time()
+        previous_last_active = 0.0
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
-            async with db.execute("SELECT first_seen FROM users WHERE user_id=?", (user_id,)) as cur:
+            async with db.execute("SELECT first_seen,last_active FROM users WHERE user_id=?", (user_id,)) as cur:
                 row = await cur.fetchone()
             if row:
+                previous_last_active = float(row[1] or 0)
                 await db.execute(
                     "UPDATE users SET username=?,display_name=?,last_seen=?,last_active=? WHERE user_id=?",
                     (username, display_name, now, now, user_id))
@@ -421,6 +438,7 @@ class Memory:
                 (user_id, username, display_name, first_seen, now, now),
             )
             await db.commit()
+        return previous_last_active
 
     async def get_user(self, user_id: int) -> dict | None:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
@@ -690,34 +708,70 @@ class Memory:
         ]
 
     async def forget_memory_matches(self, user_id: int, query: str) -> dict:
-        needle = (query or "").strip().lower()
+        needle = (query or "").strip().lower()[:80]
         if not needle:
-            return {"topics": 0, "jokes": 0, "shared_jokes": 0, "memories": 0, "callback": 0}
+            return {}
 
-        like = f"%{needle[:80]}%"
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
             topic_cur = await db.execute(
-                "DELETE FROM user_topics WHERE user_id=? AND LOWER(topic) LIKE ?",
-                (user_id, like),
+                "DELETE FROM user_topics WHERE user_id=? AND INSTR(LOWER(topic),?)>0",
+                (user_id, needle),
             )
             joke_cur = await db.execute(
-                "DELETE FROM inside_jokes WHERE user_id=? AND LOWER(joke) LIKE ?",
-                (user_id, like),
+                "DELETE FROM inside_jokes WHERE user_id=? AND INSTR(LOWER(joke),?)>0",
+                (user_id, needle),
             )
             memory_cur = await db.execute(
-                "DELETE FROM memory_bank WHERE user_id=? AND (LOWER(kind) LIKE ? OR LOWER(memory) LIKE ?)",
-                (user_id, like, like),
+                "DELETE FROM memory_bank WHERE user_id=? AND "
+                "(INSTR(LOWER(kind),?)>0 OR INSTR(LOWER(memory),?)>0)",
+                (user_id, needle, needle),
             )
-            callback_cur = await db.execute(
-                "UPDATE users SET callback_memory=NULL, callback_ts=0 "
-                "WHERE user_id=? AND callback_memory IS NOT NULL AND LOWER(callback_memory) LIKE ?",
-                (user_id, like),
+            message_cur = await db.execute(
+                "DELETE FROM messages WHERE user_id=? AND INSTR(LOWER(content),?)>0",
+                (user_id, needle),
+            )
+            reminder_cur = await db.execute(
+                "DELETE FROM reminders WHERE user_id=? AND INSTR(LOWER(reminder),?)>0",
+                (user_id, needle),
+            )
+            trivia_cur = await db.execute(
+                "DELETE FROM active_trivia WHERE asker_id=? AND "
+                "(INSTR(LOWER(question),?)>0 OR INSTR(LOWER(answer),?)>0 OR INSTR(LOWER(COALESCE(source_note,'')),?)>0)",
+                (user_id, needle, needle, needle),
+            )
+            milestone_cur = await db.execute(
+                "DELETE FROM relationship_milestones WHERE scope LIKE ? AND INSTR(LOWER(note),?)>0",
+                (f"{self.bot_name}:user:{user_id}%", needle),
+            )
+            user_cur = await db.execute(
+                """UPDATE users SET
+                       callback_memory=CASE WHEN INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 THEN NULL ELSE callback_memory END,
+                       callback_ts=CASE WHEN INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 THEN 0 ELSE callback_ts END,
+                       memory_summary=CASE WHEN INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 THEN NULL ELSE memory_summary END,
+                       summary_msg_count=CASE WHEN INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 THEN 0 ELSE summary_msg_count END,
+                       last_statement=CASE WHEN INSTR(LOWER(COALESCE(last_statement,'')),?)>0 THEN NULL ELSE last_statement END,
+                       conflict_summary=CASE WHEN INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0 THEN NULL ELSE conflict_summary END,
+                       conflict_open=CASE WHEN INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0 THEN 0 ELSE conflict_open END
+                   WHERE user_id=? AND (
+                       INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(last_statement,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0
+                   )""",
+                (needle, needle, needle, needle, needle, needle, needle, user_id,
+                 needle, needle, needle, needle),
             )
             await db.commit()
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
             shared_joke_cur = await db.execute(
-                "DELETE FROM shared_inside_jokes WHERE user_id=? AND LOWER(joke) LIKE ?",
-                (user_id, like),
+                "DELETE FROM shared_inside_jokes WHERE user_id=? AND INSTR(LOWER(joke),?)>0",
+                (user_id, needle),
+            )
+            shared_milestone_cur = await db.execute(
+                "DELETE FROM relationship_milestones WHERE scope LIKE ? AND INSTR(LOWER(note),?)>0",
+                (f"%user:{user_id}", needle),
             )
             await db.commit()
         return {
@@ -725,7 +779,11 @@ class Memory:
             "jokes": int(joke_cur.rowcount or 0),
             "shared_jokes": int(shared_joke_cur.rowcount or 0),
             "memories": int(memory_cur.rowcount or 0),
-            "callback": int(callback_cur.rowcount or 0),
+            "messages": int(message_cur.rowcount or 0),
+            "reminders": int(reminder_cur.rowcount or 0),
+            "trivia": int(trivia_cur.rowcount or 0),
+            "milestones": int(milestone_cur.rowcount or 0) + int(shared_milestone_cur.rowcount or 0),
+            "profile_fields": int(user_cur.rowcount or 0),
         }
 
     async def set_mode(self, user_id: int, field: str, value: bool):
@@ -1357,14 +1415,31 @@ class Memory:
                 return (await cur.fetchone())[0]
 
     # ── Conversation history ──────────────────────────────────────────────────
-    async def get_history(self, user_id: int, channel_id: int, limit: int = 200) -> list[dict]:
+    async def get_history(self, user_id: int, channel_id: int, limit: int = 200, *,
+                          max_chars_per_message: int | None = None,
+                          max_total_chars: int | None = None) -> list[dict]:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
                 SELECT role,content FROM messages WHERE user_id=? AND channel_id=? AND (bot_name=? OR bot_name IS NULL)
                 ORDER BY ts DESC LIMIT ?
             """, (user_id,channel_id,self.bot_name,limit)) as cur:
                 rows = await cur.fetchall()
-        return [{"role":r[0],"content":r[1]} for r in reversed(rows)]
+        bounded: list[dict] = []
+        remaining = max_total_chars if max_total_chars and max_total_chars > 0 else None
+        # Rows are newest-first. Apply the total budget from the most relevant
+        # end, then restore chronological order for the provider.
+        for role, raw_content in rows:
+            content = str(raw_content or "")
+            if max_chars_per_message and max_chars_per_message > 0:
+                content = content[:max_chars_per_message]
+            if remaining is not None:
+                if remaining <= 0:
+                    break
+                content = content[:remaining]
+                remaining -= len(content)
+            if content:
+                bounded.append({"role": role, "content": content})
+        return list(reversed(bounded))
 
     async def get_random_old_message(self, user_id: int) -> str | None:
         cutoff = time.time()-86400*2
@@ -1417,36 +1492,56 @@ class Memory:
 
     async def reset_user(self, user_id: int):
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM messages WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM inside_jokes WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM user_topics WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM memory_bank WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM reminders WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM trivia WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM active_trivia WHERE asker_id=?", (user_id,))
+            await db.execute("DELETE FROM roast_battles WHERE user1_id=? OR user2_id=?", (user_id, user_id))
+            await db.execute("DELETE FROM user_preferences WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM dm_cooldown WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM bot_mutes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
-            await db.execute("""UPDATE users SET mood=0,affection=0,trust=0,rival_id=NULL,grudge_nick=NULL,
-                affection_nick=NULL,message_count=0,milestone_last=0,slow_burn=0,slow_burn_fired=0,
-                drift_score=0,memory_summary=NULL,last_statement=NULL,style_profile=NULL,emotional_arc='guarded',
-                conflict_open=0,conflict_summary=NULL,last_conflict_ts=0,repair_progress=0,
-                callback_memory=NULL,callback_ts=0,repair_count=0
-                WHERE user_id=?""", (user_id,))
+            await db.execute("DELETE FROM users WHERE user_id=?", (user_id,))
             await db.commit()
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.execute("DELETE FROM duo_sessions WHERE initiator_user_id=?", (user_id,))
+            await db.execute("DELETE FROM shared_users WHERE user_id=?", (user_id,))
             await db.commit()
+        self._muted.pop(user_id, None)
 
-    # ── Mute (in-memory) ──────────────────────────────────────────────────────
-    def mute_user(self, user_id: int, seconds: int = 600):
-        Memory._muted[user_id] = time.time() + seconds
+    # ── Mute ──────────────────────────────────────────────────────────────────
+    async def mute_user(self, user_id: int, seconds: int = 600):
+        expires = time.time() + max(60, min(int(seconds), 86_400))
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute(
+                "INSERT INTO bot_mutes(user_id,expires_ts) VALUES(?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET expires_ts=excluded.expires_ts",
+                (user_id, expires),
+            )
+            await db.commit()
+        self._muted[user_id] = expires
 
-    def is_muted(self, user_id: int) -> bool:
-        exp = Memory._muted.get(user_id, 0)
+    async def is_muted(self, user_id: int) -> bool:
+        exp = self._muted.get(user_id, 0)
         if exp and time.time() > exp:
-            del Memory._muted[user_id]; return False
+            await self.unmute_user(user_id)
+            return False
         return bool(exp)
 
-    def unmute_user(self, user_id: int):
-        Memory._muted.pop(user_id, None)
+    async def unmute_user(self, user_id: int):
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute("DELETE FROM bot_mutes WHERE user_id=?", (user_id,))
+            await db.commit()
+        self._muted.pop(user_id, None)
 
     # ── Trivia ────────────────────────────────────────────────────────────────
     async def update_trivia(self, user_id: int, correct: bool):
@@ -1646,6 +1741,45 @@ class Memory:
             """, (cutoff,self.bot_name)) as cur:
                 rows = await cur.fetchall()
         return [{"user_id":r[0],"display_name":r[1],"romance_mode":bool(r[2]),"nsfw_mode":bool(r[3])} for r in rows]
+
+    async def get_proactive_candidates(self, *, absent_before: float, limit: int = 20) -> list[dict]:
+        """Return public-channel candidates without coupling them to DM consent."""
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                """SELECT u.user_id,u.display_name,u.affection,u.trust,u.last_active,u.proactive,
+                          latest.channel_id,
+                          COALESCE((
+                              SELECT SUBSTR(public_message.content,1,180)
+                              FROM messages public_message
+                              WHERE public_message.user_id=u.user_id
+                                AND public_message.channel_id=latest.channel_id
+                                AND public_message.role='user'
+                                AND (public_message.bot_name=? OR public_message.bot_name IS NULL)
+                              ORDER BY public_message.ts DESC,public_message.id DESC LIMIT 1
+                          ), '') AS public_context
+                   FROM users u
+                   JOIN messages latest ON latest.id=(
+                       SELECT candidate.id FROM messages candidate
+                       JOIN channels tracked ON tracked.channel_id=candidate.channel_id
+                       WHERE candidate.user_id=u.user_id
+                         AND (candidate.bot_name=? OR candidate.bot_name IS NULL)
+                       ORDER BY candidate.ts DESC,candidate.id DESC LIMIT 1
+                   )
+                   WHERE u.proactive=1 AND u.last_active>0 AND u.last_active<? AND u.message_count>5
+                   ORDER BY (u.affection + u.trust * 0.5) DESC,u.last_active ASC
+                   LIMIT ?""",
+                (self.bot_name, self.bot_name, absent_before, max(1, min(int(limit), 100))),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "user_id": row[0], "display_name": row[1], "affection": row[2] or 0,
+                "trust": row[3] or 0, "last_active": row[4] or 0,
+                "proactive": bool(row[5]), "channel_id": row[6],
+                "context": (row[7] or "")[:180],
+            }
+            for row in rows
+        ]
 
     # ── Stats ─────────────────────────────────────────────────────────────────
     async def get_stats(self, user_id: int) -> dict:

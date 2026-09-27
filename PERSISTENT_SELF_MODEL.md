@@ -9,7 +9,8 @@ sentience, biological emotion, pain, or free will.
 Discord messages are reduced to deterministic perception events before they
 affect the persistent self-model. User relationship memory remains separate.
 Generation receives only a compact, user-scoped interpretation of relevant
-self-state; it does not receive database dumps. The heartbeat updates sanitized
+self-state, beliefs, contradictions, goals, and selected reflections; it does not
+receive database dumps or another user's scoped records. The heartbeat updates sanitized
 environment state, decays temporary mood dimensions, expires goals, selects
 important reflection events, and normally chooses `NO_ACTION`.
 
@@ -28,8 +29,10 @@ The existing SQLite database gains tables for:
 - unresolved contradiction pressure;
 - autonomous action audit records, pending events, and call budgets.
 
-SQLite uses WAL, a 15-second busy timeout, `synchronous=NORMAL`, foreign keys,
-explicit migration error handling, and an owner-triggered backup. The legacy
+The self-model configures every connection for WAL, a 15-second busy timeout,
+`synchronous=NORMAL`, and foreign keys. Legacy memory connections use a 15-second
+SQLite lock timeout and initialize WAL during migration. Backups use SQLite's online
+backup API, including committed WAL state. Migration errors remain explicit. The legacy
 memory class now keeps database paths per instance.
 
 ## Conservative configuration
@@ -48,7 +51,15 @@ memory class now keeps database paths per instance.
 | `SELF_AUTONOMOUS_CALLS_PER_DAY` | `8` | Autonomous provider-call limit |
 | `SELF_ABSENCE_THRESHOLD_SECONDS` | `259200` | Minimum meaningful absence |
 | `SELF_PROVIDER_BACKOFF_SECONDS` | `1800` | Backoff after provider failure |
+| `SELF_HISTORY_MESSAGES` | `24` | Recent per-user messages sent to generation |
+| `SELF_HISTORY_MESSAGE_CHARS` | `600` | Per-message history character bound |
+| `SELF_HISTORY_TOTAL_CHARS` | `12000` | Total history character bound |
+| `SELF_CHANNEL_CONTEXT_MESSAGES` | `16` | Recent public channel messages supplied |
+| `SELF_RESPONSE_ATTEMPTS` | `2` | Maximum drafts for anti-repeat correction |
+| `GROQ_TIMEOUT_SECONDS` | `30` | Provider request timeout; SDK retries are disabled |
+| `GROQ_REASONING_EFFORT` | `low` | GPT-OSS reasoning effort (`low`, `medium`, or `high`) |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Explicit text model selection |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Current Groq multimodal model for video frames |
 
 ## Owner diagnostics
 
@@ -56,7 +67,7 @@ memory class now keeps database paths per instance.
   coarse environment health.
 - `!selfgoals` lists active modeled goals.
 - `!forceheartbeat` evaluates one heartbeat without proactive candidates.
-- `!selfbackup` checkpoints and copies the SQLite database.
+- `!selfbackup` creates a transactionally consistent online SQLite backup.
 
 These commands require `OWNER_ID`. No diagnostic exposes tokens, paths, raw
 private conversations, face/profile data, or another user's memory.
@@ -64,6 +75,19 @@ private conversations, face/profile data, or another user's memory.
 ## Failure boundaries
 
 Reflection and environment collection failures are logged and do not stop normal
-chat. Provider failures trigger autonomous backoff. Database writes report errors
-rather than claiming success. The heartbeat has an overlap lock and background
-tasks are started idempotently across Discord reconnects.
+chat. Failed reflections remain pending for a bounded later retry. Provider failures
+trigger restart-persistent autonomous backoff. Proactive sends use a persistent
+pending reservation so reconnects cannot duplicate an in-flight action. Database
+writes report errors rather than claiming success. The heartbeat has an overlap lock,
+background tasks are started idempotently across Discord reconnects, and managed
+tasks are cancelled during shutdown.
+
+## Forgetting and provider history
+
+`!forget <phrase>` removes literal matching text from the user's locally stored
+messages, summaries, callbacks, reminders, memory-bank records, and user-scoped
+self-model records so it is not included in later Groq prompts. `!forget all`
+requires button confirmation and deletes the user's local relationship and
+self-model records. These commands cannot retract a request that was already sent
+to an external provider; provider-side retention is governed separately by that
+provider and account configuration.

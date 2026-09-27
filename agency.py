@@ -9,13 +9,8 @@ from typing import Any
 
 class ActionType(str, Enum):
     NO_ACTION = "NO_ACTION"
-    RESPOND = "RESPOND"
     WRITE_REFLECTION = "WRITE_REFLECTION"
-    UPDATE_GOAL = "UPDATE_GOAL"
-    REVISE_BELIEF = "REVISE_BELIEF"
     SEND_PROACTIVE_MESSAGE = "SEND_PROACTIVE_MESSAGE"
-    RESEARCH_TOPIC = "RESEARCH_TOPIC"
-    REVISIT_CONVERSATION = "REVISIT_CONVERSATION"
 
 
 @dataclass(frozen=True)
@@ -49,7 +44,7 @@ class AgencyPolicy:
 
         if not permission_allowed and action is not ActionType.NO_ACTION:
             raise PermissionError("application permission denied")
-        if action in {ActionType.SEND_PROACTIVE_MESSAGE, ActionType.REVISIT_CONVERSATION}:
+        if action is ActionType.SEND_PROACTIVE_MESSAGE:
             if not user_id or not channel_id:
                 raise ValueError("proactive actions require user_id and channel_id")
             if muted or not user_opted_in or not channel_sendable:

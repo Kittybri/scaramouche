@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
+import asyncio
 import json
 import logging
 import os
-import shutil
 import time
 from typing import Any, Iterable
 
@@ -48,6 +48,7 @@ class SelfContext:
     beliefs: list[dict[str, Any]]
     goals: list[dict[str, Any]]
     contradictions: list[dict[str, Any]]
+    reflections: list[dict[str, Any]]
 
     def prompt_fragment(self) -> str:
         """Return a compact private prompt fragment without raw evidence."""
@@ -57,10 +58,23 @@ class SelfContext:
             lines.append(f"SELF_STATE_CAUSE:{self.mood_cause[:120]}")
         if self.concerns:
             lines.append("CURRENT_CONCERNS:" + "; ".join(self.concerns[:3]))
+        if self.beliefs:
+            lines.append(
+                "SELF_BELIEFS:" + "; ".join(
+                    f"{belief['belief'][:100]} (confidence {float(belief['confidence']):.2f})"
+                    for belief in self.beliefs[:3]
+                )
+            )
         if self.goals:
             lines.append("ACTIVE_INTENTIONS:" + "; ".join(g["description"][:100] for g in self.goals[:3]))
         if self.contradictions:
             lines.append("SELF_CONTRADICTIONS:" + "; ".join(c["summary"][:100] for c in self.contradictions[:2]))
+        if self.reflections:
+            lines.append(
+                "RELEVANT_SELF_REFLECTIONS:" + "; ".join(
+                    reflection["interpretation"][:180] for reflection in self.reflections[:2]
+                )
+            )
         lines.append(
             "INTERPRETATION_RULE: these are private modeled tendencies, not facts to recite. "
             "Let them alter cadence, attention, reluctance, and priorities subtly."
@@ -217,7 +231,51 @@ class SelfModelStore:
                     count INTEGER NOT NULL DEFAULT 0,
                     reset_ts REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_runtime (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_ts REAL NOT NULL
+                );
                 """
+            )
+            # SQLite UNIQUE constraints consider NULL values distinct. Merge
+            # any legacy global-belief duplicates, then enforce uniqueness with
+            # a normalized user scope so contradiction pressure accumulates.
+            await db.execute(
+                """UPDATE self_contradictions AS kept SET
+                       pressure=MIN(20,(
+                           SELECT SUM(other.pressure) FROM self_contradictions other
+                           WHERE other.belief_id=kept.belief_id
+                             AND COALESCE(other.related_user_id,-1)=COALESCE(kept.related_user_id,-1)
+                             AND other.summary=kept.summary
+                       )),
+                       first_seen_ts=(
+                           SELECT MIN(other.first_seen_ts) FROM self_contradictions other
+                           WHERE other.belief_id=kept.belief_id
+                             AND COALESCE(other.related_user_id,-1)=COALESCE(kept.related_user_id,-1)
+                             AND other.summary=kept.summary
+                       ),
+                       last_seen_ts=(
+                           SELECT MAX(other.last_seen_ts) FROM self_contradictions other
+                           WHERE other.belief_id=kept.belief_id
+                             AND COALESCE(other.related_user_id,-1)=COALESCE(kept.related_user_id,-1)
+                             AND other.summary=kept.summary
+                       )
+                   WHERE kept.id IN (
+                       SELECT MAX(id) FROM self_contradictions
+                       GROUP BY belief_id,COALESCE(related_user_id,-1),summary
+                   )"""
+            )
+            await db.execute(
+                """DELETE FROM self_contradictions WHERE id NOT IN (
+                       SELECT MAX(id) FROM self_contradictions
+                       GROUP BY belief_id,COALESCE(related_user_id,-1),summary
+                   )"""
+            )
+            await db.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_self_contradictions_unique
+                   ON self_contradictions(belief_id,COALESCE(related_user_id,-1),summary)"""
             )
             await db.commit()
 
@@ -335,11 +393,17 @@ class SelfModelStore:
             await self.apply_mood_event(f"reflection:{trigger}", emotional_effect)
         return int(reflection_id)
 
-    async def recent_reflections(self, limit: int = 10) -> list[dict[str, Any]]:
+    async def recent_reflections(self, limit: int = 10, *, user_id: int | None = None) -> list[dict[str, Any]]:
+        clause = ""
+        params: list[Any] = []
+        if user_id is not None:
+            clause = "WHERE related_user_id IS NULL OR related_user_id=?"
+            params.append(user_id)
+        params.append(max(1, min(limit, 50)))
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM self_reflections ORDER BY ts DESC LIMIT ?", (max(1, min(limit, 50)),)
+                f"SELECT * FROM self_reflections {clause} ORDER BY ts DESC LIMIT ?", params
             ) as cur:
                 return [dict(row) for row in await cur.fetchall()]
 
@@ -411,10 +475,26 @@ class SelfModelStore:
                     """INSERT INTO self_contradictions
                        (belief_id,related_user_id,summary,pressure,status,first_seen_ts,last_seen_ts)
                        VALUES(?,?,?,?, 'open',?,?)
-                       ON CONFLICT(belief_id,related_user_id,summary) DO UPDATE SET
+                       ON CONFLICT DO UPDATE SET
                          pressure=MIN(20,pressure+excluded.pressure),last_seen_ts=excluded.last_seen_ts,status='open'""",
                     (belief_id, user_id, contradiction_summary[:500], weight, now, now),
                 )
+                async with db.execute(
+                    "SELECT pressure FROM self_contradictions WHERE belief_id=? AND related_user_id IS ? AND summary=?",
+                    (belief_id, user_id, contradiction_summary[:500]),
+                ) as cur:
+                    contradiction = await cur.fetchone()
+                if contradiction and float(contradiction[0]) >= self.config.contradiction_threshold:
+                    dedupe_key = f"belief_contradiction:{belief_id}"
+                    await db.execute(
+                        """INSERT INTO self_events(ts,event_type,importance,related_user_id,summary,processed,dedupe_key)
+                           SELECT ?, 'belief_contradiction', 8, ?, ?, 0, ?
+                           WHERE NOT EXISTS (
+                               SELECT 1 FROM self_events WHERE dedupe_key=? AND processed=0
+                           )""",
+                        (now, user_id, contradiction_summary[:500], dedupe_key, dedupe_key),
+                    )
+                    await self._prune_events(db)
             await db.commit()
         return {"confidence": float(confidence), "supporting_weight": float(supporting), "contradicting_weight": float(contradicting)}
 
@@ -438,6 +518,9 @@ class SelfModelStore:
         source: str = "heuristic", dedupe_key: str = "",
     ) -> int | None:
         description = description.strip()[:600]
+        if not description:
+            raise ValueError("goal description is required")
+        priority = max(1, min(10, int(priority)))
         dedupe_key = (dedupe_key.strip() or f"{category}:{related_user_id}:{description.lower()[:160]}")[:240]
         now = time.time()
         async with self._connect() as db:
@@ -464,10 +547,11 @@ class SelfModelStore:
                    (description,category,priority,status,related_user_id,progress,created_ts,updated_ts,expires_ts,
                     completion_condition,failure_condition,reason,source,dedupe_key)
                    VALUES(?,?,?,'active',?,0,?,?,?,?,?,?,?,?)""",
-                (description, category[:50], max(1, min(10, int(priority))), related_user_id, now, now,
+                (description, category[:50], priority, related_user_id, now, now,
                  expires_ts, completion_condition[:400], failure_condition[:400], reason[:400], source[:50], dedupe_key),
             )
             goal_id = cur.lastrowid
+            await self._prune_goal_history(db)
             await db.commit()
         return int(goal_id)
 
@@ -490,8 +574,30 @@ class SelfModelStore:
         params.extend([time.time(), goal_id])
         async with self._connect() as db:
             cur = await db.execute(f"UPDATE self_goals SET {', '.join(updates)} WHERE id=?", params)
+            await self._prune_goal_history(db)
             await db.commit()
             return cur.rowcount > 0
+
+    async def complete_goals(self, *, related_user_id: int, category: str | None = None,
+                             dedupe_key: str | None = None) -> int:
+        """Complete matching active goals after a verified lifecycle event."""
+        clauses = ["status='active'", "related_user_id=?"]
+        params: list[Any] = [related_user_id]
+        if category:
+            clauses.append("category=?")
+            params.append(category)
+        if dedupe_key:
+            clauses.append("dedupe_key=?")
+            params.append(dedupe_key)
+        now = time.time()
+        async with self._connect() as db:
+            cur = await db.execute(
+                "UPDATE self_goals SET status='completed',progress=1,updated_ts=? WHERE " + " AND ".join(clauses),
+                [now, *params],
+            )
+            await self._prune_goal_history(db)
+            await db.commit()
+            return cur.rowcount
 
     async def expire_goals(self, now: float | None = None) -> int:
         now = now or time.time()
@@ -500,8 +606,19 @@ class SelfModelStore:
                 "UPDATE self_goals SET status='failed',updated_ts=? WHERE status='active' AND expires_ts IS NOT NULL AND expires_ts<=?",
                 (now, now),
             )
+            await self._prune_goal_history(db)
             await db.commit()
             return cur.rowcount
+
+    async def _prune_goal_history(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """DELETE FROM self_goals
+               WHERE status!='active' AND id NOT IN (
+                   SELECT id FROM self_goals WHERE status!='active'
+                   ORDER BY updated_ts DESC LIMIT ?
+               )""",
+            (self.config.max_goal_history,),
+        )
 
     async def list_goals(self, status: str = "active", limit: int = 10,
                          *, user_id: int | None = None) -> list[dict[str, Any]]:
@@ -550,11 +667,31 @@ class SelfModelStore:
                 "INSERT INTO self_events(ts,event_type,importance,related_user_id,summary,processed,dedupe_key) VALUES(?,?,?,?,?,0,?)",
                 (now, event_type[:60], max(1, min(10, int(importance))), related_user_id, summary[:800], dedupe_key[:200] if dedupe_key else None),
             )
-            await db.execute(
-                "DELETE FROM self_events WHERE processed=1 AND id NOT IN (SELECT id FROM self_events ORDER BY ts DESC LIMIT 500)"
-            )
+            await self._prune_events(db)
             await db.commit()
             return int(cur.lastrowid)
+
+    async def _prune_events(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            "DELETE FROM self_events WHERE processed=1 AND id NOT IN (SELECT id FROM self_events ORDER BY ts DESC LIMIT 500)"
+        )
+        # Low-importance events are useful for short-term diagnostics but do
+        # not qualify for reflection. Keep only a bounded recent sample.
+        await db.execute(
+            """DELETE FROM self_events
+               WHERE processed=0 AND importance<? AND id NOT IN (
+                   SELECT id FROM self_events WHERE processed=0 AND importance<?
+                   ORDER BY ts DESC LIMIT 250
+               )""",
+            (self.config.reflection_threshold, self.config.reflection_threshold),
+        )
+        await db.execute(
+            """DELETE FROM self_events WHERE id NOT IN (
+                   SELECT id FROM self_events
+                   ORDER BY processed ASC,importance DESC,ts DESC LIMIT ?
+               )""",
+            (self.config.max_self_events,),
+        )
 
     async def pending_events(self, minimum_importance: int = 1, limit: int = 20) -> list[dict[str, Any]]:
         async with self._connect() as db:
@@ -592,9 +729,69 @@ class SelfModelStore:
             await db.commit()
             return int(cur.lastrowid)
 
+    async def reserve_action(self, action_type: str, reason: str, *, related_user_id: int | None = None,
+                             channel_id: int | None = None, goal_id: int | None = None,
+                             details: dict[str, Any] | None = None,
+                             stale_after_seconds: int = 3_600) -> int | None:
+        """Atomically reserve an external action so reconnects cannot duplicate it."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            await db.execute(
+                """UPDATE autonomous_actions
+                   SET status='failed',error_category='ReservationExpired'
+                   WHERE action_type=? AND status='pending' AND ts<=?""",
+                (action_type, now - max(60, int(stale_after_seconds))),
+            )
+            clauses = ["action_type=?", "status='pending'"]
+            params: list[Any] = [action_type]
+            if related_user_id is not None:
+                clauses.append("related_user_id=?")
+                params.append(related_user_id)
+            if channel_id is not None:
+                clauses.append("channel_id=?")
+                params.append(channel_id)
+            async with db.execute(
+                "SELECT id FROM autonomous_actions WHERE " + " AND ".join(clauses) + " LIMIT 1", params
+            ) as cur:
+                if await cur.fetchone():
+                    await db.rollback()
+                    return None
+            cur = await db.execute(
+                """INSERT INTO autonomous_actions
+                   (ts,action_type,status,reason,related_user_id,channel_id,goal_id,details_json,error_category)
+                   VALUES(?,?,'pending',?,?,?,?,?,NULL)""",
+                (now, action_type, reason[:500], related_user_id, channel_id, goal_id, _json(details or {})),
+            )
+            await db.execute(
+                "DELETE FROM autonomous_actions WHERE id NOT IN (SELECT id FROM autonomous_actions ORDER BY ts DESC LIMIT 1000)"
+            )
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def finish_action(self, action_id: int, status: str, *,
+                            details: dict[str, Any] | None = None,
+                            error_category: str | None = None) -> bool:
+        if status not in {"completed", "failed", "skipped"}:
+            raise ValueError(f"invalid terminal action status: {status}")
+        updates = ["status=?", "error_category=?"]
+        params: list[Any] = [status, error_category]
+        if details is not None:
+            updates.append("details_json=?")
+            params.append(_json(details))
+        params.append(action_id)
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"UPDATE autonomous_actions SET {', '.join(updates)} WHERE id=? AND status='pending'", params
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
     async def action_on_cooldown(self, action_type: str, seconds: int, *, user_id: int | None = None,
                                  channel_id: int | None = None) -> bool:
-        clauses = ["action_type=?", "status='completed'", "ts>?"]
+        # A pending reservation is intentionally conservative: after a process
+        # crash we would rather skip one message than send it twice.
+        clauses = ["action_type=?", "status IN ('pending','completed')", "ts>?"]
         params: list[Any] = [action_type, time.time() - seconds]
         if user_id is not None:
             clauses.append("related_user_id=?")
@@ -647,21 +844,45 @@ class SelfModelStore:
             "day_used": int(found.get(keys[1], 0)), "day_limit": self.config.autonomous_calls_per_day,
         }
 
+    async def set_runtime_value(self, key: str, value: str | float | int) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO agent_runtime(key,value,updated_ts) VALUES(?,?,?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_ts=excluded.updated_ts""",
+                (key[:100], str(value)[:500], time.time()),
+            )
+            await db.commit()
+
+    async def get_runtime_float(self, key: str, default: float = 0.0) -> float:
+        async with self._connect() as db:
+            async with db.execute("SELECT value FROM agent_runtime WHERE key=?", (key[:100],)) as cur:
+                row = await cur.fetchone()
+        try:
+            return float(row[0]) if row else float(default)
+        except (TypeError, ValueError):
+            return float(default)
+
     async def context(self, user_id: int | None = None) -> SelfContext:
         state = await self.get_state()
+        beliefs, goals, contradictions, reflections = await asyncio.gather(
+            self.list_beliefs(5, user_id=user_id),
+            self.list_goals(limit=5, user_id=user_id),
+            self.list_contradictions(self.config.contradiction_threshold, 3, user_id=user_id),
+            self.recent_reflections(3, user_id=user_id),
+        )
         return SelfContext(
             dimensions=state["dimensions"], mood_cause=state.get("mood_cause", ""),
             concerns=state.get("concerns", []), interests=state.get("interests", []),
             frustrations=state.get("frustrations", []), attachment_tendencies=state.get("attachment_tendencies", []),
-            beliefs=await self.list_beliefs(5, user_id=user_id), goals=await self.list_goals(limit=5, user_id=user_id),
-            contradictions=await self.list_contradictions(self.config.contradiction_threshold, 3, user_id=user_id),
+            beliefs=beliefs, goals=goals, contradictions=contradictions, reflections=reflections,
         )
 
     async def backup(self, destination: str | None = None) -> str:
         destination = destination or f"{self.db_path}.backup"
-        async with self._connect() as db:
-            await db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        shutil.copy2(self.db_path, destination)
+        os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+        async with self._connect() as source:
+            async with aiosqlite.connect(destination, timeout=15.0) as target:
+                await source.backup(target)
         return destination
 
     async def delete_user_scoped_data(self, user_id: int) -> None:
@@ -675,6 +896,64 @@ class SelfModelStore:
             await db.execute("DELETE FROM self_events WHERE related_user_id=?", (user_id,))
             await db.execute("DELETE FROM self_beliefs WHERE scope_user_id=?", (user_id,))
             await db.commit()
+
+    async def forget_user_matches(self, user_id: int, query: str) -> dict[str, int]:
+        """Remove user-scoped modeled state containing a requested literal phrase."""
+        needle = (query or "").strip().lower()[:80]
+        if not needle:
+            return {}
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            reflection_cur = await db.execute(
+                """DELETE FROM self_reflections WHERE related_user_id=? AND (
+                       INSTR(LOWER(trigger),?)>0 OR INSTR(LOWER(observation),?)>0 OR
+                       INSTR(LOWER(interpretation),?)>0
+                   )""",
+                (user_id, needle, needle, needle),
+            )
+            goal_cur = await db.execute(
+                """DELETE FROM self_goals WHERE related_user_id=? AND (
+                       INSTR(LOWER(description),?)>0 OR INSTR(LOWER(reason),?)>0 OR
+                       INSTR(LOWER(completion_condition),?)>0 OR INSTR(LOWER(failure_condition),?)>0
+                   )""",
+                (user_id, needle, needle, needle, needle),
+            )
+            event_cur = await db.execute(
+                "DELETE FROM self_events WHERE related_user_id=? AND INSTR(LOWER(summary),?)>0",
+                (user_id, needle),
+            )
+            action_cur = await db.execute(
+                """DELETE FROM autonomous_actions WHERE related_user_id=? AND (
+                       INSTR(LOWER(reason),?)>0 OR INSTR(LOWER(details_json),?)>0
+                   )""",
+                (user_id, needle, needle),
+            )
+            contradiction_cur = await db.execute(
+                "DELETE FROM self_contradictions WHERE related_user_id=? AND INSTR(LOWER(summary),?)>0",
+                (user_id, needle),
+            )
+            # Evidence contributes to confidence and contradiction pressure. If
+            # matched evidence must be forgotten, remove its user-scoped belief
+            # as a unit rather than retaining scores derived from deleted text.
+            belief_cur = await db.execute(
+                """DELETE FROM self_beliefs WHERE scope_user_id=? AND (
+                       INSTR(LOWER(belief),?)>0 OR EXISTS (
+                           SELECT 1 FROM self_belief_evidence evidence
+                           WHERE evidence.belief_id=self_beliefs.id
+                             AND INSTR(LOWER(evidence.summary),?)>0
+                       )
+                   )""",
+                (user_id, needle, needle),
+            )
+            await db.commit()
+        return {
+            "self_reflections": int(reflection_cur.rowcount or 0),
+            "self_goals": int(goal_cur.rowcount or 0),
+            "self_events": int(event_cur.rowcount or 0),
+            "autonomous_actions": int(action_cur.rowcount or 0),
+            "self_contradictions": int(contradiction_cur.rowcount or 0),
+            "self_beliefs": int(belief_cur.rowcount or 0),
+        }
 
     async def diagnostic_summary(self) -> dict[str, Any]:
         state = await self.get_state()
