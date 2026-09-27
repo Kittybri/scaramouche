@@ -265,7 +265,7 @@ def validate_devices(config):
 
     for d in config.get("devices", {}).values():
         kind = d["type"]
-        if kind != "printer":
+        if kind not in {"printer", "computer"}:
             lan_host(d["host"])
         if kind == "hue":
             UUID(d["resource_id"])
@@ -303,6 +303,6 @@ def providers(config):
     return {
         "hue": Hue(),
         "kasa": Kasa(),
-        "cast": Cast(config["media_origin"]),
+        "cast": Cast(config.get("media_origin", "https://localhost")),
         "printer": Printer(),
     }

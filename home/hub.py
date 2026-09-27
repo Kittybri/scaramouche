@@ -24,11 +24,17 @@ class Hub:
             if field in config and type(config[field]) is not bool:
                 raise Rejected("invalid_configuration_boolean")
         self.devices = registry(config.get("devices", {}))
-        self.store = Store(config.get("database", "home.db"))
+        self.store = Store(
+            config.get("database", "home.db"),
+            config.get("audit_retention_seconds", 30 * 86400),
+        )
         self.agents = {}
         self.connecting = set()
         self.pending = {}
         self.last_health = {}
+        from .companion_hub import CompanionHub
+
+        self.companion = CompanionHub(self)
         self.vault = AudioVault(
             config.get("public_url", "https://localhost"), config.get("mock", False)
         )
@@ -56,6 +62,7 @@ class Hub:
             except Exception:
                 pass  # Retry next minute after a transient database failure.
             self.vault.cleanup()
+            self.companion.expire()
             await asyncio.sleep(60)
 
     async def close(self, app):
@@ -123,6 +130,8 @@ class Hub:
             raise Rejected("invalid_rpc")
         uid = payload["user_id"]
         op = payload.get("op")
+        if isinstance(op, str) and op.startswith("pc_"):
+            return web.json_response(await self.companion.rpc(op, uid, client))
         admin = uid in self.config.get("admins", [])
         if (
             op
@@ -220,7 +229,7 @@ class Hub:
             if not any(
                 uid in d.get("users", [])
                 and client in d.get("bots", [])
-                and d["type"] == "cast"
+                and d["type"] in {"cast", "computer"}
                 for d in self.devices.values()
             ):
                 raise Rejected("audio_user_denied")
@@ -241,6 +250,7 @@ class Hub:
         else:
             raise Rejected("unknown_operation")
         try:
+            await self.companion.allowed(c)
             c = authorize(c, self.devices, await self.enabled(c["device_id"]))
         except Rejected as exc:
             if str(exc) == "confirmation_required":
@@ -263,7 +273,9 @@ class Hub:
         if not ws or ws.closed:
             await self.store.result(c["request_id"], "offline")
             return {"ok": False, "error": "relay_offline"}
-        if any(agent == aid for agent, _ in self.pending.values()):
+        if c["action"] != "stop" and any(
+            agent == aid for agent, _ in self.pending.values()
+        ):
             await self.store.result(c["request_id"], "failed")
             return {"ok": False, "error": "relay_busy"}
         media = None
@@ -289,7 +301,17 @@ class Hub:
             )
             outcome = result.get("result", "failed")
             await self.store.result(c["request_id"], outcome)
-            return {"ok": outcome in {"completed", "submitted"}, "result": outcome}
+            response = {"ok": outcome in {"completed", "submitted"}, "result": outcome}
+            if c["action"] == "screen" and outcome == "completed":
+                await self.companion.allowed(c)
+                screen = result.get("screen", {})
+                if (
+                    not isinstance(screen.get("image"), str)
+                    or len(screen["image"]) > 470000
+                ):
+                    raise Rejected("invalid_screen")
+                response["screen"] = screen
+            return response
         except asyncio.TimeoutError:
             await self.store.result(c["request_id"], "timeout")
             return {"ok": False, "error": "relay_timeout"}
@@ -321,7 +343,7 @@ class Hub:
         if aid in self.agents or aid in self.connecting:
             raise Rejected("duplicate_agent")
         self.connecting.add(aid)
-        ws = web.WebSocketResponse(heartbeat=15, max_msg_size=16000)
+        ws = web.WebSocketResponse(heartbeat=15, max_msg_size=500000)
         try:
             await ws.prepare(request)
             # Reconcile persistent kill switches before accepting any new actions.
@@ -338,6 +360,7 @@ class Hub:
                         {"type": "disable" if disabled else "enable", "device": device},
                     )
                 )
+            await self.companion.sync(aid, ws)
             self.agents[aid] = ws
             self.last_health[aid] = time.time()
             async for msg in ws:
@@ -356,7 +379,19 @@ class Hub:
                         await ws.close(code=1008)
                         break
                     self.last_health[aid] = time.time()
+                    self.companion.health[aid] = {
+                        key: data.get("computer_status", {}).get(key) is True
+                        for key in ("sensing", "screens", "audio")
+                    }
                     await self.store.clean()
+                elif data.get("type") == "computer":
+                    payload = await self.authenticate(
+                        "computer:" + aid,
+                        secret,
+                        "computer:" + aid,
+                        data.get("envelope"),
+                    )
+                    await self.companion.ingest(aid, payload)
                 elif data.get("type") == "result" and data.get("result") in {
                     "completed",
                     "submitted",
@@ -372,6 +407,7 @@ class Hub:
         except Exception:
             await ws.close(code=1008)
         finally:
+            self.companion.disconnect(aid)
             self.connecting.discard(aid)
             if self.agents.get(aid) is ws:
                 self.agents.pop(aid, None)

@@ -45,8 +45,28 @@ class Agent:
             config["url"], websocket=True, mock=config.get("mock", False)
         )
         self.devices = registry(config.get("devices", {}))
-        self.store = Store(config.get("database", "home-agent.db"))
+        self.store = Store(
+            config.get("database", "home-agent.db"),
+            config.get("audit_retention_seconds", 30 * 86400),
+        )
         self.adapters = adapters or providers(config)
+        from .computer.runtime import Computer
+        from .computer.base import Platform
+        import sys
+
+        pc = config.get("companion", {})
+        platform = Platform()
+        if pc.get("enabled") and not config.get("mock") and sys.platform == "darwin":
+            from .computer.macos import MacOS
+
+            platform = MacOS()
+        self.computer = Computer(pc, platform)
+        self.adapters["computer"] = self.computer
+        self.computer_devices = [
+            key for key, d in self.devices.items() if d["type"] == "computer"
+        ]
+        if len(self.computer_devices) > 1:
+            raise Rejected("one_computer_per_agent")
         self.stopping = asyncio.Event()
         self.lock = asyncio.Lock()
         self.tasks = set()
@@ -58,8 +78,29 @@ class Agent:
         if not isinstance(payload, dict) or set(payload) != {"command", "media"}:
             raise Rejected("malformed_request")
         c = validate(payload["command"])
-        if self.lock.locked():
+        if self.lock.locked() and c["action"] != "stop":
             raise Rejected("agent_busy")
+        if (
+            c["action"] == "stop"
+            and self.devices.get(c["device_id"], {}).get("type") == "computer"
+        ):
+            # Stop must interrupt audio rather than waiting behind it.
+            authorize(
+                c,
+                self.devices,
+                self.config.get("enabled", False)
+                and self.computer.enabled
+                and not await self.store.get("disabled", False)
+                and not await self.store.get("disabled:" + c["device_id"], False),
+            )
+            await self.store.reserve(c, self.devices[c["device_id"]])
+            await self.computer.platform.stop()
+            await self.store.result(c["request_id"], "completed")
+            return {
+                "type": "result",
+                "request_id": c["request_id"],
+                "result": "completed",
+            }
         async with self.lock:
             enabled = (
                 self.config.get("enabled", False)
@@ -71,6 +112,8 @@ class Agent:
             enabled = (
                 enabled and os.getenv("HOME_AUTOMATION_ENABLED", "").lower() != "false"
             )
+            if self.devices.get(c["device_id"], {}).get("type") == "computer":
+                enabled = enabled and self.computer.enabled
             c = authorize(c, self.devices, enabled)
             d = dict(self.devices[c["device_id"]], _expires_at=c["expires_at"])
             await self.store.reserve(c, d)
@@ -84,14 +127,35 @@ class Agent:
                     ),
                     min(24, remaining),
                 )
-                result = result if result in {"completed", "submitted"} else "failed"
+                screen = (
+                    result
+                    if c["action"] == "screen" and isinstance(result, dict)
+                    else None
+                )
+                result = (
+                    "completed"
+                    if screen
+                    else (
+                        result
+                        if isinstance(result, str)
+                        and result in {"completed", "submitted"}
+                        else "failed"
+                    )
+                )
             except asyncio.CancelledError:
                 await self.store.result(c["request_id"], "cancelled")
                 raise
             except Exception:
                 result = "failed"
             await self.store.result(c["request_id"], result)
-            return {"type": "result", "request_id": c["request_id"], "result": result}
+            response = {
+                "type": "result",
+                "request_id": c["request_id"],
+                "result": result,
+            }
+            if result == "completed" and c["action"] == "screen":
+                response["screen"] = screen
+            return response
 
     async def health(self, ws):
         while not self.stopping.is_set():
@@ -100,9 +164,62 @@ class Agent:
                     "type": "health",
                     "devices": list(self.devices),
                     "capabilities": sorted({d["type"] for d in self.devices.values()}),
+                    "computer_status": {
+                        "sensing": self.computer.enabled,
+                        "screens": self.computer.enabled
+                        and self.computer.consent["screen"]
+                        and self.computer.config.get("screen_allowed", False),
+                        "audio": self.computer.enabled
+                        and self.computer.config.get("audio_allowed", False),
+                        "capabilities": self.computer.config.get("capabilities", []),
+                    },
                 }
             )
             await self.store.clean()
+            if self.computer_devices:
+                device = self.computer_devices[0]
+                if (
+                    not self.devices[device].get("enabled", False)
+                    or self.devices[device].get("mode", "DISABLED") == "DISABLED"
+                ):
+                    await self.computer.control({})
+                if not self.computer.enabled:
+                    await self.computer.platform.stop()
+                import os
+
+                if (
+                    os.getenv("HOME_AUTOMATION_ENABLED", "").lower() == "false"
+                    or not self.config.get("enabled", False)
+                    or await self.store.get("disabled", False)
+                    or await self.store.get("disabled:" + device, False)
+                ):
+                    await self.computer.control({})
+                event = await self.store.get("pc_development_event", {})
+                if event:
+                    await self.store.put("pc_development_event", {})
+                    from home.companion import EVENTS
+
+                    if (
+                        self.computer.enabled
+                        and self.computer.config.get("development_events", False)
+                        and "development_events"
+                        in self.computer.config.get("capabilities", [])
+                        and event.get("event") in EVENTS
+                        and event.get("expires", 0) > time.time()
+                    ):
+                        self.computer.event = event["event"]
+                value = self.computer.tick()
+                if value is not None or not self.computer.enabled:
+                    await ws.send_json(
+                        {
+                            "type": "computer",
+                            "envelope": sign(
+                                self.secret,
+                                "computer:" + self.id,
+                                {"device": device, "presence": value},
+                            ),
+                        }
+                    )
             await asyncio.sleep(10)
 
     async def handle(self, ws, data):
@@ -164,7 +281,22 @@ class Agent:
                                 "control:" + data["nonce"], 120
                             ):
                                 continue
-                            if control.get("type") in {"disable", "enable"}:
+                            if (
+                                control.get("type") == "companion"
+                                and control.get("device") in self.computer_devices
+                            ):
+                                await self.computer.control(control.get("consent", {}))
+                                if not self.computer.enabled:
+                                    for task in list(self.tasks):
+                                        task.cancel()
+                                    await self.store.put("pc_development_event", {})
+                                    async with self.store.db() as db:
+                                        await db.execute(
+                                            "DELETE FROM home_audit WHERE device=?",
+                                            (control["device"],),
+                                        )
+                                        await db.commit()
+                            elif control.get("type") in {"disable", "enable"}:
                                 device = control.get("device")
                                 if device is not None and device not in self.devices:
                                     continue
@@ -178,12 +310,13 @@ class Agent:
                                     for provider in self.adapters.values():
                                         await provider.close()
                         else:
-                            if len(self.tasks) >= 1:
+                            if len(self.tasks) >= 2:
                                 continue
                             task = asyncio.create_task(self.handle(ws, data))
                             self.tasks.add(task)
                             task.add_done_callback(self.tasks.discard)
                 finally:
+                    await self.computer.close()
                     health.cancel()
                     for task in list(self.tasks):
                         task.cancel()
@@ -224,14 +357,44 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--validate", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--verify-computer", action="store_true")
+    from home.companion import EVENTS
+
+    parser.add_argument("--event", choices=sorted(EVENTS))
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
 
     async def launch():
         agent = Agent(config)
-        if args.validate:
+        if args.validate or args.status:
             print("Home relay configuration valid; credentials redacted.")
+            print(
+                "Companion configured:",
+                bool(agent.computer.config.get("enabled")),
+                "No sensing or actions performed.",
+            )
             return
+        if args.event:
+            if not agent.computer.config.get("development_events", False):
+                raise SystemExit("Development events are disabled.")
+            await agent.store.init()
+            await agent.store.put(
+                "pc_development_event",
+                {"event": args.event, "expires": time.time() + 120},
+            )
+            print(
+                "Local completion event submitted (expires in 120 seconds). No output/files read."
+            )
+            return
+        if args.verify_computer:
+            await agent.computer.control({"enabled": True})
+            print(json.dumps(agent.computer.tick()))
+            await agent.computer.close()
+            return
+        print(
+            "Visible home/companion relay starting. Ctrl-C stops it. Screens require explicit opt-in; no hidden persistence."
+        )
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, agent.stopping.set)

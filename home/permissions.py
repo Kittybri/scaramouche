@@ -7,6 +7,17 @@ import math
 from .protocol import Rejected, validate, ID
 
 TYPES = {
+    "computer": {
+        "notify",
+        "lock",
+        "launch_app",
+        "open_url",
+        "screen",
+        "play",
+        "volume",
+        "stop",
+        "test",
+    },
     "hue": {"power", "brightness", "color", "color_temperature", "scene", "test"},
     "kasa": {"power", "test"},
     "cast": {"play", "pause", "stop", "volume", "test"},
@@ -30,6 +41,16 @@ def registry(devices):
             or not set(d.get("actions", [])) <= TYPES[d["type"]]
         ):
             raise Rejected("invalid_device_policy")
+        if d["type"] == "computer":
+            from .companion import CAPABILITIES
+
+            if (
+                type(d.get("owner_user_id")) is not int
+                or d["owner_user_id"] <= 0
+                or not set(d.get("capabilities", [])) <= CAPABILITIES
+                or d.get("mode", "DISABLED") == "AUTONOMOUS_SAFE"
+            ):
+                raise Rejected("invalid_computer_policy")
         if d["type"] == "kasa" and d.get("category", "NEVER_AUTOMATE") not in {
             "DECORATIVE",
             "LIGHTING",
@@ -106,6 +127,18 @@ def authorize(command, devices, enabled, now=None):
         or c["guild_id"] not in d.get("guilds", [])
     ):
         raise Rejected("actor_denied")
+    if d["type"] == "computer":
+        from .companion import ACTION_CAPABILITY
+
+        if (
+            c["user_id"] != d["owner_user_id"]
+            or c["guild_id"] != 0
+            or c["trigger"] not in {"manual", "proposal"}
+            or ACTION_CAPABILITY[c["action"]] not in d.get("capabilities", [])
+        ):
+            raise Rejected("computer_owner_or_capability_denied")
+        if c["action"] == "lock" and not c["confirmed"]:
+            raise Rejected("confirmation_required")
     hour = (
         datetime.fromtimestamp(now, timezone.utc)
         .astimezone(ZoneInfo(d.get("timezone", "UTC")))
@@ -113,7 +146,7 @@ def authorize(command, devices, enabled, now=None):
         if now is not None
         else datetime.now(ZoneInfo(d.get("timezone", "UTC"))).hour
     )
-    if not in_window(hour, d.get("hours", [8, 22])):
+    if c["action"] != "stop" and not in_window(hour, d.get("hours", [8, 22])):
         # Explicit requested alarms are the only per-device quiet-hours exception.
         if c["trigger"] != "alarm" or not d.get("allow_alarm_quiet", False):
             raise Rejected("outside_allowed_hours")
@@ -133,10 +166,14 @@ def authorize(command, devices, enabled, now=None):
     ):
         raise Rejected("unsafe_plug")
     if (
-        mode == "CONFIRM"
-        or d.get("confirmation_required", False)
-        or c["trigger"] == "proposal"
-    ) and not c["confirmed"]:
+        (
+            mode == "CONFIRM"
+            or d.get("confirmation_required", False)
+            or c["trigger"] == "proposal"
+        )
+        and not c["confirmed"]
+        and c["action"] != "stop"
+    ):
         raise Rejected("confirmation_required")
     p = c["parameters"]
     if c["action"] == "brightness":

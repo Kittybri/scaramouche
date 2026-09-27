@@ -1,0 +1,5 @@
+# Separate desktop install, Python 3.11/3.12 recommended. No GUI permission requested by pip.
+-r requirements-home-agent.txt
+Pillow>=11.3.0,<13
+pyobjc-framework-Cocoa==10.3.2; sys_platform == 'darwin'
+pyobjc-framework-Quartz==10.3.2; sys_platform == 'darwin'

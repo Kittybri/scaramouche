@@ -9,8 +9,9 @@ from .protocol import Rejected
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, audit_retention_seconds=30 * 86400):
         self.path = str(path)
+        self.audit_retention = max(60, min(30 * 86400, float(audit_retention_seconds)))
 
     @asynccontextmanager
     async def db(self):
@@ -93,7 +94,11 @@ class Store:
                     (c["device_id"], now - 3600),
                 )
             ).fetchall()
-            if rows and (now - rows[0][0] < cooldown or len(rows) >= limit):
+            if (
+                c["action"] != "stop"
+                and rows
+                and (now - rows[0][0] < cooldown or len(rows) >= limit)
+            ):
                 raise Rejected("cooldown")
             if c["action"] == "print_note":
                 count = await (
@@ -170,7 +175,8 @@ class Store:
     async def clean(self):
         async with self.db() as db:
             await db.execute(
-                "DELETE FROM home_audit WHERE ts<?", (time.time() - 30 * 86400,)
+                "DELETE FROM home_audit WHERE ts<?",
+                (time.time() - self.audit_retention,),
             )
             await db.execute(
                 "DELETE FROM home_events WHERE ts<?", (time.time() - 86400,)
