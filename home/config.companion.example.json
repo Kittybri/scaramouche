@@ -1,0 +1,49 @@
+{
+  "agent_id": "desktop",
+  "secret": "REPLACE_WITH_A_DISTINCT_RANDOM_SECRET_OF_AT_LEAST_32_CHARACTERS",
+  "url": "wss://home.example.com",
+  "enabled": false,
+  "database": "companion-agent.db",
+  "audit_retention_seconds": 604800,
+  "devices": {
+    "desktop": {
+      "type": "computer",
+      "agent": "desktop",
+      "owner_user_id": 123456789,
+      "enabled": false,
+      "mode": "MANUAL",
+      "users": [123456789],
+      "guilds": [0],
+      "bots": ["scaramouche", "wanderer"],
+      "timezone": "America/Los_Angeles",
+      "hours": [8, 22],
+      "actions": ["test", "notify", "screen", "play", "stop", "volume", "lock", "open_url", "launch_app"],
+      "capabilities": ["computer_presence", "screen_context", "desktop_notifications", "local_audio", "screen_lock", "app_launch", "url_launch", "development_events"],
+      "cooldown_seconds": 60,
+      "max_changes_hour": 6,
+      "max_volume": 0.35
+    }
+  },
+  "companion": {
+    "enabled": false,
+    "capabilities": ["computer_presence"],
+    "screen_allowed": false,
+    "audio_allowed": false,
+    "notifications_allowed": false,
+    "lock_allowed": false,
+    "development_events": false,
+    "idle_seconds": 300,
+    "away_seconds": 900,
+    "screen_interval_seconds": 1800,
+    "media_origin": "https://home.example.com",
+    "blocked_apps": ["com.apple.Safari", "com.google.Chrome", "org.mozilla.firefox", "com.apple.Terminal"],
+    "blocked_window_patterns": ["private", "bank", "password", "medical", "authentication"],
+    "redact_regions": [],
+    "lock_safe_apps": [],
+    "urls": {"python_docs": "https://docs.python.org/"},
+    "apps": {
+      "com.microsoft.VSCode": {"alias": "vscode", "label": "Visual Studio Code", "category": "coding", "screen_allowed": false, "launch_allowed": false, "path": "/Applications/Visual Studio Code.app"},
+      "org.blenderfoundation.blender": {"alias": "blender", "label": "Blender", "category": "creative", "screen_allowed": false, "launch_allowed": false, "path": "/Applications/Blender.app"}
+    }
+  }
+}
