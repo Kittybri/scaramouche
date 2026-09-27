@@ -184,6 +184,8 @@ def test_normal_generation_path_uses_bounded_persistent_context(monkeypatch, tmp
     config = AgentConfig()
     monkeypatch.setattr(runtime, "mem", memory)
     monkeypatch.setattr(runtime, "self_store", store)
+    from persistent_world import PersistentWorld
+    monkeypatch.setattr(runtime, "WORLD", PersistentWorld("scaramouche", memory, {}, self_store=store))
     monkeypatch.setattr(runtime, "heartbeat", HeartbeatCoordinator(store, EnvironmentMonitor(config=config), config))
     monkeypatch.setattr(runtime, "ai", FakeAI())
     run(runtime._record_self_perception(12, "I'm back", returned_after_absence=True))
