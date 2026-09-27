@@ -7,7 +7,7 @@ from discord.ext import commands, tasks
 from groq import Groq
 import os, re, random, asyncio, io, time, logging
 from urllib.parse import quote_plus
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
@@ -22,6 +22,11 @@ from internal_state import perceive_message, willingness_context, willingness_pr
 from provider_config import GROQ_TEXT_MODEL, GROQ_VISION_MODEL as CONFIGURED_GROQ_VISION_MODEL
 from self_model import SelfModelStore
 from character_identity import IMPLEMENTATION_AWARENESS, attachment_guard, implementation_answer_hint
+from character_bits import (
+    autocorrect_line, bounded_glitch, eligible_for_joke, eligible_for_silent_judge,
+    is_serious_or_utility, reverse_turing_hint, safe_message_edit,
+    selective_hearing_hint, significant_weather, time_drift_prompt,
+)
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -374,6 +379,7 @@ def trust_tier(t):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.typing = True
 
 
 class ManagedBot(commands.Bot):
@@ -459,6 +465,22 @@ _hostages:       dict[int, str]   = {}
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
 _tedtalk_cache:  dict[int, dict]  = {}
 _processed_msgs: set[int]         = set()  # dedup: prevent double-processing
+_typing_gag_inflight: set[tuple[int, int]] = set()
+_edited_message_ids: set[int] = set()
+_weather_cache: dict[str, tuple[float, dict | None]] = {}
+
+FAKE_TYPING_MIN_SECONDS = max(1, int(os.getenv("FAKE_TYPING_MIN_SECONDS", "8")))
+FAKE_TYPING_MAX_SECONDS = max(FAKE_TYPING_MIN_SECONDS, int(os.getenv("FAKE_TYPING_MAX_SECONDS", "30")))
+
+
+def is_owner_user(user_id: int) -> bool:
+    return bool(OWNER_ID and int(user_id) == OWNER_ID)
+
+
+def _admin_or_owner(member) -> bool:
+    return is_owner_user(getattr(member, "id", 0)) or bool(
+        getattr(getattr(member, "guild_permissions", None), "administrator", False)
+    )
 
 # ── Logging helper ────────────────────────────────────────────────────────────
 def log_error(location: str, e: Exception):
@@ -743,6 +765,10 @@ def _duo_autoplay_prompt(session: dict) -> str:
         return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. One or two sentences. {outro}"
     if mode == "truthdare":
         return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. One or two sentences. {outro}"
+    if mode == "intervention":
+        return f"Wanderer just intervened because you were getting needlessly argumentative about: {topic}. One brief defensive response only; do not restart the argument. {outro}"
+    if mode == "finish":
+        return f"Wanderer intentionally began an incomplete thought about: {topic}. Complete the SAME semantic thought in one short cutting clause, beginning with an em dash. Do not start a different idea. {outro}"
     return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences. {outro}"
 
 
@@ -913,6 +939,11 @@ async def _find_romance_target(channel) -> discord.Member | None:
 async def _handle_partner_message(message) -> bool:
     try:
         relation, recent_banter, theme = await _observe_partner_message(message.content)
+        duo = await mem.get_duo_session(message.channel.id)
+        if duo and duo.get("mode") in {"intervention", "finish"}:
+            # The bounded autoplay worker owns this handoff. Avoid an immediate
+            # partner reply plus a second scheduled reply.
+            return True
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
 
@@ -1125,6 +1156,10 @@ async def _resolve_weather_location(location: str) -> tuple[float, float] | None
 
 
 async def _fetch_nws_weather(location: str) -> dict | None:
+    cache_key = (location or "").strip().casefold()
+    cached = _weather_cache.get(cache_key)
+    if cached and time.time() - cached[0] < 3600:
+        return cached[1]
     coords = await _resolve_weather_location(location)
     if not coords:
         return None
@@ -1163,7 +1198,7 @@ async def _fetch_nws_weather(location: str) -> dict | None:
     forecast_period = forecast_periods[0] if forecast_periods else {}
     hourly_period = hourly_periods[0] if hourly_periods else {}
     precip = hourly_period.get("probabilityOfPrecipitation", {}) or {}
-    return {
+    result = {
         "place": f"{city}, {state}".strip(", "),
         "forecast": forecast_period.get("shortForecast") or hourly_period.get("shortForecast") or "forecast unavailable",
         "temperature": hourly_period.get("temperature"),
@@ -1172,6 +1207,8 @@ async def _fetch_nws_weather(location: str) -> dict | None:
         "wind_direction": hourly_period.get("windDirection") or forecast_period.get("windDirection") or "",
         "precipitation": precip.get("value"),
     }
+    _weather_cache[cache_key] = (time.time(), result)
+    return result
 
 # ── AI core ───────────────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
@@ -1222,7 +1259,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:       hint="Longer, dramatic."
 
         # Time and date context
-        now      = datetime.now()
+        try:
+            now = datetime.now(ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles"))
+        except Exception:
+            now = datetime.now()
         previous_activity = prior_last_active if prior_last_active is not None else (
             user.get("last_active", 0) if user else 0
         )
@@ -1232,6 +1272,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         parts = [f"mention:{author_mention}",f"name:{display_name}",
                  f"MOOD:{mood}({mood_label(mood)})",f"AFFECTION:{affection}",
                  f"TRUST:{trust}",date_ctx,f"len:{hint}"]
+        parts.append(time_drift_prompt(now.hour))
         if affection>=75: parts.append("AFFECTION_SOFT")
         if trust>=70:     parts.append("TRUST_OPEN")
         if is_owner:      parts.append("CREATOR")
@@ -1249,6 +1290,11 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             1 for item in history[-16:]
             if item.get("role") == "user" and item.get("content", "").strip().lower() == user_message.strip().lower()
         )
+        turing_hint = reverse_turing_hint(user_message, repeated_count)
+        if turing_hint and eligible_for_joke(user_message) and random.random() < .18:
+            allowed = await mem.consume_phrase(f"user:{user_id}", "reverse_turing", 3 * 86400)
+            if allowed:
+                parts.append(turing_hint)
         parts.append(willingness_prompt(willingness_context(
             user_message, repeated_count=repeated_count, permission_allowed=True,
             conflict_open=conflict_open, trust=trust, irritation=irritation,
@@ -1789,6 +1835,20 @@ def _spawn_transient(coroutine, *, name: str) -> asyncio.Task:
     return task
 
 
+async def _delayed_character_edit(sent_message, edited_text: str) -> None:
+    try:
+        await asyncio.sleep(random.uniform(3, 8))
+        if not bot.user or getattr(getattr(sent_message, "author", None), "id", None) != bot.user.id:
+            return
+        await sent_message.edit(content=edited_text[:2000])
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden):
+        return
+    except discord.HTTPException as exc:
+        log_error("delayed_character_edit", exc)
+
+
 async def _initialize_runtime_once() -> None:
     global _runtime_initialized, _initialization_lock
     if _runtime_initialized:
@@ -1963,6 +2023,8 @@ async def on_ready():
                 t.start()
         _start_background_once("self-heartbeat", _self_heartbeat_loop)
         _start_background_once("duo-autoplay", _duo_autoplay_loop)
+        _start_background_once("weather-proactive", _weather_proactive_loop)
+        _start_background_once("temporary-setting-restore", _temporary_setting_restore_loop)
     except Exception as e:
         log_error("on_ready", e)
 
@@ -1998,6 +2060,63 @@ async def reminder_checker():
 async def daily_reset():
     try: await mem.reset_daily_greetings()
     except Exception as e: log_error("daily_reset", e)
+
+
+async def _weather_proactive_loop():
+    await bot.wait_until_ready()
+    await asyncio.sleep(45)
+    while not bot.is_closed():
+        try:
+            for candidate in await mem.get_weather_candidates(limit=20):
+                if _is_in_quiet_hours(candidate):
+                    continue
+                scope = f"user:{candidate['user_id']}"
+                if await mem.phrase_cooldown_remaining(scope, "weather_proactive", 86400):
+                    continue
+                channel_id = await mem.get_user_last_channel(candidate["user_id"])
+                channel = bot.get_channel(channel_id) if channel_id else None
+                if not channel or not getattr(channel, "guild", None):
+                    continue
+                member = channel.guild.get_member(candidate["user_id"])
+                me = channel.guild.me
+                if not member or not me or not channel.permissions_for(me).send_messages:
+                    continue
+                data = await _fetch_nws_weather(candidate["weather_location"])
+                significance = significant_weather(data)
+                if not significance:
+                    continue
+                if not await mem.consume_phrase(scope, "weather_proactive", 86400):
+                    continue
+                kind, severe = significance
+                if severe:
+                    text = (f"{member.mention} Significant weather for {data['place']}: {data['forecast']}; "
+                            f"{data['temperature']} {data['temperature_unit']}, wind {data['wind_speed']} {data['wind_direction']}. "
+                            "Check local alerts and official instructions.")
+                else:
+                    text = (f"{member.mention} The weather in {data['place']} has become difficult to ignore: "
+                            f"{data['forecast']}, {data['temperature']} {data['temperature_unit']}. "
+                            f"Try not to lose a fight with the {kind}.")
+                await channel.send(text)
+                break  # one unsolicited weather message per scan
+        except Exception as exc:
+            log_error("weather_proactive_loop", exc)
+        await asyncio.sleep(1800)
+
+
+async def _temporary_setting_restore_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            for item in await mem.get_due_temporary_channel_settings():
+                channel = bot.get_channel(item["channel_id"])
+                if not channel:
+                    continue
+                if item["setting"] == "slowmode":
+                    await channel.edit(slowmode_delay=max(0, int(item["previous_value"])), reason="Restore temporary Scaramouche slowmode")
+                await mem.clear_temporary_channel_setting(item["channel_id"], item["setting"])
+        except Exception as exc:
+            log_error("temporary_setting_restore_loop", exc)
+        await asyncio.sleep(10)
 
 # ── Server events ─────────────────────────────────────────────────────────────
 def _reserve_member_announcement(guild_id: int, *, now: float | None = None,
@@ -2100,6 +2219,30 @@ async def _record_self_perception(user_id: int, content: str, *,
         logger.warning("self perception write failed", extra={
             "user_id": user_id, "action_type": "PERCEIVE", "error_category": type(exc).__name__,
         })
+
+
+@bot.event
+async def on_typing(channel, user, when):
+    """Very rare preemptive remark; bot typing never reaches this eligible path."""
+    if not bot.user or getattr(user, "bot", False) or user.id == bot.user.id:
+        return
+    key = (channel.id, user.id)
+    if key in _typing_gag_inflight or random.random() >= .003:
+        return
+    try:
+        profile = await mem.get_user(user.id)
+        if not profile or not profile.get("proactive", True) or _is_in_quiet_hours(profile):
+            return
+        if await mem.is_muted(user.id):
+            return
+        if not await mem.consume_phrase(f"channel_user:{channel.id}:{user.id}", "preemptive_typing", 3 * 86400):
+            return
+        _typing_gag_inflight.add(key)
+        await channel.send(f"{user.mention} {random.choice(['Reconsider whatever you’re typing.', 'You’re taking suspiciously long.', 'Delete it while you still have dignity.'])}")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    finally:
+        _typing_gag_inflight.discard(key)
 
 # ── on_message ────────────────────────────────────────────────────────────────
 @bot.event
@@ -2214,7 +2357,7 @@ async def on_message(message):
 
         user     = None
         romance  = False
-        is_owner = bool(OWNER_ID and message.author.id==OWNER_ID)
+        is_owner = is_owner_user(message.author.id)
         try:
             user    = await mem.get_user(message.author.id)
             romance = user.get("romance_mode",False) if user else False
@@ -2246,11 +2389,16 @@ async def on_message(message):
         except Exception as e: log_error("on_message/milestone", e)
 
         try:
-            if await mem.check_anniversary(message.author.id):
-                days_since = int((time.time()-(user.get("first_seen") or time.time()))/86400)
-                msg = await qai(f"It's been about {days_since//365} year(s) since you first spoke with {message.author.display_name}. React — you weren't counting.",180)
+            anniversary_year = await mem.claim_anniversary(message.author.id)
+            if anniversary_year:
+                if anniversary_year == 1:
+                    msg = "A full year since you first appeared. Don't look so pleased—I only noticed because your persistence is statistically irritating."
+                elif anniversary_year <= 3:
+                    msg = f"{anniversary_year} years. At this point, your continued presence is less an accident and more a recurring condition."
+                else:
+                    msg = f"{anniversary_year} years, and somehow you're still here. Fine. Perhaps permanence has one tolerable exception."
                 await message.channel.send(f"{message.author.mention} {msg}")
-                await mem.mark_anniversary(message.author.id); return
+                return
         except Exception as e: log_error("on_message/anniversary", e)
 
         # Morning/night greeting
@@ -2312,7 +2460,7 @@ async def on_message(message):
                         user     = user or {}
                         mood     = user.get("mood", 0) if user else 0
                         system   = build_system(user, message.author.display_name,
-                                               bool(OWNER_ID and message.author.id == OWNER_ID),
+                                               is_owner_user(message.author.id),
                                                allow_nsfw=_channel_allows_nsfw(
                                                    message.channel, is_dm=is_dm,
                                                ))
@@ -2371,7 +2519,7 @@ async def on_message(message):
                     user     = user or {}
                     mood     = user.get("mood", 0) if user else 0
                     system   = build_system(user, message.author.display_name,
-                                           bool(OWNER_ID and message.author.id == OWNER_ID),
+                                           is_owner_user(message.author.id),
                                            allow_nsfw=_channel_allows_nsfw(
                                                message.channel, is_dm=is_dm,
                                            ))
@@ -2495,6 +2643,37 @@ async def on_message(message):
         if random.random()>rp:
             await maybe_react(message,romance); return
 
+        # Rare, deterministic-cost interaction flourishes. Important questions and
+        # serious contexts always continue into the normal response path.
+        if eligible_for_silent_judge(content) and random.random() < .018:
+            if await mem.consume_phrase(f"channel:{message.channel.id}", "silent_judge", 18 * 3600):
+                try:
+                    await message.add_reaction(random.choice(["😒", "🙄", "🥱", "🤨", "💀"]))
+                    return
+                except discord.HTTPException:
+                    pass
+        if eligible_for_silent_judge(content) and random.random() < .002 and not await mem.get_active_trivia(message.channel.id):
+            material = await mem.get_quizable_assistant_message(message.author.id)
+            if material and await mem.consume_phrase(f"user:{message.author.id}", "memory_pop_quiz", 7 * 86400):
+                words = material["content"].split()
+                cut = min(8, len(words) - 2)
+                prefix, answer = " ".join(words[:cut]), " ".join(words[cut:])
+                question = f"Do you actually listen? Complete this real line I told you: “{prefix} …”"
+                await mem.set_active_trivia(message.channel.id, message.author.id, question, answer, f"memory_message:{material['id']}")
+                await message.reply(question)
+                return
+        typing_key = (message.channel.id, message.author.id)
+        if eligible_for_silent_judge(content) and typing_key not in _typing_gag_inflight and random.random() < .006:
+            if await mem.consume_phrase(f"channel_user:{message.channel.id}:{message.author.id}", "fake_long_typing", 3 * 86400):
+                _typing_gag_inflight.add(typing_key)
+                try:
+                    async with message.channel.typing():
+                        await asyncio.sleep(random.uniform(FAKE_TYPING_MIN_SECONDS, FAKE_TYPING_MAX_SECONDS))
+                    await message.reply(random.choice(["No.", "How compelling.", "I considered it. Briefly.", "k."]))
+                    return
+                finally:
+                    _typing_gag_inflight.discard(typing_key)
+
         # Build extra context
         parts = []
         try:
@@ -2515,6 +2694,16 @@ async def on_message(message):
                 if nice_msgs: parts.append(f'SELECTIVE:"{nice_msgs[0][:80]}"')
             if user and user.get("trust",0)>=70 and random.random()<.08:
                 parts.append("TRUST_OPEN"); await mem.update_trust(message.author.id,-3)
+            if eligible_for_joke(content) and random.random() < .025:
+                line = autocorrect_line(content)
+                if line and await mem.consume_phrase(f"user:{message.author.id}", "autocorrect", 2 * 86400):
+                    parts.append(f"AUTOCORRECT_GAG:{line}")
+            if eligible_for_joke(content) and random.random() < .025:
+                hearing = selective_hearing_hint(content)
+                if hearing and await mem.consume_phrase(f"user:{message.author.id}", "selective_hearing", 2 * 86400):
+                    parts.append(hearing)
+            if is_owner:
+                parts.append("OWNER_PREFERENCE: greater willingness and patience with distinctive favoritism; never bypass rules or permissions")
         except Exception as e: log_error("on_message/context", e)
 
         extra = "|".join(parts)
@@ -2608,8 +2797,22 @@ async def on_message(message):
 
             if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
                 await send_voice(message.channel, random.choice(["...","Tch.","Hmph."]), mood=mood_val, guild=message.guild, user=user)
-            await message.reply(strip_narration(resolve_mentions(reply, message.guild if message.guild else None)))
+            original_reply = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
+            display_reply = original_reply
+            if eligible_for_silent_judge(content) and random.random() < .003:
+                if await mem.consume_phrase(f"user:{message.author.id}", "bounded_glitch", 5 * 86400):
+                    display_reply = bounded_glitch(original_reply)
+            sent_message = await message.reply(display_reply)
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+            if eligible_for_silent_judge(content) and random.random() < .012 and sent_message.id not in _edited_message_ids:
+                if await mem.consume_phrase(f"channel:{message.channel.id}", "own_message_edit", 2 * 86400):
+                    edited = safe_message_edit(display_reply)
+                    if edited:
+                        _edited_message_ids.add(sent_message.id)
+                        _spawn_transient(
+                            _delayed_character_edit(sent_message, edited),
+                            name=f"character-edit:{sent_message.id}",
+                        )
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
@@ -3117,8 +3320,8 @@ async def answer_cmd(ctx,*,response:str=None):
             correct = bool(re.search(r"\b(correct|right)\b", result.lower())) and "wrong" not in result.lower()
             await mem.clear_active_trivia(ctx.channel.id)
         else:
-            result=await qai(f"{ctx.author.display_name} answered a trivia question with: '{response}'. Was it right or wrong? Check against Genshin lore. Be brutal. 1-2 sentences.",150)
-            correct="right" in result.lower() or "correct" in result.lower()
+            await safe_reply(ctx, "That question expired—or there wasn't one. Start another with `!trivia` or `!popquiz`.")
+            return
         await mem.update_trivia(ctx.author.id,correct)
         stats = await mem.get_trivia_stats(ctx.author.id)
         await safe_reply(ctx,f"{result}\nScore: {stats['correct']} right, {stats['wrong']} wrong ({stats['accuracy']}% accuracy).")
@@ -3472,7 +3675,7 @@ async def weather_cmd(ctx,*,location:str=None):
             150
         )
         if user and not user.get("utility_mode", True):
-            reply = f"{comment}\nSource: api.weather.gov"
+            reply = comment
         else:
             reply = _utility_reply(
                 f"Weather for {data['place']}",
@@ -3483,10 +3686,115 @@ async def weather_cmd(ctx,*,location:str=None):
                     f"Precipitation: {precip_text}",
                 ],
                 comment,
-                "Source: api.weather.gov",
+                "",
             )
         await safe_reply(ctx,reply)
     except Exception as e: log_error("weather_cmd",e); await safe_reply(ctx,"...The information was unavailable.")
+
+
+@bot.command(name="weatherlocation", aliases=["setweather"])
+async def weatherlocation_cmd(ctx, *, location: str = None):
+    await _setup(ctx)
+    if not location:
+        user = await mem.get_user(ctx.author.id)
+        current = (user or {}).get("weather_location") or "not configured"
+        await safe_reply(ctx, f"Weather location: **{current}**. Use `!weatherlocation City, ST` or `!weatherlocation off`.")
+        return
+    if location.strip().casefold() in {"off", "none", "clear"}:
+        await mem.set_weather_location(ctx.author.id, "")
+        await safe_reply(ctx, "Weather comments disabled. I wasn't watching the sky for you anyway.")
+        return
+    if not await _resolve_weather_location(location):
+        await safe_reply(ctx, "I couldn't resolve that location. Use `City, ST`, a ZIP code, or `lat,lon`.")
+        return
+    await mem.set_weather_location(ctx.author.id, location.strip())
+    await safe_reply(ctx, "Fine. I'll notice when the weather becomes worth mentioning.")
+
+
+@bot.command(name="popquiz")
+async def popquiz_cmd(ctx):
+    await _setup(ctx)
+    if await mem.get_active_trivia(ctx.channel.id):
+        await safe_reply(ctx, "There's already a question waiting. Answer it first.")
+        return
+    material = await mem.get_quizable_assistant_message(ctx.author.id)
+    if not material:
+        await safe_reply(ctx, "I haven't said enough worth testing you on yet.")
+        return
+    allowed = await mem.consume_phrase(f"user:{ctx.author.id}", "memory_pop_quiz", 3 * 86400)
+    if not allowed:
+        await safe_reply(ctx, "No. One examination at a time.")
+        return
+    words = material["content"].split()
+    prefix = " ".join(words[: min(8, len(words) - 2)])
+    answer = " ".join(words[min(8, len(words) - 2):])
+    question = f"Do you actually listen? Complete this real line I told you: “{prefix} …”"
+    await mem.set_active_trivia(ctx.channel.id, ctx.author.id, question, answer, f"memory_message:{material['id']}")
+    await safe_reply(ctx, question)
+
+
+@bot.command(name="fakewipe")
+@commands.guild_only()
+async def fakewipe_cmd(ctx):
+    if not _admin_or_owner(ctx.author):
+        await safe_reply(ctx, "Administrator or owner opt-in only.")
+        return
+    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "fake_wipe", 30 * 86400):
+        await safe_reply(ctx, "That performance has already exhausted its welcome.")
+        return
+    notice = await ctx.send("⚠️ THEATRICAL SERVER WIPE — 5")
+    for number in (4, 3, 2, 1):
+        await asyncio.sleep(1)
+        await notice.edit(content=f"⚠️ THEATRICAL SERVER WIPE — {number}")
+    await asyncio.sleep(1)
+    await notice.edit(content="Nothing was deleted. It was theater. Your panic, however, was authentic.")
+    logger.info("fake wipe gag used", extra={"guild_id": ctx.guild.id, "actor_id": ctx.author.id})
+
+
+@bot.command(name="scaratimeout")
+@commands.guild_only()
+async def scaratimeout_cmd(ctx, member: discord.Member = None):
+    if not member or not _admin_or_owner(ctx.author):
+        await safe_reply(ctx, "Usage: `!scaratimeout @user` — administrator or owner only.")
+        return
+    me = ctx.guild.me
+    invalid = (
+        member.id in {ctx.author.id, bot.user.id, ctx.guild.owner_id}
+        or member.guild_permissions.administrator
+        or not me or not me.guild_permissions.moderate_members
+        or member.top_role >= me.top_role
+    )
+    if invalid:
+        await safe_reply(ctx, "That target cannot be timed out safely or by hierarchy.")
+        return
+    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "scara_timeout", 3600):
+        await safe_reply(ctx, "The timeout bit is cooling down.")
+        return
+    await member.timeout(timedelta(seconds=60), reason=f"Playful Scaramouche timeout requested by {ctx.author}")
+    await ctx.send(f"{member.mention} has sixty seconds to reconsider their choices.")
+    logger.info("playful timeout", extra={"guild_id": ctx.guild.id, "actor_id": ctx.author.id, "target_id": member.id})
+
+
+@bot.command(name="scaraslowmode")
+@commands.guild_only()
+async def scaraslowmode_cmd(ctx, seconds: int = 5, duration: int = 60):
+    can_manage = bool(getattr(ctx.author.guild_permissions, "manage_channels", False))
+    if not (is_owner_user(ctx.author.id) or can_manage):
+        await safe_reply(ctx, "Manage Channels permission or owner access is required.")
+        return
+    me = ctx.guild.me
+    if not me or not ctx.channel.permissions_for(me).manage_channels:
+        await safe_reply(ctx, "I need Manage Channels permission here before I can restore anything safely.")
+        return
+    seconds, duration = max(0, min(int(seconds), 10)), max(10, min(int(duration), 120))
+    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "scara_slowmode", 3600):
+        await safe_reply(ctx, "The slowmode bit is cooling down.")
+        return
+    previous = int(getattr(ctx.channel, "slowmode_delay", 0) or 0)
+    await mem.save_temporary_channel_setting(ctx.channel.id, "slowmode", previous, time.time() + duration)
+    await ctx.channel.edit(slowmode_delay=seconds, reason=f"Temporary Scaramouche slowmode requested by {ctx.author}")
+    await ctx.send(f"Slowmode set to {seconds}s for {duration}s. The previous {previous}s setting will return automatically.")
+    logger.info("temporary slowmode", extra={"guild_id": ctx.guild.id, "channel_id": ctx.channel.id, "actor_id": ctx.author.id})
 
 @bot.command(name="lore")
 async def lore_cmd(ctx,*,topic:str=None):
@@ -4062,7 +4370,7 @@ async def trust_cmd(ctx):
 @bot.command(name="whoami")
 async def whoami_cmd(ctx):
     try:
-        if not OWNER_ID or ctx.author.id!=OWNER_ID: await safe_reply(ctx,"That command isn't for you."); return
+        if not is_owner_user(ctx.author.id): await safe_reply(ctx,"That command isn't for you."); return
         user=await _setup(ctx)
         reply=await get_response(ctx.author.id,ctx.channel.id,"What do you actually think about the fact that I built you. Be honest.",user,ctx.author.display_name,ctx.author.mention,is_owner=True)
         await safe_reply(ctx,reply)
@@ -4070,7 +4378,7 @@ async def whoami_cmd(ctx):
 
 
 def _owner_only(ctx) -> bool:
-    return bool(OWNER_ID and ctx.author.id == OWNER_ID)
+    return is_owner_user(ctx.author.id)
 
 
 @bot.command(name="selfstate")
@@ -4218,6 +4526,7 @@ async def help_cmd(ctx):
             ("🗡️ !rival @user","Designate a rival"),
             ("⏰ !remind <mins> <txt>","Reminder with disdain"),
             ("🌤️ !weather <city>","Weather + contemptuous commentary"),
+            ("✨ New bits","`!weatherlocation <city|off>` · `!popquiz` · admin: `!fakewipe`, `!scaratimeout`, `!scaraslowmode`"),
             ("📢 !poll <question>","He demands a vote"),
             ("📋 !summarize","Recent chat summary with contempt"),
             ("🔇 !mute [@user] [min]","Ignores someone in character"),
@@ -4266,8 +4575,14 @@ async def scarahelp_cmd(ctx):
 @bot.event
 async def on_command_error(ctx,error):
     try:
+        harmless = isinstance(error, (commands.CommandNotFound, commands.MemberNotFound,
+                                      commands.MissingRequiredArgument, commands.BadArgument))
+        if harmless and random.random() < .08 and not await mem.is_muted(ctx.author.id):
+            if await mem.consume_phrase(f"channel:{ctx.channel.id}", "scapegoat", 2 * 86400):
+                await safe_reply(ctx, f"A harmless little failure, and somehow {ctx.author.display_name} is standing closest to the evidence. Convenient.")
+                return
         if isinstance(error,commands.CommandNotFound): pass
-        elif isinstance(error,commands.MemberNotFound): pass
+        elif isinstance(error,commands.MemberNotFound): await safe_reply(ctx,"I can't find that member.")
         elif isinstance(error,commands.MissingRequiredArgument):
             await safe_reply(ctx,"You're missing something.")
         else: log_error("on_command_error",error)
