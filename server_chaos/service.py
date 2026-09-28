@@ -719,9 +719,15 @@ class ServerChaos:
     async def forget(self, uid, disable=True):
         await self.store.init()
         if disable:
+            async with self.store.connect() as db:
+                await db.execute(
+                    "DELETE FROM persistent_world_events WHERE kind='chaos_trollprefs' AND json_extract(payload,'$.user_id')=?",
+                    (uid,),
+                )
+                await db.commit()
             for key in PREFS:
                 await self.store.preference(uid, key, False)
-        for kind in ("wager", "court", "gossip", "ping"):
+        for kind in ("wager", "court", "gossip", "ping", "trollsession"):
             for _, r in await self.store.recent("chaos_" + kind, 100):
                 if uid not in r.get("participants", []):
                     continue
@@ -736,7 +742,7 @@ class ServerChaos:
 
     async def restore_all(self, gid):
         await self.restoration.restore(gid, force=True)
-        for kind in ("wager", "court", "gossip", "ping"):
+        for kind in ("wager", "court", "gossip", "ping", "trollsession"):
             for _, r in await self.store.recent("chaos_" + kind, 100):
                 if r["guild_id"] != gid:
                     continue
@@ -809,7 +815,7 @@ class ServerChaos:
                         await self.rivalry(
                             "Wanderer exposed Scaramouche's recorded prank; no claim about anyone's perception."
                         )
-        for kind in ("wager", "court", "gossip"):
+        for kind in ("wager", "court", "gossip", "trollsession"):
             for _, r in await self.store.recent("chaos_" + kind, 100, oldest=True):
                 if r["state"] not in ACTIVE:
                     continue
