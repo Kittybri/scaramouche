@@ -974,7 +974,7 @@ async def _play_soundboard(ctx, sound_name: str) -> tuple[bool, str]:
         while voice.is_playing() and time.monotonic() < deadline:
             await asyncio.sleep(0.1)
         if voice.is_playing():
-            voice.stop()
+            getattr(voice, "stop_playing", voice.stop)()
         return True, ""
     except (discord.ClientException, discord.OpusNotLoaded, asyncio.TimeoutError, OSError) as exc:
         log_error("soundboard", exc)
@@ -1317,7 +1317,7 @@ async def _fetch_nws_weather(location: str) -> dict | None:
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False,
-                       prior_last_active: float | None = None):
+                       prior_last_active: float | None = None, defer_delivery=False):
     recent_replies: list[str] = []
     search_sources = ""
     try:
@@ -1688,6 +1688,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     )
     if not reply:
         reply = fallback_reply(BOT_NAME, recent_replies)
+    if not defer_delivery:
+        await _record_delivered_reply(user_id, reply)
+    if is_dm and HOME.client.enabled:
+        try: await HOME.roommate(user_id, reply, user or {})
+        except Exception: pass
+    return reply
+
+
+async def _record_delivered_reply(user_id, reply):
     remember_output(BOT_NAME, reply)
     if re.search(r"\b(i care|i noticed|i remembered|stay|don't leave|i was wrong|not fair of me)\b", reply, re.I):
         try:
@@ -1698,12 +1707,6 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             )
         except Exception as exc:
             logger.warning("self behavior event failed", extra={"user_id": user_id, "error_category": type(exc).__name__})
-    if is_dm and HOME.client.enabled:
-        try: await HOME.roommate(user_id, reply, user or {})
-        except Exception: pass
-    return reply
-
-
 def _qai_blocking(prompt, max_tokens=200):
     try:
         resp = ai.call_with_retry(
@@ -3198,6 +3201,8 @@ def _format_memory_snapshot(user: dict | None, topics: list[dict], memories: lis
 @bot.command(name="voice",aliases=["speak","say"])
 async def voice_cmd(ctx,*,msg:str=None):
     try:
+        if await VOICE_CONVERSATION.command(ctx, msg):
+            return
         normalized = (msg or "").strip().lower()
         user=await _setup(ctx); mood_val=user.get("mood",0) if user else 0
         if normalized in {"on", "off", "status"}:
@@ -5057,6 +5062,10 @@ async def _pc_deadlines():
     return await due_soon(GoogleTasksService(account), GoogleCalendarService(account))
 PC = CompanionBot(HOME, INTEGRATION_CONFIG.section("companion"), _pc_vision, _pc_deadlines)
 PC.install()
+
+from voice_conversation.integration import VoiceConversation
+VOICE_CONVERSATION = VoiceConversation(bot, mem, BOT_NAME, get_response, get_audio_with_mood, GROQ_API_KEY, OWNER_ID, _record_delivered_reply)
+VOICE_CONVERSATION.install()
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
