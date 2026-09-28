@@ -691,7 +691,7 @@ async def _partner_prompt_context(user_message: str) -> str:
 
 async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
     session = await mem.get_duo_session(channel_id)
-    if not session:
+    if not session or session.get("mode", "").startswith("vc:"):
         return ""
     mode = session.get("mode", "both")
     topic = session.get("topic", "")
@@ -1891,6 +1891,7 @@ class ResetView(discord.ui.View):
             await FACE_PROFILES.init()
             await FACE_PROFILES.delete(self.uid)
             await self_store.delete_user_scoped_data(self.uid)
+            await VOICE_CONVERSATION.features.forget_user(self.uid)
             await PC.require_forget(self.uid)
             button.disabled=True; button.label="✓ Memory Wiped"
             await interaction.response.edit_message(content=random.choice(["...Gone. Good.","Erased.","Wiped."]),view=self)
@@ -3113,6 +3114,8 @@ async def _duo_autoplay_loop():
     while not bot.is_closed():
         try:
             for session in await mem.get_due_duo_sessions(BOT_NAME):
+                if session.get("mode", "").startswith("vc:"):
+                    continue  # Structured VC turns belong to the existing voice controller.
                 try:
                     channel = bot.get_channel(session["channel_id"])
                     if not channel:
@@ -4194,6 +4197,7 @@ async def forget_cmd(ctx,*,topic:str=None):
             return
         await _setup(ctx)
         result=await mem.forget_memory_matches(ctx.author.id, topic)
+        await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
         result["world"] = await WORLD.forget(ctx.author.id, topic)
         result.update(await self_store.forget_user_matches(ctx.author.id, topic))
@@ -5000,7 +5004,7 @@ async def help_cmd(ctx):
         ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(
             name="Awareness & games",
-            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · owner: `!integrations`, `!githubissue`",
+            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · opt-in VC: `!vcparty help`, `!vcgame help` · owner: `!integrations`, `!githubissue`",
             inline=False,
         )
         e3.add_field(name="Hidden Systems",
@@ -5066,6 +5070,9 @@ PC.install()
 from voice_conversation.integration import VoiceConversation
 VOICE_CONVERSATION = VoiceConversation(bot, mem, BOT_NAME, get_response, get_audio_with_mood, GROQ_API_KEY, OWNER_ID, _record_delivered_reply)
 VOICE_CONVERSATION.install()
+from voice_conversation.features import AdvancedVC
+VOICE_CONVERSATION.features = AdvancedVC(VOICE_CONVERSATION, INTEGRATION_CONFIG.section("advanced_vc"), _soundboard_assets, SOUNDBOARD_GUILD_IDS)
+VOICE_CONVERSATION.features.install()
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
