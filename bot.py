@@ -691,7 +691,7 @@ async def _partner_prompt_context(user_message: str) -> str:
 
 async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
     session = await mem.get_duo_session(channel_id)
-    if not session or session.get("mode", "").startswith("vc:"):
+    if not session or session.get("mode", "").startswith(("vc:", "server:")):
         return ""
     mode = session.get("mode", "both")
     topic = session.get("topic", "")
@@ -1040,6 +1040,8 @@ async def _find_romance_target(channel) -> discord.Member | None:
 
 
 async def _handle_partner_message(message) -> bool:
+    if message.content.startswith("[Server game]"):
+        return True  # Structured server events never trigger free-running bot replies.
     try:
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         duo = await mem.get_duo_session(message.channel.id)
@@ -1891,6 +1893,7 @@ class ResetView(discord.ui.View):
             await FACE_PROFILES.init()
             await FACE_PROFILES.delete(self.uid)
             await self_store.delete_user_scoped_data(self.uid)
+            await CHAOS.forget(self.uid)
             await VOICE_CONVERSATION.features.forget_user(self.uid)
             await PC.require_forget(self.uid)
             button.disabled=True; button.label="✓ Memory Wiped"
@@ -2242,9 +2245,11 @@ async def _temporary_setting_restore_loop():
                 channel = bot.get_channel(item["channel_id"])
                 if not channel:
                     continue
+                # Pre-chaos receipts did not record the applied value, so cannot
+                # safely distinguish a newer administrator edit. Retain for
+                # explicit manual reconciliation; new writes use CHAOS below.
                 if item["setting"] == "slowmode":
-                    await channel.edit(slowmode_delay=max(0, int(item["previous_value"])), reason="Restore temporary Scaramouche slowmode")
-                await mem.clear_temporary_channel_setting(item["channel_id"], item["setting"])
+                    continue
         except Exception as exc:
             log_error("temporary_setting_restore_loop", exc)
         await asyncio.sleep(10)
@@ -2975,10 +2980,7 @@ async def on_message(message):
                 if nice_msgs: parts.append(f'SELECTIVE:"{nice_msgs[0][:80]}"')
             if user and user.get("trust",0)>=70 and random.random()<.08:
                 parts.append("TRUST_OPEN"); await mem.update_trust(message.author.id,-3)
-            if eligible_for_joke(content) and random.random() < .025:
-                line = autocorrect_line(content)
-                if line and await mem.consume_phrase(f"user:{message.author.id}", "autocorrect", 2 * 86400):
-                    parts.append(f"AUTOCORRECT_GAG:{line}")
+            # Autocorrect parody now belongs to CHAOS's explicit opt-in router.
             if eligible_for_joke(content) and random.random() < .025:
                 hearing = selective_hearing_hint(content)
                 if hearing and await mem.consume_phrase(f"user:{message.author.id}", "selective_hearing", 2 * 86400):
@@ -3114,7 +3116,7 @@ async def _duo_autoplay_loop():
     while not bot.is_closed():
         try:
             for session in await mem.get_due_duo_sessions(BOT_NAME):
-                if session.get("mode", "").startswith("vc:"):
+                if session.get("mode", "").startswith(("vc:", "server:")):
                     continue  # Structured VC turns belong to the existing voice controller.
                 try:
                     channel = bot.get_channel(session["channel_id"])
@@ -4091,8 +4093,14 @@ async def scaraslowmode_cmd(ctx, seconds: int = 5, duration: int = 60):
         await safe_reply(ctx, "The slowmode bit is cooling down.")
         return
     previous = int(getattr(ctx.channel, "slowmode_delay", 0) or 0)
-    await mem.save_temporary_channel_setting(ctx.channel.id, "slowmode", previous, time.time() + duration)
-    await ctx.channel.edit(slowmode_delay=seconds, reason=f"Temporary Scaramouche slowmode requested by {ctx.author}")
+    await CHAOS.store.init()
+    if not (await CHAOS.store.budget(ctx.guild.id,cost=2))[0]:
+        await safe_reply(ctx,"The shared chaos budget is cooling down.")
+        return
+    result = await CHAOS.restoration.apply(ctx.guild,"channel",ctx.channel.id,"slowmode_delay",seconds,ctx.author.id,duration,feature="legacy_slowmode",explicit_slowmode=True)
+    if result and result["state"] != "applied":
+        await safe_reply(ctx,"Discord did not confirm that edit; its restoration receipt is retained.")
+        return
     await ctx.send(f"Slowmode set to {seconds}s for {duration}s. The previous {previous}s setting will return automatically.")
     logger.info("temporary slowmode", extra={"guild_id": ctx.guild.id, "channel_id": ctx.channel.id, "actor_id": ctx.author.id})
 
@@ -4197,6 +4205,7 @@ async def forget_cmd(ctx,*,topic:str=None):
             return
         await _setup(ctx)
         result=await mem.forget_memory_matches(ctx.author.id, topic)
+        await CHAOS.forget(ctx.author.id)
         await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
         result["world"] = await WORLD.forget(ctx.author.id, topic)
@@ -5004,7 +5013,7 @@ async def help_cmd(ctx):
         ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(
             name="Awareness & games",
-            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · opt-in VC: `!vcparty help`, `!vcgame help` · owner: `!integrations`, `!githubissue`",
+            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · opt-in VC: `!vcparty help`, `!vcgame help` · server games: `!chaos help` · owner: `!integrations`, `!githubissue`",
             inline=False,
         )
         e3.add_field(name="Hidden Systems",
@@ -5073,6 +5082,10 @@ VOICE_CONVERSATION.install()
 from voice_conversation.features import AdvancedVC
 VOICE_CONVERSATION.features = AdvancedVC(VOICE_CONVERSATION, INTEGRATION_CONFIG.section("advanced_vc"), _soundboard_assets, SOUNDBOARD_GUILD_IDS)
 VOICE_CONVERSATION.features.install()
+
+from server_chaos.service import ServerChaos
+CHAOS = ServerChaos(bot, mem, BOT_NAME, INTEGRATION_CONFIG.section("server_chaos"), WORLD, VOICE_CONVERSATION, OWNER_ID, autocorrect=autocorrect_line)
+CHAOS.install()
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
