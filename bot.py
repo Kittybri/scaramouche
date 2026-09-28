@@ -24,7 +24,7 @@ from self_model import SelfModelStore
 from character_identity import IMPLEMENTATION_AWARENESS, attachment_guard, implementation_answer_hint
 from character_bits import (
     autocorrect_line, bounded_glitch, eligible_for_joke, eligible_for_silent_judge,
-    is_serious_or_utility, reverse_turing_hint, safe_message_edit,
+    is_serious_or_utility, reverse_turing_hint,
     selective_hearing_hint, significant_weather, time_drift_prompt,
 )
 from awareness_features import (
@@ -479,7 +479,6 @@ _tedtalk_active: set[int]         = set()  # message IDs currently being process
 _tedtalk_cache:  dict[int, dict]  = {}
 _processed_msgs: set[int]         = set()  # dedup: prevent double-processing
 _typing_gag_inflight: set[tuple[int, int]] = set()
-_edited_message_ids: set[int] = set()
 _weather_cache: dict[str, tuple[float, dict | None]] = {}
 _presence_activity: dict[tuple[int, int], dict] = {}
 _voice_state_cache: dict[int, object] = {}
@@ -1967,20 +1966,6 @@ def _spawn_transient(coroutine, *, name: str) -> asyncio.Task:
     return task
 
 
-async def _delayed_character_edit(sent_message, edited_text: str) -> None:
-    try:
-        await asyncio.sleep(random.uniform(3, 8))
-        if not bot.user or getattr(getattr(sent_message, "author", None), "id", None) != bot.user.id:
-            return
-        await sent_message.edit(content=edited_text[:2000])
-    except asyncio.CancelledError:
-        raise
-    except (discord.NotFound, discord.Forbidden):
-        return
-    except discord.HTTPException as exc:
-        log_error("delayed_character_edit", exc)
-
-
 async def _initialize_runtime_once() -> None:
     global _runtime_initialized, _initialization_lock
     if _runtime_initialized:
@@ -2421,23 +2406,7 @@ async def on_typing(channel, user, when):
     """Very rare preemptive remark; bot typing never reaches this eligible path."""
     if not bot.user or getattr(user, "bot", False) or user.id == bot.user.id:
         return
-    key = (channel.id, user.id)
-    if key in _typing_gag_inflight or random.random() >= .003:
-        return
-    try:
-        profile = await mem.get_user(user.id)
-        if not profile or not profile.get("proactive", True) or _is_in_quiet_hours(profile):
-            return
-        if await mem.is_muted(user.id):
-            return
-        if not await mem.consume_phrase(f"channel_user:{channel.id}:{user.id}", "preemptive_typing", 3 * 86400):
-            return
-        _typing_gag_inflight.add(key)
-        await channel.send(f"{user.mention} {random.choice(['Reconsider whatever you’re typing.', 'You’re taking suspiciously long.', 'Delete it while you still have dignity.'])}")
-    except (discord.Forbidden, discord.HTTPException):
-        pass
-    finally:
-        _typing_gag_inflight.discard(key)
+    await troll.typing(channel, user)
 
 
 async def _record_tattletale_if_eligible(message, content: str) -> None:
@@ -2930,13 +2899,8 @@ async def on_message(message):
 
         # Rare, deterministic-cost interaction flourishes. Important questions and
         # serious contexts always continue into the normal response path.
-        if eligible_for_silent_judge(content) and random.random() < .018:
-            if await mem.consume_phrase(f"channel:{message.channel.id}", "silent_judge", 18 * 3600):
-                try:
-                    await message.add_reaction(random.choice(["😒", "🙄", "🥱", "🤨", "💀"]))
-                    return
-                except discord.HTTPException:
-                    pass
+        if await troll.before_reply(message):
+            return
         if eligible_for_silent_judge(content) and random.random() < .002 and not await mem.get_active_trivia(message.channel.id):
             material = await mem.get_quizable_assistant_message(message.author.id)
             if material and await mem.consume_phrase(f"user:{message.author.id}", "memory_pop_quiz", 7 * 86400):
@@ -3094,15 +3058,7 @@ async def on_message(message):
                     display_reply = bounded_glitch(original_reply)
             sent_message = await message.reply(display_reply)
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-            if eligible_for_silent_judge(content) and random.random() < .012 and sent_message.id not in _edited_message_ids:
-                if await mem.consume_phrase(f"channel:{message.channel.id}", "own_message_edit", 2 * 86400):
-                    edited = safe_message_edit(display_reply)
-                    if edited:
-                        _edited_message_ids.add(sent_message.id)
-                        _spawn_transient(
-                            _delayed_character_edit(sent_message, edited),
-                            name=f"character-edit:{sent_message.id}",
-                        )
+            await troll.after_reply(message, sent_message)
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
@@ -4038,19 +3994,7 @@ async def popquiz_cmd(ctx):
 @bot.command(name="fakewipe")
 @commands.guild_only()
 async def fakewipe_cmd(ctx):
-    if not _admin_or_owner(ctx.author):
-        await safe_reply(ctx, "Administrator or owner opt-in only.")
-        return
-    if not await mem.consume_phrase(f"guild:{ctx.guild.id}", "fake_wipe", 30 * 86400):
-        await safe_reply(ctx, "That performance has already exhausted its welcome.")
-        return
-    notice = await ctx.send("⚠️ THEATRICAL SERVER WIPE — 5")
-    for number in (4, 3, 2, 1):
-        await asyncio.sleep(1)
-        await notice.edit(content=f"⚠️ THEATRICAL SERVER WIPE — {number}")
-    await asyncio.sleep(1)
-    await notice.edit(content="Nothing was deleted. It was theater. Your panic, however, was authentic.")
-    logger.info("fake wipe gag used", extra={"guild_id": ctx.guild.id, "actor_id": ctx.author.id})
+    await troll.invoke(ctx, "serverwipe")  # One opt-in, owner-only countdown path.
 
 
 @bot.command(name="scaratimeout")
@@ -5013,7 +4957,7 @@ async def help_cmd(ctx):
         ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(
             name="Awareness & games",
-            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · opt-in VC: `!vcparty help`, `!vcgame help` · server games: `!chaos help` · owner: `!integrations`, `!githubissue`",
+            value="`!report @user [reason]` · `!trade @user [@other]` · `!jointinterview @user` · `!stopinterview` · `!sound <reaction>` · opt-in VC: `!vcparty help`, `!vcgame help` · server games: `!chaos help`, `!trollprefs help` · owner: `!integrations`, `!githubissue`",
             inline=False,
         )
         e3.add_field(name="Hidden Systems",
@@ -5086,6 +5030,10 @@ VOICE_CONVERSATION.features.install()
 from server_chaos.service import ServerChaos
 CHAOS = ServerChaos(bot, mem, BOT_NAME, INTEGRATION_CONFIG.section("server_chaos"), WORLD, VOICE_CONVERSATION, OWNER_ID, autocorrect=autocorrect_line)
 CHAOS.install()
+
+from trolling_features import TrollingEngine
+troll = TrollingEngine(CHAOS)
+troll.install()
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
