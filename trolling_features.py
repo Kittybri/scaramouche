@@ -13,6 +13,7 @@ from discord.ext import commands
 from server_chaos.errors import ChaosError
 from server_chaos.service import harmless, public_channel, quiet
 from interaction_policy import optional_allowed, gags_paused
+from message_pipeline import log_operation_error
 
 log = logging.getLogger("scaramouche.trolling")
 
@@ -150,10 +151,16 @@ class TrollingEngine:
                 await self.chaos.send(
                     channel, self.line(channel.guild.id, "typing", self.TYPING_LINES)
                 )
-        except (ChaosError, discord.HTTPException):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except ChaosError:
+            return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            log_operation_error(
+                log, subsystem="trolling", operation="typing_gag", error=exc,
+            )
         except Exception as exc:
-            log.warning("typing gag skipped: %s", type(exc).__name__)
+            log.exception("typing gag failed unexpectedly: %s", type(exc).__name__)
 
     async def before_reply(self, message):
         """Called after normal routing/security/utility handling, not above it."""
@@ -190,10 +197,17 @@ class TrollingEngine:
                         self.line(message.guild.id, "judge", ("🥱", "🙄", "😒", "🤨"))
                     )
                     return True
-        except (ChaosError, discord.HTTPException):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except ChaosError:
+            return False
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            log_operation_error(
+                log, subsystem="trolling", operation="judge_reaction",
+                error=exc, message=message,
+            )
         except Exception as exc:
-            log.warning("reply gag skipped: %s", type(exc).__name__)
+            log.exception("reply gag failed unexpectedly: %s", type(exc).__name__)
         return False
 
     def spawn(self, coroutine):
@@ -233,10 +247,17 @@ class TrollingEngine:
                 self.edit_ids.add(sent.id)
                 revision = await self.revision(source.guild.id, source.author.id)
                 self.spawn(self.edit_later(source, sent, revision))
-        except (ChaosError, discord.HTTPException):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except ChaosError:
+            return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            log_operation_error(
+                log, subsystem="trolling", operation="schedule_reply_edit",
+                error=exc, message=source,
+            )
         except Exception as exc:
-            log.warning("edit gag skipped: %s", type(exc).__name__)
+            log.exception("edit scheduling failed unexpectedly: %s", type(exc).__name__)
 
     async def edit_later(self, source, sent, revision=None):
         original = sent.content
@@ -266,10 +287,15 @@ class TrollingEngine:
                 content=original + "\n\n[Visible character gag] " + suffix,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except discord.HTTPException:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            log_operation_error(
+                log, subsystem="trolling", operation="delayed_reply_edit",
+                error=exc, message=source,
+            )
         except Exception as exc:
-            log.warning("delayed gag skipped: %s", type(exc).__name__)
+            log.exception("delayed gag failed unexpectedly: %s", type(exc).__name__)
         finally:
             self.edit_ids.discard(sent.id)
 

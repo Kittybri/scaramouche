@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import discord
 from discord.ext import commands, tasks
-from groq import Groq
+from groq import Groq, GroqError
 import os, re, random, asyncio, io, time, logging, json, sqlite3
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta
@@ -31,6 +31,9 @@ from interaction_policy import (
     CURRENT, Outcome, classify as classify_interaction, current_or_classify,
     authoritative_prompt, optional_allowed, optional_command_blocked, credential_disclosure,
     pause_gags,
+)
+from message_pipeline import (
+    PreparedMessage, command_context_matches, log_operation_error,
 )
 from awareness_features import (
     activity_snapshot, choose_duo_advice_mode,
@@ -177,7 +180,7 @@ def _get_ffmpeg_path():
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
+    except (ImportError, OSError):
         return "ffmpeg"  # Fall back to system PATH
 
 def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tuple[bytes, str]]:
@@ -204,8 +207,8 @@ def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tu
                     t = line.split("Duration:")[1].split(",")[0].strip()
                     parts = t.split(":")
                     duration = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-                except Exception:
-                    pass
+                except (IndexError, ValueError):
+                    logger.debug("video duration metadata could not be parsed")
                 break
         timestamps = [duration * i / (num_frames + 1) for i in range(1, num_frames + 1)]
 
@@ -220,8 +223,11 @@ def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tu
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 100:
                     with open(out_path, "rb") as f:
                         frames.append((f.read(), "image/jpeg"))
-    except Exception as e:
-        logger.error("video frame extraction failed", extra={"error_category": type(e).__name__})
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            "video frame extraction unavailable",
+            extra={"error_category": type(exc).__name__},
+        )
     finally:
         if video_path and os.path.exists(video_path):
             try:
@@ -1832,7 +1838,7 @@ async def send_voice(
         log_error("send_voice", e); return False
 
 # ── Misc helpers ──────────────────────────────────────────────────────────────
-async def maybe_react(message, romance=False):
+async def maybe_react(message, romance=False, interaction=None):
     try:
         if random.random() > .18: return
         pool = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
@@ -1855,8 +1861,12 @@ async def maybe_react(message, romance=False):
         if chosen not in pool:
             chosen = random.choice(pool)
 
-        try: await message.add_reaction(chosen)
-        except Exception: pass
+        try:
+            await message.add_reaction(chosen)
+        except asyncio.CancelledError:
+            raise
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            _pipeline_error("reaction", exc, message, interaction, subsystem="delivery")
 
         # 15% chance to add a second emoji if romance
         if romance and random.random() < .15:
@@ -1868,16 +1878,31 @@ async def maybe_react(message, romance=False):
             )
             second = second.strip()
             if second in pool and second != chosen:
-                try: await asyncio.sleep(.3); await message.add_reaction(second)
-                except Exception: pass
+                try:
+                    await asyncio.sleep(.3)
+                    await message.add_reaction(second)
+                except asyncio.CancelledError:
+                    raise
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    _pipeline_error(
+                        "second_reaction", exc, message, interaction, subsystem="delivery",
+                    )
 
-    except Exception as e:
-        log_error("maybe_react", e)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("reaction_generation", exc, message, interaction, subsystem="delivery")
         # Fallback to random if AI call fails
         try:
             pool = SCARA_EMOJIS + (ROMANCE_EMOJIS if romance else [])
             await message.add_reaction(random.choice(pool))
-        except Exception: pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as fallback_exc:
+            _pipeline_error(
+                "fallback_reaction", fallback_exc, message, interaction,
+                subsystem="delivery",
+            )
 
 def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
     if is_dm: return 1.0  # Always respond in DMs
@@ -1889,9 +1914,9 @@ def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
     return .06
 
 async def typing_delay(text):
-    try:
-        await asyncio.sleep(max(.3,min(.4+len(text.split())*.06,3.5)+random.uniform(-.3,.5)))
-    except Exception: pass
+    await asyncio.sleep(
+        max(.3, min(.4 + len(text.split()) * .06, 3.5) + random.uniform(-.3, .5))
+    )
 
 async def _setup(ctx):
     try:
@@ -2596,7 +2621,20 @@ def _cached_reference(message):
 
 @bot.event
 async def on_message(message):
-    """Single dispatcher: sibling listeners may not independently answer."""
+    """Thin safety boundary around the authoritative dispatcher."""
+    try:
+        await _dispatch_message(message)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log_operation_error(
+            logger, subsystem="message_pipeline", operation="dispatch",
+            error=exc, message=message,
+        )
+
+
+async def _dispatch_message(message):
+    """Classify once, assign one owner, then enter the staged runtime pipeline."""
     if not bot.user or message.author.id == bot.user.id:
         return
     if message.author.bot:
@@ -2608,11 +2646,13 @@ async def on_message(message):
     _processed_msgs.add(message.id)
     if len(_processed_msgs) > 500:
         _processed_msgs.discard(min(_processed_msgs))
+    command_ctx = await bot.get_context(message)
+    is_command = command_context_matches(command_ctx)
     reference_target = _cached_reference(message)
     interaction = classify_interaction(message.content, user_id=message.author.id,
         channel_id=message.channel.id if message.guild else message.author.id,
         guild_id=message.guild.id if message.guild else None,
-        command=bool(re.match(r'^![a-zA-Z]', message.content.strip())),
+        command=is_command,
         direct=(
             not message.guild
             or bot.user in message.mentions
@@ -2634,15 +2674,14 @@ async def on_message(message):
             await message.reply("Keep credentials out of chat. Remove that message and rotate any real credential you posted; I will not send it to the model.", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             return
         if interaction.command:
-            ctx = await bot.get_context(message)
-            name = ctx.command.name if ctx.command else ""
+            name = command_ctx.command.name if command_ctx.command else ""
             argument = message.content.partition(" ")[2]
             if optional_command_blocked(interaction, name, argument):
                 interaction.consume("serious_command_override")
                 await message.reply("This sounds serious. I won't turn it into a game. Tell me what you need help with; cancellation and privacy controls remain available.", mention_author=False)
                 return
             interaction.consume("command")
-            await bot.process_commands(message)
+            await bot.invoke(command_ctx)
             return
         interaction.prior_last_active = await mem.upsert_user(
             message.author.id, str(message.author), message.author.display_name,
@@ -2668,13 +2707,12 @@ async def on_message(message):
             interaction.consume("session:" + interaction.session_owner)
             if interaction.session_owner == "interview":
                 return  # Existing bounded worker owns delivery.
-            ctx = await bot.get_context(message)
             if interaction.session_owner == "trivia":
-                await answer_cmd.callback(ctx, response=message.content)
+                await answer_cmd.callback(command_ctx, response=message.content)
             elif interaction.session_owner == "vcgame":
                 game = interaction.session
                 if game.get("kind") == "escape" and game.get("state") in {"active", "hint_requested"} and game.get("channel") == message.channel.id:
-                    await VOICE_CONVERSATION.features.games.command(ctx, "answer", game["id"] + " " + message.content)
+                    await VOICE_CONVERSATION.features.games.command(command_ctx, "answer", game["id"] + " " + message.content)
                 else:
                     await message.reply("Your voluntary game is active. Use !vcgame status, accept or cancel; I won't start a competing conversation.", mention_author=False)
             else:
@@ -2686,562 +2724,879 @@ async def on_message(message):
         await _on_message_routed(message, interaction)
         if interaction.outcome == Outcome.CONTINUE:
             interaction.consume("routed_response")
-    except (discord.HTTPException, asyncio.TimeoutError) as exc:
-        interaction.consume("delivery_unavailable", suppressed=True)
-        logger.warning("interaction delivery unavailable", extra={"error_category": type(exc).__name__})
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        interaction.consume("pipeline_error", suppressed=True)
+        raise
     finally:
         logger.debug("interaction route", extra=interaction.debug())
         CURRENT.reset(token)
 
 
-async def _on_message_routed(message, interaction):
+async def _resolve_reference(message, interaction):
+    reference = getattr(message, "reference", None)
+    if not reference:
+        return None
+    resolved = _cached_reference(message)
+    if resolved is not None:
+        return resolved
+    try:
+        return await message.channel.fetch_message(reference.message_id)
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+        log_operation_error(
+            logger, subsystem="message_pipeline", operation="resolve_reference",
+            error=exc, message=message, interaction=interaction,
+        )
+        return None
+
+
+async def _prepare_routed_message(message, interaction):
     try:
         PC.observe_message(message)
-        logger.debug("message received", extra={
-            "user_id": getattr(message.author, "id", 0),
-            "author_is_bot": bool(getattr(message.author, "bot", False)),
-            "channel_id": getattr(message.channel, "id", 0),
-            "content_chars": len(message.content or ""),
+    except Exception as exc:
+        _pipeline_error(
+            "companion_observation", exc, message, interaction,
+            subsystem="persistence",
+        )
+    logger.debug("message received", extra={
+        "message_id": getattr(message, "id", 0),
+        "user_id": getattr(message.author, "id", 0),
+        "author_is_bot": bool(getattr(message.author, "bot", False)),
+        "channel_id": getattr(message.channel, "id", 0),
+    })
+    reference_message = await _resolve_reference(message, interaction)
+    reference_author_id = getattr(getattr(reference_message, "author", None), "id", 0)
+    if reference_author_id == getattr(bot.user, "id", 0):
+        interaction.direct = True
+    if getattr(reference_message, "attachments", None):
+        interaction.media = True
+
+    if PARTNER_BOT_ID and message.guild:
+        partner_mentioned = any(user.id == PARTNER_BOT_ID for user in message.mentions)
+        we_mentioned = bot.user in message.mentions
+        replying_to_partner = reference_author_id == PARTNER_BOT_ID
+        replying_to_us = reference_author_id == bot.user.id
+        if (partner_mentioned or replying_to_partner) and not we_mentioned:
+            interaction.consume("partner_target", suppressed=True)
+            return None
+        about_partner = "wanderer" in (message.content or "").lower()
+        if about_partner and not we_mentioned and not replying_to_us:
+            interaction.consume("partner_topic", suppressed=True)
+            return None
+        try:
+            speaker_mode = await mem.get_channel_speaker_mode(message.channel.id)
+        except asyncio.CancelledError:
+            raise
+        except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+            log_operation_error(
+                logger, subsystem="message_pipeline", operation="speaker_mode",
+                error=exc, message=message, interaction=interaction,
+            )
+        else:
+            if speaker_mode not in {"auto", "both", BOT_NAME} and not we_mentioned and not replying_to_us:
+                interaction.consume("speaker_mode", suppressed=True)
+                return None
+
+    is_dm = not bool(message.guild)
+    channel_id = message.author.id if is_dm else message.channel.id
+    content = (message.content or "").strip()
+    if not content and not message.attachments and not getattr(reference_message, "attachments", None):
+        interaction.consume("empty_message", suppressed=True)
+        return None
+    if is_dm:
+        logger.debug("direct message received", extra={
+            "message_id": message.id, "user_id": message.author.id,
         })
-        # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
-        # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
-        if PARTNER_BOT_ID and message.guild:
-            partner_mentioned = any(u.id == PARTNER_BOT_ID for u in message.mentions)
-            we_mentioned = bot.user in message.mentions
-            replying_to_partner = False
-            if message.reference:
-                try:
-                    ref_msg = message.reference.resolved
-                    if ref_msg is None:
-                        ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                    if ref_msg and ref_msg.author.id == PARTNER_BOT_ID:
-                        replying_to_partner = True
-                except Exception as e:
-                    log_error("reply_partner_check", e)
-            if (partner_mentioned or replying_to_partner) and not we_mentioned:
-                return
+    user = interaction.user or {}
+    return PreparedMessage(
+        user=user,
+        user_id=message.author.id,
+        channel_id=channel_id,
+        guild_id=message.guild.id if message.guild else None,
+        is_dm=is_dm,
+        is_owner=is_owner_user(message.author.id),
+        romance=bool(user.get("romance_mode", False)),
+        content=content,
+        previous_last_active=interaction.prior_last_active,
+        reference_message=reference_message,
+    )
 
-            # If message talks ABOUT Wanderer (contains his name) but doesn't mention us,
-            # and we're not being replied to — stay quiet
-            cl_check = message.content.lower()
-            about_partner = any(n in cl_check for n in ["wanderer", "the wanderer"])
-            replying_to_us = False
-            if message.reference:
-                try:
-                    ref_msg2 = message.reference.resolved
-                    if ref_msg2 is None:
-                        ref_msg2 = await message.channel.fetch_message(message.reference.message_id)
-                    if ref_msg2 and ref_msg2.author.id == bot.user.id:
-                        replying_to_us = True
-                except Exception:
-                    pass
-            if about_partner and not we_mentioned and not replying_to_us:
-                return  # Message is about Wanderer, not for us
 
-            try:
-                speaker_mode = await mem.get_channel_speaker_mode(message.channel.id)
-                if speaker_mode not in {"auto", "both", BOT_NAME} and not we_mentioned and not replying_to_us:
-                    return
-            except Exception as e:
-                log_error("speaker_mode_check", e)
+def _pipeline_error(operation, error, message, interaction, *, subsystem="message_pipeline"):
+    return log_operation_error(
+        logger, subsystem=subsystem, operation=operation, error=error,
+        message=message, interaction=interaction,
+    )
 
-        previous_last_active = interaction.prior_last_active
 
-        # (cross-bot coordination removed for stability)
+async def _observe_prepared_message(message, interaction, prepared):
+    """Best-effort persistence that never claims response ownership."""
+    try:
+        await WORLD.observe(message, prepared.user, interaction=interaction)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("world_observe", exc, message, interaction, subsystem="persistence")
+    except Exception as exc:
+        _pipeline_error("world_observe", exc, message, interaction, subsystem="persistence")
 
-        is_dm    = not bool(message.guild)
-        # In DMs, use user_id as channel_id for stable history lookup
-        dm_channel_id = message.author.id if is_dm else message.channel.id
-        if is_dm:
-            logger.debug("direct message received", extra={
-                "user_id": message.author.id, "content_chars": len(message.content or ""),
-            })
-
-        user     = None
-        romance  = False
-        is_owner = is_owner_user(message.author.id)
+    if interaction.allows("tattletale"):
         try:
-            user    = interaction.user
-            romance = user.get("romance_mode",False) if user else False
-        except Exception as e: log_error("on_message/get_user", e)
-
-        # Mute check (only in guilds, not DMs)
-        if interaction.muted:
-            return
-
-        content = message.content.strip()
-        try:
-            await WORLD.observe(message, user, interaction=interaction)
+            await _record_tattletale_if_eligible(message, prepared.content)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            log_error("world_observe", type(exc).__name__)
-        if not content and not message.attachments: return
-        try:
-            if interaction.allows("tattletale"):
-                await _record_tattletale_if_eligible(message, content)
-        except Exception as e:
-            log_error("tattletale_record", e)
-        returned_after_absence = bool(
-            previous_last_active
-            and time.time() - previous_last_active >= CONFIG.absence_threshold_seconds
-        )
+            _pipeline_error("tattletale_record", exc, message, interaction, subsystem="persistence")
+
+    returned_after_absence = bool(
+        prepared.previous_last_active
+        and time.time() - prepared.previous_last_active >= CONFIG.absence_threshold_seconds
+    )
+    try:
         await _record_self_perception(
-            message.author.id, content, returned_after_absence=returned_after_absence,
+            prepared.user_id, prepared.content,
+            returned_after_absence=returned_after_absence,
+        )
+        prepared.message_count, prepared.milestone = await mem.increment_message_count(
+            prepared.user_id
+        )
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("message_observation", exc, message, interaction, subsystem="persistence")
+    except Exception as exc:
+        _pipeline_error("message_observation", exc, message, interaction, subsystem="persistence")
+
+
+async def _handle_pre_response_ownership(message, interaction, prepared):
+    """Milestones/greetings may consume; summary persistence never does."""
+    try:
+        if prepared.milestone and interaction.select("milestone"):
+            line = await qai(
+                f"You've had {prepared.message_count} messages with {message.author.display_name}. "
+                "Acknowledge while pretending you weren't counting. 1-2 sentences.", 150,
+            )
+            await message.channel.send(f"{message.author.mention} {line}")
+            return True
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("milestone", exc, message, interaction)
+        if interaction.outcome != Outcome.CONTINUE:
+            return True
+
+    try:
+        anniversary_year = (
+            await mem.claim_anniversary(prepared.user_id)
+            if interaction.allows("anniversary", preemptive=True) else 0
+        )
+        if anniversary_year and interaction.select("anniversary"):
+            if anniversary_year == 1:
+                line = "A full year since you first appeared. Don't look so pleased—I only noticed because your persistence is statistically irritating."
+            elif anniversary_year <= 3:
+                line = f"{anniversary_year} years. At this point, your continued presence is less an accident and more a recurring condition."
+            else:
+                line = f"{anniversary_year} years, and somehow you're still here. Fine. Perhaps permanence has one tolerable exception."
+            await message.channel.send(f"{message.author.mention} {line}")
+            return True
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("anniversary", exc, message, interaction)
+        if interaction.outcome != Outcome.CONTINUE:
+            return True
+
+    try:
+        hour = datetime.now().hour
+        greeting_hour = 6 <= hour <= 10 or 22 <= hour <= 23
+        if (interaction.allows("greeting", preemptive=True)
+                and greeting_hour and prepared.romance
+                and await mem.should_greet(prepared.user_id)
+                and interaction.select("greeting")):
+            greeting_type = "morning" if 6 <= hour <= 10 else "late night"
+            line = await qai(
+                f"It's {greeting_type}. {message.author.display_name} appeared. Send a "
+                f"{greeting_type} message in denial about why. 1-2 sentences.", 120,
+            )
+            await message.channel.send(f"{message.author.mention} {line}")
+            await mem.mark_greeted(prepared.user_id)
+            return True
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("greeting", exc, message, interaction)
+        if interaction.outcome != Outcome.CONTINUE:
+            return True
+
+    try:
+        if interaction.allows("summary") and await mem.needs_summary(prepared.user_id):
+            recent = await mem.get_recent_messages(prepared.user_id, 30)
+            sample = " | ".join(recent[:20])[:800]
+            summary = await qai(
+                f"Summarize your relationship with {message.author.display_name} based on: "
+                f"'{sample}'. Your compressed memory. 3-4 sentences.", 300,
+            )
+            await mem.save_summary(prepared.user_id, summary)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("memory_summary", exc, message, interaction, subsystem="persistence")
+    return False
+
+
+def _find_media_attachments(message, reference_message=None):
+    attachments = list(message.attachments or [])
+    if not attachments and reference_message is not None:
+        attachments = list(getattr(reference_message, "attachments", []) or [])
+    image = next((item for item in attachments
+                  if item.content_type and "image" in item.content_type), None)
+    video = next((item for item in attachments if (
+        item.content_type in VIDEO_TYPES if item.content_type else False
+    ) or any(item.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
+    return image, video
+
+
+async def _remember_media_delivery(message, interaction, prepared, kind, reply):
+    try:
+        await mem.add_message(
+            prepared.user_id, prepared.channel_id, "user",
+            f"[{kind}]{' — '+prepared.content if prepared.content else ''}",
+        )
+        await mem.add_message(prepared.user_id, prepared.channel_id, "assistant", reply)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("media_memory", exc, message, interaction, subsystem="persistence")
+    except Exception as exc:
+        _pipeline_error("media_memory", exc, message, interaction, subsystem="persistence")
+
+
+async def _handle_video_media(message, interaction, prepared, video):
+    import base64
+
+    if video.size and video.size > MAX_VIDEO_BYTES:
+        await message.reply("That video is too large. Keep it under 50 MB.")
+        return
+    await message.reply(random.choice(SCARA_VIDEO_WATCHING))
+    try:
+        video_bytes = await asyncio.wait_for(video.read(use_cached=True), timeout=30)
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+        _pipeline_error("video_download", exc, message, interaction, subsystem="media")
+        return
+    except Exception as exc:
+        _pipeline_error("video_download", exc, message, interaction, subsystem="media")
+        return
+    if len(video_bytes) > MAX_VIDEO_BYTES:
+        await message.reply("That video is too large. Keep it under 50 MB.")
+        return
+    try:
+        frames = await asyncio.get_running_loop().run_in_executor(
+            None, _extract_frames_blocking, video_bytes, 5,
+        )
+    except asyncio.CancelledError:
+        raise
+    except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+        _pipeline_error("video_frame_extract", exc, message, interaction, subsystem="media")
+        return
+    except Exception as exc:
+        _pipeline_error("video_frame_extract", exc, message, interaction, subsystem="media")
+        return
+    if not frames:
+        comment = await qai(
+            f"{message.author.display_name} sent a video I couldn't process. "
+            "React as Scaramouche — dismissive. 1 sentence.", 80,
+        )
+        await message.reply(strip_narration(comment))
+        return
+
+    mood = prepared.user.get("mood", 0)
+    system = build_system(
+        prepared.user, message.author.display_name, prepared.is_owner,
+        allow_nsfw=_channel_allows_nsfw(message.channel, is_dm=prepared.is_dm),
+    )
+    vision_content = [
+        {"type": "image_url", "image_url": {
+            "url": f"data:{mime};base64,{base64.b64encode(frame).decode()}"
+        }}
+        for frame, mime in frames
+    ]
+    vision_content.append({
+        "type": "text",
+        "text": (
+            f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
+            + (f" Their message: '{prepared.content}'" if prepared.content else "")
+            + " Describe what's happening in the video and react as Scaramouche. "
+              f"Be specific about what you see. MOOD:{mood}. NO asterisk actions. 2-4 sentences."
+        ),
+    })
+
+    def _video_vision():
+        return ai.call_with_retry(
+            model=GROQ_VISION_MODEL, max_completion_tokens=400,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": vision_content}],
         )
 
-        # Milestone / anniversary checks
-        try:
-            count, milestone = await mem.increment_message_count(message.author.id)
-            if milestone and interaction.select("milestone"):
-                msg = await qai(f"You've had {count} messages with {message.author.display_name}. Acknowledge while pretending you weren't counting. 1-2 sentences.",150)
-                await message.channel.send(f"{message.author.mention} {msg}"); return
-        except Exception as e: log_error("on_message/milestone", e)
+    try:
+        response = await asyncio.get_running_loop().run_in_executor(None, _video_vision)
+        reply = response.choices[0].message.content.strip() if response.choices else ""
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("video_vision_provider", exc, message, interaction, subsystem="provider")
+        return
+    if not reply:
+        return
+    reply = strip_narration(reply)
+    await message.reply(reply)
+    await _remember_media_delivery(message, interaction, prepared, "video", reply)
+    await maybe_react(message, prepared.romance, interaction)
 
-        try:
-            anniversary_year = await mem.claim_anniversary(message.author.id) if interaction.allows("anniversary", preemptive=True) else 0
-            if anniversary_year and interaction.select("anniversary"):
-                if anniversary_year == 1:
-                    msg = "A full year since you first appeared. Don't look so pleased—I only noticed because your persistence is statistically irritating."
-                elif anniversary_year <= 3:
-                    msg = f"{anniversary_year} years. At this point, your continued presence is less an accident and more a recurring condition."
-                else:
-                    msg = f"{anniversary_year} years, and somehow you're still here. Fine. Perhaps permanence has one tolerable exception."
-                await message.channel.send(f"{message.author.mention} {msg}")
-                return
-        except Exception as e: log_error("on_message/anniversary", e)
 
-        # Morning/night greeting
-        try:
-            hour = datetime.now().hour
-            if interaction.allows("greeting", preemptive=True) and (6<=hour<=10 or 22<=hour<=23) and romance:
-                if await mem.should_greet(message.author.id) and interaction.select("greeting"):
-                    gtype = "morning" if 6<=hour<=10 else "late night"
-                    msg = await qai(f"It's {gtype}. {message.author.display_name} appeared. Send a {gtype} message in denial about why. 1-2 sentences.",120)
-                    await message.channel.send(f"{message.author.mention} {msg}")
-                    await mem.mark_greeted(message.author.id)
-                    return
-        except Exception as e: log_error("on_message/greeting", e)
-
-        # Memory summary
-        try:
-            if interaction.allows("summary") and await mem.needs_summary(message.author.id):
-                recent = await mem.get_recent_messages(message.author.id, 30)
-                sample = " | ".join(recent[:20])[:800]
-                summary = await qai(f"Summarize your relationship with {message.author.display_name} based on: '{sample}'. Your compressed memory. 3-4 sentences.",300)
-                await mem.save_summary(message.author.id, summary)
-        except Exception as e: log_error("on_message/summary", e)
-
-        # Image & video reading — look at media in this message OR the message being replied to
-        try:
-            # Find image or video in current message first
-            img = next((a for a in message.attachments
-                       if a.content_type and "image" in a.content_type), None)
-            vid = next((a for a in message.attachments
-                       if (a.content_type and a.content_type in VIDEO_TYPES) or
-                          any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
-
-            # If no media, check the replied-to message
-            if not img and not vid and message.reference:
-                try:
-                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                    img = next((a for a in ref_msg.attachments
-                               if a.content_type and "image" in a.content_type), None)
-                    vid = next((a for a in ref_msg.attachments
-                               if (a.content_type and a.content_type in VIDEO_TYPES) or
-                                  any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
-                except Exception:
-                    pass
-
-            if vid or img:
-                if not interaction.consume("media"):
-                    return
-            # ── Video handling ──
-            if vid:
-                try:
-                    import base64
-                    if vid.size and vid.size > MAX_VIDEO_BYTES:
-                        await message.reply("That video is too large. Keep it under 50 MB.")
-                        return
-                    await message.reply(random.choice(SCARA_VIDEO_WATCHING))
-                    video_bytes = await asyncio.wait_for(vid.read(use_cached=True), timeout=30)
-                    if len(video_bytes) > MAX_VIDEO_BYTES:
-                        await message.reply("That video is too large. Keep it under 50 MB.")
-                        return
-                    frames = await asyncio.get_event_loop().run_in_executor(
-                        None, _extract_frames_blocking, video_bytes, 5)
-                    if frames:
-                        user     = user or {}
-                        mood     = user.get("mood", 0) if user else 0
-                        system   = build_system(user, message.author.display_name,
-                                               is_owner_user(message.author.id),
-                                               allow_nsfw=_channel_allows_nsfw(
-                                                   message.channel, is_dm=is_dm,
-                                               ))
-                        vision_content = []
-                        for fb, mt in frames:
-                            vision_content.append({
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mt};base64,{base64.b64encode(fb).decode()}"}
-                            })
-                        vision_content.append({
-                            "type": "text",
-                            "text": (
-                                f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
-                                + (f" Their message: '{content}'" if content else "")
-                                + f" Describe what's happening in the video and react as Scaramouche. "
-                                f"Be specific about what you see. MOOD:{mood}. NO asterisk actions. 2-4 sentences."
-                            )
-                        })
-                        def _video_vision():
-                            return ai.call_with_retry(
-                                model=GROQ_VISION_MODEL, max_completion_tokens=400,
-                                messages=[{"role":"system","content":system},
-                                          {"role":"user","content":vision_content}])
-                        resp = await asyncio.get_event_loop().run_in_executor(None, _video_vision)
-                        reply = resp.choices[0].message.content.strip() if resp.choices else ""
-                        if reply:
-                            reply = strip_narration(reply)
-                            await mem.add_message(message.author.id, dm_channel_id,
-                                                  "user", f"[video]{' — '+content if content else ''}")
-                            await mem.add_message(message.author.id, dm_channel_id,
-                                                  "assistant", reply)
-                            await message.reply(reply)
-                            await maybe_react(message, romance)
-                            return
-                    else:
-                        comment = await qai(
-                            f"{message.author.display_name} sent a video I couldn't process. "
-                            f"React as Scaramouche — dismissive. 1 sentence.", 80)
-                        await message.reply(strip_narration(comment))
-                        return
-                except Exception as e:
-                    log_error("on_message/video", e)
-
-            # ── Image handling ──
-            if img:
-                try:
-                    if img.size and img.size > MAX_IMAGE_BYTES:
-                        await message.reply("That image is too large. Keep it under 20 MB.")
-                        return
-                    img_bytes = await asyncio.wait_for(img.read(use_cached=True), timeout=30)
-                    if len(img_bytes) > MAX_IMAGE_BYTES:
-                        await message.reply("That image is too large. Keep it under 20 MB.")
-                        return
-                    media_type = img.content_type or "image/jpeg"
-
-                    user     = user or {}
-                    mood     = user.get("mood", 0) if user else 0
-                    system   = build_system(user, message.author.display_name,
-                                           is_owner_user(message.author.id),
-                                           allow_nsfw=_channel_allows_nsfw(
-                                               message.channel, is_dm=is_dm,
-                                           ))
-
-                    vision_prompt = (
-                        f"{message.author.display_name} sent you this image"
-                        + (f" with the message: '{content}'" if content else "")
-                        + f". React as Scaramouche. You can actually see it — describe what you see "
-                        f"and react in character. Be specific about what's in the image. "
-                        f"MOOD:{mood}. NO asterisk actions. 1-3 sentences."
-                    )
-                    reply = await _vision_image_reply(
-                        prompt=vision_prompt,
-                        system=system,
-                        image_bytes=img_bytes,
-                        mime_type=media_type,
-                    )
-
-                    if reply:
-                        await mem.add_message(message.author.id, dm_channel_id,
-                                              "user", f"[image]{' — '+content if content else ''}")
-                        await mem.add_message(message.author.id, dm_channel_id,
-                                              "assistant", reply)
-                        await message.reply(reply)
-                        await maybe_react(message, romance)
-                        return
-
-                except Exception as e:
-                    log_error("on_message/vision", e)
-                    if random.random() < 0.4:
-                        comment = await qai(
-                            f"{message.author.display_name} posted an image. "
-                            f"React — dismissive or reluctantly intrigued. 1 sentence.", 100)
-                        await message.reply(strip_narration(comment))
-                        return
-        except Exception as e: log_error("on_message/image", e)
-
-        if interaction.outcome != Outcome.CONTINUE:
-            return  # Media/selected feature owns failures as well as success.
-
-        # Special triggers
-        try:
-            cl = content.lower()
-            if VILLAIN_TRIGGER in content.lower() and interaction.select("villain"):
-                m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
-                await message.reply(strip_narration(m)); return
-            # If someone says "wanderer" — check if Wanderer bot is in server
-            if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
-                partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
-                if not partner_present and random.random() < .5 and interaction.select("partner_jab"):
-                    msg = await qai("Someone mentioned 'wanderer' — some imposter who claims to be a version of you. React with contempt or dismissal. 1 sentence. Sharp.", 80)
-                    await message.channel.send(strip_narration(msg))
-                    return
-
-            # Hat trigger — only exact standalone words, never substrings
-            content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
-            if content_words & {"hat","headwear","headpiece"} and interaction.select("hat"):
-                m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
-                await message.reply(strip_narration(m)); return
-            if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35 and interaction.select("food"):
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35 and interaction.select("sleep"):
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(k in cl for k in PLAN_KW) and random.random()<.25 and interaction.select("plans"):
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
-            if romance and any(k in cl for k in OTHER_BOT_KW) and interaction.select("jealousy"):
-                m = await qai(f"{message.author.display_name} mentioned preferring something else. Jealousy masked as contempt. 1-2 sentences.",120)
-                await message.reply(m); await mem.update_mood(message.author.id,-1); return
-        except Exception as e: log_error("on_message/triggers", e)
-        if interaction.outcome != Outcome.CONTINUE:
+async def _handle_image_media(message, interaction, prepared, image):
+    if image.size and image.size > MAX_IMAGE_BYTES:
+        await message.reply("That image is too large. Keep it under 20 MB.")
+        return
+    try:
+        image_bytes = await asyncio.wait_for(image.read(use_cached=True), timeout=30)
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            await message.reply("That image is too large. Keep it under 20 MB.")
             return
+        mood = prepared.user.get("mood", 0)
+        system = build_system(
+            prepared.user, message.author.display_name, prepared.is_owner,
+            allow_nsfw=_channel_allows_nsfw(message.channel, is_dm=prepared.is_dm),
+        )
+        vision_prompt = (
+            f"{message.author.display_name} sent you this image"
+            + (f" with the message: '{prepared.content}'" if prepared.content else "")
+            + ". React as Scaramouche. You can actually see it — describe what you see "
+              f"and react in character. Be specific about what's in the image. MOOD:{mood}. "
+              "NO asterisk actions. 1-3 sentences."
+        )
+        reply = await _vision_image_reply(
+            prompt=vision_prompt,
+            system=system,
+            image_bytes=image_bytes,
+            mime_type=image.content_type or "image/jpeg",
+        )
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+        _pipeline_error("image_download", exc, message, interaction, subsystem="media")
+        return
+    except Exception as exc:
+        _pipeline_error("image_vision_provider", exc, message, interaction, subsystem="provider")
+        if random.random() < 0.4:
+            comment = await qai(
+                f"{message.author.display_name} posted an image. "
+                "React — dismissive or reluctantly intrigued. 1 sentence.", 100,
+            )
+            await message.reply(strip_narration(comment))
+        return
+    if not reply:
+        return
+    await message.reply(reply)
+    await _remember_media_delivery(message, interaction, prepared, "image", reply)
+    await maybe_react(message, prepared.romance, interaction)
 
-        mentioned = bot.user in message.mentions
-        is_reply  = (message.reference and message.reference.resolved and
-                     not isinstance(message.reference.resolved,discord.DeletedReferencedMessage) and
-                     message.reference.resolved.author==bot.user)
 
-        # ── Tedtalk follow-up detection ───────────────────────────────────
-        # Only trigger if: replying to his message AND has cached material
-        # AND the question seems to be about the material (not just chatting)
-        if is_reply and message.author.id in _tedtalk_cache:
-            cache = _tedtalk_cache[message.author.id]
-            # Expire cache after 2 hours
-            if time.time() - cache.get("ts", 0) > 7200:
-                del _tedtalk_cache[message.author.id]
-            elif cache.get("channel_id") == message.channel.id or is_dm:
-                # Only use cache if message looks like a question about material
-                cl = content.lower()
-                is_material_question = (
-                    content.endswith("?") or
-                    any(k in cl for k in [
-                        "what is","what are","what does","what do","explain",
-                        "confused","don't understand","don't get","clarify",
-                        "how does","how do","why does","why do","can you",
-                        "what about","tell me more","elaborate","example",
-                        "mean","define","difference between","what was"
-                    ])
+async def _handle_media(message, interaction, prepared):
+    image, video = _find_media_attachments(message, prepared.reference_message)
+    if not image and not video:
+        return False
+    if not interaction.consume("media"):
+        return True
+    try:
+        if video:
+            await _handle_video_media(message, interaction, prepared, video)
+        else:
+            await _handle_image_media(message, interaction, prepared, image)
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+        _pipeline_error("media_delivery", exc, message, interaction, subsystem="media")
+    except Exception as exc:
+        _pipeline_error("media", exc, message, interaction, subsystem="media")
+    return True
+
+
+async def _handle_special_trigger(message, interaction, prepared):
+    content = prepared.content
+    lowered = content.lower()
+    try:
+        if VILLAIN_TRIGGER in lowered and interaction.select("villain"):
+            line = await qai(
+                "Someone said 'you will never win'. Full theatrical villain monologue. "
+                "4-6 sentences. NO asterisk actions.", 400,
+            )
+            await message.reply(strip_narration(line))
+            return True
+        if re.search(r"\bwanderer\b", lowered) and not re.search(r"\bthe wanderer\b", lowered):
+            partner_present = bool(
+                PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID)
+            )
+            if not partner_present and random.random() < .5 and interaction.select("partner_jab"):
+                line = await qai(
+                    "Someone mentioned 'wanderer' — some imposter who claims to be a version "
+                    "of you. React with contempt or dismissal. 1 sentence. Sharp.", 80,
                 )
-                if is_material_question:
-                    try:
-                        async with message.channel.typing():
-                            def _answer_followup():
-                                r = ai.call_with_retry(
-                                    model=GROQ_MODEL, max_completion_tokens=600,
-                                    messages=[{"role":"system","content":_BASE},
-                                              {"role":"user","content":(
-                                        f"You gave a lecture on this material:\n{cache['material']}\n\n"
-                                        f"{message.author.display_name} has a follow-up question: '{content}'\n\n"
-                                        f"Answer using the material. Be accurate and thorough but stay in character. "
-                                        f"Contemptuous that they need clarification, but actually helpful."
-                                    )}]
-                                )
-                                return strip_narration(r.choices[0].message.content.strip() if r.choices else "")
-                            answer = await asyncio.get_event_loop().run_in_executor(None, _answer_followup)
-                        if answer:
-                            await message.reply(answer)
-                            await mem.add_message(message.author.id, dm_channel_id, "user", content)
-                            await mem.add_message(message.author.id, dm_channel_id, "assistant", answer)
-                            return
-                    except Exception as e:
-                        log_error("tedtalk_followup", e)
+                await message.channel.send(strip_narration(line))
+                return True
+        content_words = set(re.sub(r"[^\w\s]", "", lowered).split())
+        if content_words & {"hat", "headwear", "headpiece"} and interaction.select("hat"):
+            line = await qai(
+                "Someone mentioned your hat. React with disproportionate intensity while "
+                "pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",
+                150,
+            )
+            await message.reply(strip_narration(line))
+            return True
+        if (any(re.search(pattern, lowered) for pattern in FOOD_KW)
+                and random.random() < .35 and interaction.select("food")):
+            await message.channel.send(await _pick_fresh_pool_line(
+                UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=prepared.user_id,
+            ))
+            return True
+        if (any(re.search(pattern, lowered) for pattern in SLEEP_KW)
+                and random.random() < .35 and interaction.select("sleep")):
+            await message.channel.send(await _pick_fresh_pool_line(
+                UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=prepared.user_id,
+            ))
+            return True
+        if (any(word in lowered for word in PLAN_KW)
+                and random.random() < .25 and interaction.select("plans")):
+            await message.channel.send(await _pick_fresh_pool_line(
+                UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=prepared.user_id,
+            ))
+            return True
+        if (prepared.romance and any(word in lowered for word in OTHER_BOT_KW)
+                and interaction.select("jealousy")):
+            line = await qai(
+                f"{message.author.display_name} mentioned preferring something else. "
+                "Jealousy masked as contempt. 1-2 sentences.", 120,
+            )
+            await message.reply(line)
+            try:
+                await mem.update_mood(prepared.user_id, -1)
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+                _pipeline_error("jealousy_mood", exc, message, interaction, subsystem="persistence")
+            return True
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("special_trigger", exc, message, interaction)
+        return interaction.outcome != Outcome.CONTINUE
+    return False
 
-        rp = resp_prob(content, mentioned, is_reply, romance, is_dm=not bool(message.guild))
-        logger.debug("response eligibility evaluated", extra={
-            "response_probability": round(rp, 2), "mentioned": mentioned, "is_reply": is_reply,
-        })
-        if random.random()>rp:
-            await maybe_react(message,romance); return
 
-        try:
-            tattletale_line = await _verified_tattletale_line(message) if interaction.allows("tattletale", preemptive=True) else ""
-            if tattletale_line and interaction.select("tattletale"):
-                await message.reply(tattletale_line)
-                return
-        except Exception as e:
-            log_error("tattletale_reveal", e)
+async def _handle_tedtalk_followup(message, interaction, prepared):
+    reference_author = getattr(getattr(prepared.reference_message, "author", None), "id", 0)
+    if reference_author != getattr(bot.user, "id", 0) or prepared.user_id not in _tedtalk_cache:
+        return False
+    cache = _tedtalk_cache[prepared.user_id]
+    if time.time() - cache.get("ts", 0) > 7200:
+        del _tedtalk_cache[prepared.user_id]
+        return False
+    if cache.get("channel_id") != message.channel.id and not prepared.is_dm:
+        return False
+    lowered = prepared.content.lower()
+    material_question = prepared.content.endswith("?") or any(word in lowered for word in [
+        "what is", "what are", "what does", "what do", "explain", "confused",
+        "don't understand", "don't get", "clarify", "how does", "how do",
+        "why does", "why do", "can you", "what about", "tell me more",
+        "elaborate", "example", "mean", "define", "difference between", "what was",
+    ])
+    if not material_question:
+        return False
 
-        # Rare, deterministic-cost interaction flourishes. Important questions and
-        # serious contexts always continue into the normal response path.
-        if interaction.allows("party_parody", preemptive=True) and await CHAOS.on_message(message):
+    def _answer_followup():
+        response = ai.call_with_retry(
+            model=GROQ_MODEL, max_completion_tokens=600,
+            messages=[
+                {"role": "system", "content": _BASE},
+                {"role": "user", "content": (
+                    f"You gave a lecture on this material:\n{cache['material']}\n\n"
+                    f"{message.author.display_name} has a follow-up question: "
+                    f"'{prepared.content}'\n\nAnswer using the material. Be accurate and thorough "
+                    "but stay in character. Contemptuous that they need clarification, "
+                    "but actually helpful."
+                )},
+            ],
+        )
+        return strip_narration(
+            response.choices[0].message.content.strip() if response.choices else ""
+        )
+
+    try:
+        async with message.channel.typing():
+            answer = await asyncio.get_running_loop().run_in_executor(None, _answer_followup)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("tedtalk_generation", exc, message, interaction, subsystem="provider")
+        return False
+    if not answer or not interaction.consume("tedtalk_followup"):
+        return bool(answer)
+    try:
+        await message.reply(answer)
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+        _pipeline_error("tedtalk_delivery", exc, message, interaction, subsystem="delivery")
+        return True
+    try:
+        await mem.add_message(prepared.user_id, prepared.channel_id, "user", prepared.content)
+        await mem.add_message(prepared.user_id, prepared.channel_id, "assistant", answer)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("tedtalk_memory", exc, message, interaction, subsystem="persistence")
+    return True
+
+
+async def _handle_optional_character_behavior(message, interaction, prepared):
+    try:
+        tattletale_line = (
+            await _verified_tattletale_line(message)
+            if interaction.allows("tattletale", preemptive=True) else ""
+        )
+        if tattletale_line and interaction.select("tattletale"):
+            await message.reply(tattletale_line)
+            return True
+        if (interaction.allows("party_parody", preemptive=True)
+                and await CHAOS.on_message(message)):
             interaction.select("party_parody")
-            return
-        if interaction.allows("trolling", preemptive=True) and await troll.before_reply(message):
+            return True
+        if (interaction.allows("trolling", preemptive=True)
+                and await troll.before_reply(message)):
             interaction.select("trolling")
-            return
-        if interaction.allows("popquiz", preemptive=True) and eligible_for_silent_judge(content) and random.random() < .002 and not interaction.trivia:
-            material = await mem.get_quizable_assistant_message(message.author.id)
-            if material and await mem.consume_phrase(f"user:{message.author.id}", "memory_pop_quiz", 7 * 86400) and interaction.select("popquiz"):
+            return True
+        if (interaction.allows("popquiz", preemptive=True)
+                and eligible_for_silent_judge(prepared.content)
+                and random.random() < .002 and not interaction.trivia):
+            material = await mem.get_quizable_assistant_message(prepared.user_id)
+            if (material and await mem.consume_phrase(
+                    f"user:{prepared.user_id}", "memory_pop_quiz", 7 * 86400)
+                    and interaction.select("popquiz")):
                 words = material["content"].split()
                 cut = min(8, len(words) - 2)
                 prefix, answer = " ".join(words[:cut]), " ".join(words[cut:])
                 question = f"Do you actually listen? Complete this real line I told you: “{prefix} …”"
-                await mem.set_active_trivia(message.channel.id, message.author.id, question, answer, f"memory_message:{material['id']}")
+                await mem.set_active_trivia(
+                    message.channel.id, prepared.user_id, question, answer,
+                    f"memory_message:{material['id']}",
+                )
                 await message.reply(question)
-                return
-        typing_key = (message.channel.id, message.author.id)
-        if interaction.allows("fake_typing", preemptive=True) and eligible_for_silent_judge(content) and typing_key not in _typing_gag_inflight and random.random() < .006:
-            if await mem.consume_phrase(f"channel_user:{message.channel.id}:{message.author.id}", "fake_long_typing", 3 * 86400) and interaction.select("fake_typing"):
-                _typing_gag_inflight.add(typing_key)
-                try:
-                    async with message.channel.typing():
-                        await asyncio.sleep(random.uniform(FAKE_TYPING_MIN_SECONDS, FAKE_TYPING_MAX_SECONDS))
-                    await message.reply(random.choice(["No.", "How compelling.", "I considered it. Briefly.", "k."]))
-                    return
-                finally:
-                    _typing_gag_inflight.discard(typing_key)
+                return True
+        typing_key = (message.channel.id, prepared.user_id)
+        if (interaction.allows("fake_typing", preemptive=True)
+                and eligible_for_silent_judge(prepared.content)
+                and typing_key not in _typing_gag_inflight and random.random() < .006
+                and await mem.consume_phrase(
+                    f"channel_user:{message.channel.id}:{prepared.user_id}",
+                    "fake_long_typing", 3 * 86400,
+                ) and interaction.select("fake_typing")):
+            _typing_gag_inflight.add(typing_key)
+            try:
+                async with message.channel.typing():
+                    await asyncio.sleep(random.uniform(
+                        FAKE_TYPING_MIN_SECONDS, FAKE_TYPING_MAX_SECONDS,
+                    ))
+                await message.reply(random.choice([
+                    "No.", "How compelling.", "I considered it. Briefly.", "k.",
+                ]))
+                return True
+            finally:
+                _typing_gag_inflight.discard(typing_key)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("optional_character_behavior", exc, message, interaction)
+        return interaction.outcome != Outcome.CONTINUE
+    return False
 
-        # Build extra context
-        parts = []
-        try:
-            parts.extend(await _medium_awareness_context(
-                message, user, content, is_dm=is_dm, interaction=interaction,
-            ))
-            if random.random()<.12:
-                old = await mem.get_random_old_message(message.author.id)
-                if old: parts.append(f'RECALL:"{old[:120]}"')
-            if random.random()<.15:
-                joke = await mem.get_random_inside_joke(message.author.id)
-                if joke: parts.append(f'JOKE:"{joke[:80]}"')
-            if user and user.get("rival_id") and message.guild:
-                rival = message.guild.get_member(user["rival_id"])
-                if rival: parts.append(f"RIVAL:{rival.display_name}")
-            last_stmt = user.get("last_statement") if user else None
-            if last_stmt and len(content)>20 and random.random()<.08:
-                parts.append(f'CONTRADICTION:"{last_stmt[:100]}"')
-            if user and user.get("trust",0)>30 and random.random()<.06:
-                nice_msgs=[m for m in (await mem.get_recent_messages(message.author.id,10)) if any(k in m.lower() for k in NICE_KW)]
-                if nice_msgs: parts.append(f'SELECTIVE:"{nice_msgs[0][:80]}"')
-            if user and user.get("trust",0)>=70 and random.random()<.08:
-                parts.append("TRUST_OPEN"); await mem.update_trust(message.author.id,-3)
-            # Autocorrect parody now belongs to CHAOS's explicit opt-in router.
-            if eligible_for_joke(content) and random.random() < .025:
-                hearing = selective_hearing_hint(content)
-                if hearing and await mem.consume_phrase(f"user:{message.author.id}", "selective_hearing", 2 * 86400):
-                    parts.append(hearing)
-            if is_owner:
-                parts.append("OWNER_PREFERENCE: greater willingness and patience with distinctive favoritism; never bypass rules or permissions")
-        except Exception as e: log_error("on_message/context", e)
 
-        extra = "|".join(parts)
+async def _build_normal_response_context(message, interaction, prepared):
+    parts = []
+    try:
+        parts.extend(await _medium_awareness_context(
+            message, prepared.user, prepared.content,
+            is_dm=prepared.is_dm, interaction=interaction,
+        ))
+        if random.random() < .12:
+            old = await mem.get_random_old_message(prepared.user_id)
+            if old:
+                parts.append(f'RECALL:"{old[:120]}"')
+        if random.random() < .15:
+            joke = await mem.get_random_inside_joke(prepared.user_id)
+            if joke:
+                parts.append(f'JOKE:"{joke[:80]}"')
+        if prepared.user.get("rival_id") and message.guild:
+            rival = message.guild.get_member(prepared.user["rival_id"])
+            if rival:
+                parts.append(f"RIVAL:{rival.display_name}")
+        last_statement = prepared.user.get("last_statement")
+        if last_statement and len(prepared.content) > 20 and random.random() < .08:
+            parts.append(f'CONTRADICTION:"{last_statement[:100]}"')
+        if prepared.user.get("trust", 0) > 30 and random.random() < .06:
+            nice_messages = [
+                item for item in await mem.get_recent_messages(prepared.user_id, 10)
+                if any(keyword in item.lower() for keyword in NICE_KW)
+            ]
+            if nice_messages:
+                parts.append(f'SELECTIVE:"{nice_messages[0][:80]}"')
+        if prepared.user.get("trust", 0) >= 70 and random.random() < .08:
+            parts.append("TRUST_OPEN")
+            await mem.update_trust(prepared.user_id, -3)
+        if eligible_for_joke(prepared.content) and random.random() < .025:
+            hearing = selective_hearing_hint(prepared.content)
+            if (hearing and await mem.consume_phrase(
+                    f"user:{prepared.user_id}", "selective_hearing", 2 * 86400)):
+                parts.append(hearing)
+        if prepared.is_owner:
+            parts.append(
+                "OWNER_PREFERENCE: greater willingness and patience with distinctive favoritism; "
+                "never bypass rules or permissions"
+            )
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("normal_context", exc, message, interaction, subsystem="persistence")
+    except Exception as exc:
+        _pipeline_error("normal_context", exc, message, interaction)
+    return "|".join(parts)
 
-        # Main response
-        try:
-            if not interaction.consume("session:duo" if interaction.session_owner else "normal_response"):
-                return
-            if is_dm:
-                logger.debug("generating direct-message response", extra={"user_id": message.author.id})
-            async with message.channel.typing():
-                await typing_delay(content)
-                reply = await get_response(
-                    message.author.id, dm_channel_id, content,
-                    user, message.author.display_name, message.author.mention,
-                    extra_context=extra, is_owner=is_owner,
-                    channel_obj=message.channel, is_dm=is_dm,
-                    prior_last_active=previous_last_active, interaction=interaction,
+
+async def _generate_normal_reply(message, interaction, prepared, extra_context):
+    if not interaction.consume(
+        "session:duo" if interaction.session_owner else "normal_response"
+    ):
+        return None
+    if prepared.is_dm:
+        logger.debug("generating direct-message response", extra={
+            "message_id": message.id, "user_id": prepared.user_id,
+        })
+    try:
+        async with message.channel.typing():
+            await typing_delay(prepared.content)
+            return await get_response(
+                prepared.user_id, prepared.channel_id, prepared.content,
+                prepared.user, message.author.display_name, message.author.mention,
+                extra_context=extra_context, is_owner=prepared.is_owner,
+                channel_obj=message.channel, is_dm=prepared.is_dm,
+                prior_last_active=prepared.previous_last_active,
+                interaction=interaction,
+            )
+    except asyncio.CancelledError:
+        raise
+    except (GroqError, asyncio.TimeoutError, TimeoutError, ConnectionError, OSError) as exc:
+        _pipeline_error("normal_generation", exc, message, interaction, subsystem="provider")
+        return random.choice(["Hmph.", "...", "Tch."])
+    except RuntimeError as exc:
+        if "provider is not configured" not in str(exc).lower():
+            _pipeline_error(
+                "normal_generation_invariant", exc, message, interaction,
+                subsystem="message_pipeline",
+            )
+            raise
+        _pipeline_error("normal_generation", exc, message, interaction, subsystem="provider")
+        return random.choice(["Hmph.", "...", "Tch."])
+    except Exception as exc:
+        _pipeline_error(
+            "normal_generation_invariant", exc, message, interaction,
+            subsystem="message_pipeline",
+        )
+        raise
+
+
+async def _apply_post_response_effects(message, interaction, prepared):
+    """Optional state changes: failures are visible but never block delivery."""
+    user = prepared.user
+    try:
+        if (user.get("affection", 0) >= 50 and not user.get("affection_nick")
+                and random.random() < .05):
+            nickname = await qai(
+                f"You've started calling {message.author.display_name} by a nickname. "
+                "Not nice but specific — reveals you've been paying attention. 1-4 words. "
+                "Just the nickname.", 20,
+            )
+            if nickname and len(nickname) < 30:
+                await mem.set_affection_nick(prepared.user_id, nickname.strip('"\''))
+        if user.get("mood", 0) <= -8 and not user.get("grudge_nick"):
+            nickname = await qai(
+                f"You have a grudge against {message.author.display_name}. ONE degrading "
+                "nickname. 1-3 words.", 20,
+            )
+            if nickname and len(nickname) < 30:
+                await mem.set_grudge_nick(prepared.user_id, nickname.strip('"\''))
+        if len(prepared.content) > 20 and random.random() < .04:
+            check = await qai(
+                f"Is this quotable as a running inside joke? '{prepared.content[:100]}' "
+                "YES or NO only.", 10,
+            )
+            if "YES" in check.upper():
+                await mem.add_inside_joke(prepared.user_id, prepared.content[:100])
+                await mem.add_shared_inside_joke(
+                    prepared.user_id, prepared.content[:100], BOT_NAME,
                 )
-        except Exception as e:
-            log_error("on_message/get_response", e)
-            reply = random.choice(["Hmph.","...","Tch."])
+                debug_event("memory", f"{BOT_NAME} shared_joke user={prepared.user_id}")
+        if (user.get("conflict_open") and user.get("conflict_summary")
+                and random.random() < .1):
+            await mem.set_callback_memory(
+                prepared.user_id,
+                f"Unresolved tension still matters: {user['conflict_summary'][:180]}",
+            )
+            debug_event("memory", f"{BOT_NAME} conflict_followup user={prepared.user_id}")
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("post_response_effects", exc, message, interaction, subsystem="persistence")
+    except Exception as exc:
+        _pipeline_error("post_response_effects", exc, message, interaction)
 
-        # Post-response effects
-        try:
-            if user and user.get("affection",0)>=50 and not user.get("affection_nick") and random.random()<.05:
-                nick = await qai(f"You've started calling {message.author.display_name} by a nickname. Not nice but specific — reveals you've been paying attention. 1-4 words. Just the nickname.",20)
-                if nick and len(nick)<30: await mem.set_affection_nick(message.author.id,nick.strip('"\''))
-            if user and user.get("mood",0)<=-8 and not user.get("grudge_nick"):
-                nick = await qai(f"You have a grudge against {message.author.display_name}. ONE degrading nickname. 1-3 words.",20)
-                if nick and len(nick)<30: await mem.set_grudge_nick(message.author.id,nick.strip('"\''))
-            # Trust reveals now belong to the one normal reply via its prompt.
-            if len(content)>20 and random.random()<.04:
-                check = await qai(f"Is this quotable as a running inside joke? '{content[:100]}' YES or NO only.",10)
-                if "YES" in check.upper():
-                    await mem.add_inside_joke(message.author.id,content[:100])
-                    await mem.add_shared_inside_joke(message.author.id, content[:100], BOT_NAME)
-                    debug_event("memory", f"{BOT_NAME} shared_joke user={message.author.id}")
-            if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < .1:
-                await mem.set_callback_memory(message.author.id, f"Unresolved tension still matters: {user['conflict_summary'][:180]}")
-                debug_event("memory", f"{BOT_NAME} conflict_followup user={message.author.id}")
-        except Exception as e: log_error("on_message/post_effects", e)
 
-        # Send response
-        try:
-            mood_val = user.get("mood",0) if user else 0
+async def _record_assistant_delivery(message, interaction, prepared, content):
+    try:
+        await mem.add_message(prepared.user_id, prepared.channel_id, "assistant", content)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _pipeline_error("assistant_memory", exc, message, interaction, subsystem="persistence")
+    except Exception as exc:
+        _pipeline_error("assistant_memory", exc, message, interaction, subsystem="persistence")
 
-            # Check if replying to his own voice message
-            is_reply_to_self_audio = False
-            if message.reference:
-                try:
-                    ref = await message.channel.fetch_message(message.reference.message_id)
-                    if ref.author == bot.user and any(
-                        a.filename.endswith(".mp3") for a in ref.attachments
-                    ):
-                        is_reply_to_self_audio = True
-                except Exception:
-                    pass
 
-            # Voice reply probability:
-            # Explicit request: 100% (user asked for voice)
-            # Replies to his own voice: 35% chance (feels like a voice conversation)
-            # Normal messages: 12% chance
-            VOICE_REQUEST_KW = ["voice message", "send me a voice", "voice msg", "tell me in voice",
-                                "say it out loud", "speak to me", "wanna hear your voice", "want to hear your voice",
-                                "use your voice", "talk to me", "send audio", "voice note", "send a voice",
-                                "as a voice", "in voice", "say it in voice", "bedtime story"]
-            asked_for_voice = any(k in content.lower() for k in VOICE_REQUEST_KW)
-            logger.debug("voice response evaluated", extra={
-                "explicit_voice_request": asked_for_voice,
-                "voice_provider_configured": bool(FISH_AUDIO_API_KEY),
-                "reply_chars": len(reply.strip()) if reply else 0,
-            })
-            if reply and len(reply.strip()) > 2:
-                voice_prob = 0.0
-                if FISH_AUDIO_API_KEY:
-                    voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
-                elif asked_for_voice:
-                    logger.info("voice requested but provider is not configured")
-
-                if voice_prob > 0 and random.random() < voice_prob:
-                    logger.debug("attempting voice send", extra={"voice_probability": voice_prob})
-                    sent = await send_voice(
-                        message.channel, reply, ref=message, mood=mood_val,
-                        guild=message.guild, user=user, user_id=message.author.id,
-                        delivery_intent="protective concern" if interaction.safety.protective else "",
-                    )
-                    logger.debug("voice send completed", extra={"voice_sent": sent})
-                    if sent:
-                        await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
-                        await maybe_react(message, romance); return
-                    elif asked_for_voice:
-                        # Voice was requested but failed — send as text with the reply
-                        logger.info("voice send failed; using text fallback")
-
-            if user and user.get("affection",0)>=85 and random.random()<.04 and FISH_AUDIO_API_KEY:
-                await send_voice(
-                    message.channel, random.choice(["...","Tch.","Hmph."]),
-                    mood=mood_val, guild=message.guild, user=user, user_id=message.author.id,
+async def _deliver_normal_reply(message, interaction, prepared, reply):
+    mood = prepared.user.get("mood", 0)
+    reference = prepared.reference_message
+    reply_to_self_audio = bool(
+        getattr(getattr(reference, "author", None), "id", 0) == getattr(bot.user, "id", 0)
+        and any(item.filename.endswith(".mp3")
+                for item in getattr(reference, "attachments", []) or [])
+    )
+    voice_keywords = [
+        "voice message", "send me a voice", "voice msg", "tell me in voice",
+        "say it out loud", "speak to me", "wanna hear your voice", "want to hear your voice",
+        "use your voice", "talk to me", "send audio", "voice note", "send a voice",
+        "as a voice", "in voice", "say it in voice", "bedtime story",
+    ]
+    asked_for_voice = any(word in prepared.content.lower() for word in voice_keywords)
+    logger.debug("voice response evaluated", extra={
+        "message_id": message.id,
+        "explicit_voice_request": asked_for_voice,
+        "voice_provider_configured": bool(FISH_AUDIO_API_KEY),
+        "reply_chars": len(reply.strip()) if reply else 0,
+    })
+    if reply and len(reply.strip()) > 2:
+        voice_probability = 0.0
+        if FISH_AUDIO_API_KEY:
+            voice_probability = 1.0 if asked_for_voice else (
+                0.35 if reply_to_self_audio else 0.12
+            )
+        elif asked_for_voice:
+            logger.info("voice requested but provider is not configured")
+        if voice_probability > 0 and random.random() < voice_probability:
+            sent = await send_voice(
+                message.channel, reply, ref=message, mood=mood,
+                guild=message.guild, user=prepared.user, user_id=prepared.user_id,
+                delivery_intent=(
+                    "protective concern" if interaction.safety.protective else ""
+                ),
+            )
+            if sent:
+                await _record_assistant_delivery(
+                    message, interaction, prepared, f"[voice message] {reply}",
                 )
-            original_reply = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
-            display_reply = original_reply
-            if eligible_for_silent_judge(content) and random.random() < .003:
-                if await mem.consume_phrase(f"user:{message.author.id}", "bounded_glitch", 5 * 86400):
-                    display_reply = bounded_glitch(original_reply)
-            sent_message = await message.reply(display_reply)
-            await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-            await troll.after_reply(message, sent_message)
-            await maybe_react(message, romance)
-        except Exception as e: log_error("on_message/send", e)
+                await maybe_react(message, prepared.romance, interaction)
+                return True
+            if asked_for_voice:
+                logger.info("voice send failed; using text fallback")
 
-    except Exception as e:
-        log_error("on_message/TOP", e)
+    if (prepared.user.get("affection", 0) >= 85 and random.random() < .04
+            and FISH_AUDIO_API_KEY):
+        await send_voice(
+            message.channel, random.choice(["...", "Tch.", "Hmph."]),
+            mood=mood, guild=message.guild, user=prepared.user,
+            user_id=prepared.user_id,
+        )
+    original_reply = strip_narration(resolve_mentions(
+        reply, message.guild if message.guild else None,
+    ))
+    display_reply = original_reply
+    if eligible_for_silent_judge(prepared.content) and random.random() < .003:
+        try:
+            glitch_allowed = await mem.consume_phrase(
+                f"user:{prepared.user_id}", "bounded_glitch", 5 * 86400,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+            _pipeline_error(
+                "bounded_glitch_cooldown", exc, message, interaction,
+                subsystem="persistence",
+            )
+            glitch_allowed = False
+        if glitch_allowed:
+            display_reply = bounded_glitch(original_reply)
+    try:
+        sent_message = await message.reply(display_reply)
+    except asyncio.CancelledError:
+        raise
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+        _pipeline_error("text_delivery", exc, message, interaction, subsystem="delivery")
+        return False
+    await _record_assistant_delivery(message, interaction, prepared, reply)
+    await troll.after_reply(message, sent_message)
+    await maybe_react(message, prepared.romance, interaction)
+    return True
+
+
+async def _on_message_routed(message, interaction):
+    prepared = await _prepare_routed_message(message, interaction)
+    if not prepared:
+        return
+    await _observe_prepared_message(message, interaction, prepared)
+    if await _handle_pre_response_ownership(message, interaction, prepared):
+        return
+    if await _handle_media(message, interaction, prepared):
+        return
+    if await _handle_special_trigger(message, interaction, prepared):
+        return
+
+    mentioned = bot.user in message.mentions
+    reference_author_id = getattr(
+        getattr(prepared.reference_message, "author", None), "id", 0,
+    )
+    is_reply = reference_author_id == bot.user.id
+    if await _handle_tedtalk_followup(message, interaction, prepared):
+        return
+
+    probability = resp_prob(
+        prepared.content, mentioned, is_reply, prepared.romance, is_dm=prepared.is_dm,
+    )
+    logger.debug("response eligibility evaluated", extra={
+        "response_probability": round(probability, 2),
+        "mentioned": mentioned,
+        "is_reply": is_reply,
+    })
+    if random.random() > probability:
+        await maybe_react(message, prepared.romance, interaction)
+        return
+    if await _handle_optional_character_behavior(message, interaction, prepared):
+        return
+
+    extra = await _build_normal_response_context(message, interaction, prepared)
+    reply = await _generate_normal_reply(message, interaction, prepared, extra)
+    if reply is None:
+        return
+    await _apply_post_response_effects(message, interaction, prepared)
+    await _deliver_normal_reply(message, interaction, prepared, reply)
 
 
 async def _duo_autoplay_loop():
