@@ -30,10 +30,14 @@ from character_bits import (
 from interaction_policy import (
     CURRENT, Outcome, classify as classify_interaction, current_or_classify,
     authoritative_prompt, optional_allowed, optional_command_blocked, credential_disclosure,
-    pause_gags,
+    pause_gags, resolve_character,
 )
 from message_pipeline import (
     PreparedMessage, command_context_matches, log_operation_error,
+)
+from response_context import (
+    GeneratedResponse, PromptFragments, RawRelationshipState, ResponseContext,
+    ResponseRequest, derive_response_state,
 )
 from awareness_features import (
     activity_snapshot, choose_duo_advice_mode,
@@ -79,14 +83,11 @@ from relationship_engine import (
     describe_scene_state,
     describe_speech_drift,
     describe_topic_profile,
-    detect_emotional_triggers,
     detect_banter_theme,
     detect_conflict_signal,
-    detect_scenario,
     detect_topics,
     detect_repair_signal,
     extract_continuity_hooks,
-    extract_memory_events,
     extract_callback_candidate,
     infer_scene_update,
     infer_bot_relation_deltas,
@@ -1221,6 +1222,8 @@ async def _web_search_groq(query: str) -> str:
     try:
         results = await search_web(query, max_results=5)
         return format_search_context(results)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log_error("web_search", e)
     return ""
@@ -1230,6 +1233,8 @@ async def _grounded_search_bundle(query: str) -> tuple[str, str]:
     try:
         results = await search_web(query, max_results=5)
         return format_search_context(results), format_search_sources(results)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log_error("grounded_search_bundle", e)
         return "", ""
@@ -1326,405 +1331,565 @@ async def _fetch_nws_weather(location: str) -> dict | None:
     return result
 
 # ── AI core ───────────────────────────────────────────────────────────────────
+def _response_error(operation, error, request=None, *, subsystem="response_context"):
+    if isinstance(error, asyncio.CancelledError):
+        raise error
+    extra = {
+        "subsystem": subsystem,
+        "operation": operation,
+        "error_category": type(error).__name__,
+        "user_id": getattr(request, "user_id", 0),
+        "channel_id": getattr(request, "channel_id", 0),
+    }
+    if isinstance(error, (sqlite3.OperationalError, sqlite3.IntegrityError)):
+        logger.error("response persistence failure", extra=extra, exc_info=error)
+    elif subsystem == "provider":
+        logger.warning("response provider unavailable", extra=extra, exc_info=error)
+    else:
+        logger.exception("unexpected response pipeline failure", extra=extra, exc_info=error)
+
+
+def _minimal_response_context(request, user, interaction):
+    raw = RawRelationshipState.from_user(user)
+    derived = derive_response_state(
+        bot_name=BOT_NAME, message=request.user_message, display_name=request.display_name,
+        is_dm=request.is_dm, serious=interaction.serious, user=user, raw=raw,
+        history=[], prior_last_active=request.prior_last_active,
+        random_value=random.random(),
+    )
+    return ResponseContext(
+        request=request, interaction=interaction, user=user or {}, raw=raw,
+        derived=derived, resolved=resolve_character(interaction, user, {}),
+        history=[], recent_replies=[], self_dimensions={},
+    )
+
+
+async def _load_response_context(request, user, interaction):
+    user, world_context = await WORLD.response_context(
+        request.user_id, request.channel_id, request.user_message, user,
+        interaction=interaction,
+    )
+    history = await mem.get_history(
+        request.user_id, request.channel_id,
+        limit=CONFIG.conversation_history_limit,
+        max_chars_per_message=CONFIG.history_message_chars,
+        max_total_chars=CONFIG.history_total_chars,
+    )
+    recent_replies = await _recent_reply_samples(
+        channel_id=request.channel_id, user_id=request.user_id,
+    )
+    self_prompt, self_dimensions = "", {}
+    try:
+        modeled_self = await self_store.context(request.user_id)
+        self_prompt = modeled_self.prompt_fragment()
+        self_dimensions = modeled_self.dimensions
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _response_error("self_context", exc, request, subsystem="persistence")
+    except Exception as exc:
+        _response_error("self_context", exc, request)
+
+    raw = RawRelationshipState.from_user(user)
+    derived = derive_response_state(
+        bot_name=BOT_NAME, message=request.user_message, display_name=request.display_name,
+        is_dm=request.is_dm, serious=interaction.serious, user=user, raw=raw,
+        history=history, prior_last_active=request.prior_last_active,
+        random_value=random.random(),
+    )
+    if derived.time.used_fallback:
+        logger.warning("invalid user timezone; using local time", extra={
+            "user_id": request.user_id,
+            "timezone_name": derived.time.requested_timezone,
+            "subsystem": "response_context",
+        })
+    context = ResponseContext(
+        request=request, interaction=interaction, user=user or {}, raw=raw,
+        derived=derived, resolved=resolve_character(interaction, user, self_dimensions),
+        history=history, recent_replies=recent_replies,
+        self_dimensions=self_dimensions, self_prompt=self_prompt,
+    )
+    await _enrich_response_context(context, world_context)
+    _assemble_response_prompt(context)
+    return context
+
+
+async def _enrich_response_context(context, world_context):
+    request, user, raw, derived = (
+        context.request, context.user, context.raw, context.derived,
+    )
+    fragments = PromptFragments(
+        identity=[f"mention:{request.author_mention}", f"name:{request.display_name}"],
+        raw_state=[
+            f"MOOD:{raw.mood}({mood_label(raw.mood)})", f"AFFECTION:{raw.affection}",
+            f"TRUST:{raw.trust}", derived.time.prompt,
+            f"len:{derived.response_length_hint}",
+        ],
+    )
+    fragments.derived_state.append(time_drift_prompt(derived.time.now.hour))
+    if raw.affection >= 75:
+        fragments.derived_state.append("AFFECTION_SOFT")
+    if raw.trust >= 70:
+        fragments.derived_state.append("TRUST_OPEN")
+    if request.is_owner:
+        fragments.identity.append("CREATOR")
+    if request.is_dm:
+        fragments.identity.append("DM_MODE")
+    awareness_hint = implementation_answer_hint(request.user_message)
+    if awareness_hint:
+        fragments.identity.append(awareness_hint)
+    attachment_style = attachment_guard(raw.affection / 10.0, raw.trust)
+    if attachment_style:
+        fragments.derived_state.append(attachment_style)
+
+    turing_hint = reverse_turing_hint(
+        request.user_message, derived.repeated_message_count,
+    )
+    if (context.interaction.allows("reverse_turing") and turing_hint
+            and eligible_for_joke(request.user_message) and random.random() < .18):
+        if await mem.consume_phrase(
+                f"user:{request.user_id}", "reverse_turing", 3 * 86400):
+            fragments.behavioral.append(turing_hint)
+    fragments.behavioral.append(willingness_prompt(willingness_context(
+        request.user_message,
+        repeated_count=derived.repeated_message_count,
+        permission_allowed=True,
+        conflict_open=raw.conflict_open,
+        trust=raw.trust,
+        irritation=context.self_dimensions.get("irritation", 0),
+    )))
+    drift_context = drift_phrase(raw.drift, raw.mood)
+    if drift_context:
+        fragments.derived_state.append(drift_context)
+    if raw.summary:
+        fragments.memory.append(f"SUMMARY:{raw.summary[:300]}")
+    speech_drift = describe_speech_drift(BOT_NAME, raw.style_profile)
+    if speech_drift:
+        fragments.derived_state.append(f"SPEECH_DRIFT:{speech_drift}")
+    arc_desc = describe_emotional_arc(BOT_NAME, derived.emotional_arc)
+    if arc_desc:
+        fragments.derived_state.append(f"ARC:{derived.emotional_arc}|{arc_desc}")
+    scenario_desc = describe_scenario_context(
+        BOT_NAME, derived.learning.scenario,
+    )
+    if scenario_desc:
+        fragments.derived_state.append(
+            f"SCENARIO:{derived.learning.scenario}|{scenario_desc}"
+        )
+    emotional_layer = describe_emotional_layers(
+        BOT_NAME, raw.mood, raw.affection, raw.trust,
+        derived.emotional_arc, list(derived.learning.triggers),
+    )
+    if emotional_layer:
+        fragments.derived_state.append(f"EMOTIONAL_LAYER:{emotional_layer}")
+    emotional_event = describe_emotional_event(
+        BOT_NAME, list(derived.learning.triggers), affection=raw.affection,
+        trust=raw.trust, conflict_open=raw.conflict_open,
+        repair_progress=user.get("repair_progress", 0),
+    )
+    if emotional_event:
+        fragments.behavioral.append(emotional_event)
+    arc_unlocks = describe_arc_unlocks(BOT_NAME, derived.emotional_arc)
+    if arc_unlocks:
+        fragments.behavioral.append(f"ARC_UNLOCKS:{arc_unlocks}")
+    if derived.progression:
+        fragments.derived_state.append(f"PROGRESSION:{derived.progression}")
+    if raw.conflict_open and raw.conflict_summary:
+        fragments.memory.append(f"CONFLICT_OPEN:{raw.conflict_summary[:140]}")
+    aftermath = describe_conflict_aftermath(
+        BOT_NAME, raw.conflict_summary, user.get("last_conflict_ts", 0),
+        user.get("repair_progress", 0), conflict_open=raw.conflict_open,
+    )
+    if aftermath:
+        fragments.behavioral.append(aftermath)
+    if (context.interaction.allows("callback") and raw.callback_memory
+            and (callback_relevant(raw.callback_memory, request.user_message)
+                 or random.random() < .18)):
+        fragments.memory.append(f"CALLBACK:{raw.callback_memory[:180]}")
+    fragments.memory.extend(extract_continuity_hooks(
+        context.history, request.user_message,
+    ))
+    lore_hook = describe_lore_hook(BOT_NAME, request.user_message)
+    if lore_hook:
+        fragments.memory.append(lore_hook)
+    lore_tree = describe_specific_lore_tree(BOT_NAME, request.user_message)
+    if lore_tree:
+        fragments.memory.append(lore_tree)
+    live_world = describe_live_world_context(BOT_NAME, text=request.user_message)
+    if live_world:
+        fragments.world.append(live_world)
+    scene_desc = describe_scene_state(await mem.get_scene_state(request.channel_id))
+    if scene_desc:
+        fragments.world.append(f"SCENE:{scene_desc}")
+
+    if user.get("message_count", 0) >= 20:
+        profile = []
+        if user.get("romance_mode"):
+            profile.append("in romance mode with you")
+        if user.get("nsfw_mode"):
+            profile.append("unfiltered mode on")
+        if derived.time.days_since_last_seen > 1:
+            profile.append(f"last spoke {derived.time.days_since_last_seen}d ago")
+        if user.get("slow_burn", 0) >= 3:
+            profile.append(f"been kind {user['slow_burn']} days in a row")
+        if profile:
+            fragments.derived_state.append("PROFILE:" + ", ".join(profile))
+    if user.get("affection_nick"):
+        fragments.memory.append(f"AFFNICK:{user['affection_nick']}")
+    if user.get("grudge_nick") and not context.interaction.serious:
+        fragments.memory.append(f"GRUDGE:{user['grudge_nick']}")
+    lowered = request.user_message.lower()
+    if any(token in lowered for token in ["harbinger", "rank", "status", "authority", "power"]):
+        fragments.behavioral.append(
+            "SCARA_EDGE: show rank-conscious contempt and strategic respect for real strength"
+        )
+    if any(token in lowered for token in [
+            "creator", "built you", "made you", "ei", "raiden", "abandoned", "discarded"]):
+        fragments.behavioral.append(
+            "SCARA_EDGE: creator wounds and abandonment should sharpen the answer, not stay generic"
+        )
+    extra_world = "\n".join(
+        item for item in (request.extra_context, world_context) if item
+    )
+    if extra_world:
+        fragments.world.append(extra_world)
+    fragments.memory.extend(await _user_memory_context(request.user_id, user))
+    if not user.get("utility_mode", True):
+        fragments.behavioral.append(
+            "UTILITY_PREF: utility mode is off; keep facts natural instead of list-like"
+        )
+
+    if request.use_search or needs_search(request.user_message):
+        search_result, context.search_sources = await _grounded_search_bundle(
+            request.user_message,
+        )
+        if search_result:
+            fragments.factual.append(
+                "FACT_MODE: answer accurately first, then add personality"
+            )
+            if user.get("utility_mode", True):
+                fragments.factual.append(
+                    "UTILITY_MODE: lead with crisp facts, then one in-character observation"
+                )
+            fragments.factual.extend([
+                "CITATIONS: when using search results, cite claims inline like [1] or [2]",
+                f"SEARCH_RESULT:{search_result[:1200]}",
+            ])
+            debug_event("search", f"{BOT_NAME} injected web context for user={request.user_id}")
+
+    context.partner_prompt = await _partner_prompt_context(request.user_message)
+    context.duo_prompt = await _duo_prompt_context(
+        request.channel_id, request.user_message,
+    )
+    if request.channel_obj and hasattr(request.channel_obj, "history"):
+        context.channel_prompt = await fetch_channel_context(request.channel_obj)
+    environment = heartbeat.last_environment
+    if environment and (
+        awareness_hint or environment.database_health != "healthy"
+        or environment.provider_status != "healthy"
+        or environment.cpu_pressure in {"elevated", "high"}
+        or environment.memory_pressure in {"elevated", "high"}
+        or environment.disk_pressure in {"elevated", "high"}
+    ):
+        context.environment_prompt = environment.prompt_fragment()
+    context.fragments = fragments
+
+
+def _assemble_response_prompt(context):
+    request = context.request
+    sections = ["[" + "|".join(context.fragments.ordered()) + "]"]
+    sections.extend(filter(None, [
+        context.partner_prompt,
+        context.duo_prompt,
+        context.self_prompt,
+        context.environment_prompt,
+        context.channel_prompt,
+    ]))
+    # This is intentionally the final directive after all lower-priority state.
+    sections.append(authoritative_prompt(
+        context.interaction, context.user, context.self_dimensions,
+        resolved=context.resolved,
+    ))
+    sections.append(f"{request.display_name}: {request.user_message}")
+    base_context = "\n".join(sections)
+    repeat_guard = build_prompt_guard(BOT_NAME, context.recent_replies)
+    context.user_prompt = (
+        ((repeat_guard + "\n\n") if repeat_guard else "") + base_context
+    )
+    context.system_prompt = build_system(
+        context.user, request.display_name, request.is_owner,
+        allow_nsfw=_channel_allows_nsfw(
+            request.channel_obj, is_dm=request.is_dm,
+        ),
+    )
+
+
+def _configured_provider_error(error):
+    return (
+        isinstance(error, (GroqError, asyncio.TimeoutError, TimeoutError, ConnectionError, OSError))
+        or isinstance(error, RuntimeError)
+        and "provider is not configured" in str(error).lower()
+    )
+
+
+async def _generate_character_reply(context):
+    reply = ""
+    retry_context = context.user_prompt
+    attempts = 0
+    for attempt in range(CONFIG.response_attempts):
+        attempts = attempt + 1
+        messages = (
+            [{"role": "system", "content": context.system_prompt}]
+            + context.history
+            + [{"role": "user", "content": retry_context}]
+        )
+
+        def _blocking():
+            return ai.call_with_retry(
+                model=GROQ_MODEL, max_completion_tokens=800,
+                messages=messages, temperature=0.9,
+            )
+
+        try:
+            response = await asyncio.get_event_loop().run_in_executor(None, _blocking)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not _configured_provider_error(exc):
+                raise
+            environment_monitor.record_provider_failure()
+            _response_error("generate", exc, context.request, subsystem="provider")
+            return GeneratedResponse(
+                fallback_reply(BOT_NAME, context.recent_replies), context,
+                bool(context.search_sources), context.search_sources, attempts, True,
+            )
+        environment_monitor.record_provider_success()
+        reply = response.choices[0].message.content.strip() if response.choices else ""
+        reply = diversify_reply(
+            BOT_NAME, strip_narration(reply), context.recent_replies,
+        )
+        if reply and not looks_repetitive(
+                reply, context.recent_replies,
+                include_shape=not bool(context.search_sources)):
+            break
+        retry_context = (
+            context.user_prompt
+            + "\n\nRETRY: The last draft was too close to your recent phrasing. "
+            + "Use a different opening, different mockery template, and different sentence rhythm."
+        )
+    fallback_used = not bool(reply)
+    if fallback_used:
+        reply = fallback_reply(BOT_NAME, context.recent_replies)
+    if context.search_sources:
+        reply = f"{reply}\n\n{context.search_sources}"
+    return GeneratedResponse(
+        reply, context, bool(context.search_sources), context.search_sources,
+        attempts, fallback_used,
+    )
+
+
+async def _apply_interaction_learning(context):
+    request, interaction, signals = (
+        context.request, context.interaction, context.derived.learning,
+    )
+    await mem.add_message(
+        request.user_id, request.channel_id, "user", request.user_message,
+    )
+    # Assistant conversation memory remains exclusively in the delivery path.
+    lowered = request.user_message.lower()
+    if interaction.serious:
+        pass
+    elif any(keyword in lowered for keyword in RUDE_KW):
+        await mem.update_mood(request.user_id, -2)
+        await mem.update_trust(request.user_id, -1)
+    elif any(keyword in lowered for keyword in ROMANCE_KW):
+        user_data = await mem.get_user(request.user_id)
+        if user_data and not user_data.get("romance_mode", False):
+            await mem.set_mode(request.user_id, "romance_mode", True)
+            logger.info("romance mode enabled from explicit signal", extra={
+                "user_id": request.user_id,
+            })
+        await mem.update_mood(request.user_id, +1)
+        await mem.update_affection(request.user_id, +1)
+        await mem.update_trust(request.user_id, +1)
+        await mem.update_drift(request.user_id, +1)
+        _, threshold = await mem.increment_slow_burn(request.user_id)
+        if threshold:
+            await self_store.record_event(
+                "relationship_change",
+                "A user sustained meaningful kindness across multiple days.",
+                importance=8, related_user_id=request.user_id,
+                dedupe_key=f"slow_burn_threshold:{request.user_id}",
+            )
+        await mem.update_last_statement(
+            request.user_id, request.user_message[:200],
+        )
+    elif any(keyword in lowered for keyword in NICE_KW):
+        await mem.update_mood(request.user_id, +1)
+        await mem.update_affection(request.user_id, +1)
+        await mem.update_trust(request.user_id, +1)
+        await mem.update_last_statement(
+            request.user_id, request.user_message[:200],
+        )
+    elif signals.positive_score >= 2:
+        await mem.update_affection(request.user_id, +1)
+        await mem.update_mood(request.user_id, +1)
+        await mem.update_trust(request.user_id, +1)
+        await mem.update_drift(request.user_id, +1)
+    elif signals.positive_score == 1:
+        await mem.update_affection(request.user_id, +1)
+    elif signals.negative_score >= 2:
+        await mem.update_mood(request.user_id, -1)
+        await mem.update_trust(request.user_id, -1)
+    elif signals.negative_score == 1:
+        await mem.update_mood(request.user_id, -1)
+
+    if not interaction.serious and signals.scenario == "emotional_comfort":
+        await mem.update_trust(request.user_id, +1)
+        if "softness" in signals.triggers or "protectiveness" in signals.triggers:
+            await mem.update_affection(request.user_id, +1)
+    elif not interaction.serious and signals.scenario == "combat_action":
+        await mem.update_mood(request.user_id, -1)
+        await mem.update_trust(request.user_id, +1)
+    elif not interaction.serious and signals.scenario == "lore_discussion":
+        await mem.update_trust(request.user_id, +1)
+        await mem.update_drift(request.user_id, +1)
+    elif not interaction.serious and signals.scenario == "relationship_progression":
+        await mem.update_affection(request.user_id, +1)
+        await mem.update_trust(request.user_id, +1)
+    elif not interaction.serious and signals.scenario == "introspection":
+        await mem.update_trust(request.user_id, +1)
+    if not interaction.serious and "jealousy" in signals.triggers:
+        await mem.update_mood(request.user_id, -1)
+        await mem.update_affection(request.user_id, +1)
+    if not interaction.serious and "protectiveness" in signals.triggers:
+        await mem.update_trust(request.user_id, +1)
+    if not interaction.serious and "boredom" in signals.triggers:
+        await mem.update_mood(request.user_id, -1)
+    if not interaction.serious and random.random() < .05:
+        await mem.update_drift(request.user_id, +1)
+    await _learn_user_state(request.user_id, request.user_message)
+    for kind, memory_text, weight in signals.memory_events:
+        await mem.add_memory_event(
+            request.user_id, kind, memory_text,
+            max(weight, _memory_weight_for(kind)),
+        )
+        debug_event("memory", f"{BOT_NAME} memory_bank user={request.user_id} kind={kind}")
+    if signals.scene_update:
+        await mem.update_scene_state(
+            request.channel_id, **signals.scene_update,
+        )
+        debug_event(
+            "scene",
+            f"{BOT_NAME} channel={request.channel_id} fields={','.join(signals.scene_update.keys())}",
+        )
+
+
+async def _claim_response_progression(context):
+    refreshed_user = await mem.get_user(context.request.user_id)
+    if not refreshed_user:
+        return context.user
+    progression = describe_relationship_progression(
+        BOT_NAME, refreshed_user.get("affection", 0), refreshed_user.get("trust", 0),
+        romance_mode=bool(refreshed_user.get("romance_mode")),
+        conflict_open=bool(refreshed_user.get("conflict_open")),
+        slow_burn=refreshed_user.get("slow_burn", 0),
+    )
+    stage = progression.split("|", 1)[0]
+    milestone_note = progression_milestone_note(BOT_NAME, stage)
+    marker = f"progress:{stage}"
+    if milestone_note and not await mem.has_milestone(
+            f"{BOT_NAME}:user:{context.request.user_id}", marker):
+        await mem.add_milestone(
+            f"{BOT_NAME}:user:{context.request.user_id}", marker, milestone_note,
+        )
+        debug_event(
+            "relationship",
+            f"{BOT_NAME} user_progression user={context.request.user_id} stage={stage}",
+        )
+    return refreshed_user
+
+
+async def _finalize_character_reply(generated, refreshed_user):
+    context = generated.context
+    reply = diversify_reply(
+        BOT_NAME, strip_narration(generated.text), context.recent_replies,
+    )
+    reply = await _apply_phrase_policy(
+        reply, context.recent_replies, user_id=context.request.user_id,
+        mood=(refreshed_user or context.user).get("mood", 0),
+        conflict_open=(refreshed_user or context.user).get("conflict_open", False),
+    )
+    return reply or fallback_reply(BOT_NAME, context.recent_replies)
+
+
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False,
                        prior_last_active: float | None = None, defer_delivery=False,
                        interaction=None):
-    recent_replies: list[str] = []
-    search_sources = ""
-    try:
-        interaction = interaction or current_or_classify(
-            user_message, user, user_id=user_id, channel_id=channel_id, is_dm=is_dm
-        )
-        user, world_context = await WORLD.response_context(
-            user_id, channel_id, user_message, user, interaction=interaction,
-        )
-        extra_context += "\n" + world_context
-        history = await mem.get_history(
-            user_id, channel_id, limit=CONFIG.conversation_history_limit,
-            max_chars_per_message=CONFIG.history_message_chars,
-            max_total_chars=CONFIG.history_total_chars,
-        )
-        mood      = user.get("mood",0) if user else 0
-        affection = user.get("affection",0) if user else 0
-        trust     = user.get("trust",0) if user else 0
-        drift     = user.get("drift_score",0) if user else 0
-        summary   = user.get("memory_summary") if user else None
-        style_profile = user.get("style_profile", {}) if user else {}
-        conflict_open = user.get("conflict_open", False) if user else False
-        conflict_summary = user.get("conflict_summary") if user else None
-        callback_memory = user.get("callback_memory") if user else None
-        repair_count = user.get("repair_count", 0) if user else 0
-        recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
-        try:
-            modeled_self = await self_store.context(user_id)
-            self_context = modeled_self.prompt_fragment()
-            self_dimensions = modeled_self.dimensions
-            irritation = self_dimensions.get("irritation", 0)
-        except Exception as exc:
-            logger.warning("self context unavailable", extra={"user_id": user_id, "error_category": type(exc).__name__})
-            self_context = ""
-            self_dimensions = {}
-            irritation = 0
-
-        depth = (user or {}).get("rp_depth", "medium")
-        r = random.random()
-        if interaction.serious:
-            hint = "Use enough words to answer the current need clearly; do not force brevity."
-        elif depth == "low":
-            hint = "One sentence."
-        elif depth == "high":
-            if r < .3: hint = "2-3 sentences."
-            elif r < .75: hint = "A few sentences."
-            else: hint = "Longer, dramatic."
-        else:
-            if r<.34:   hint="2-5 words only."
-            elif r<.67: hint="One sentence."
-            elif r<.86: hint="2-3 sentences."
-            elif r<.95: hint="A few sentences."
-            else:       hint="Longer, dramatic."
-
-        # Time and date context
-        try:
-            now = datetime.now(ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles"))
-        except Exception:
-            now = datetime.now()
-        previous_activity = prior_last_active if prior_last_active is not None else (
-            user.get("last_active", 0) if user else 0
-        )
-        days_ago = round((time.time() - previous_activity) / 86400, 1) if previous_activity else 0
-        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
-
-        parts = [f"mention:{author_mention}",f"name:{display_name}",
-                 f"MOOD:{mood}({mood_label(mood)})",f"AFFECTION:{affection}",
-                 f"TRUST:{trust}",date_ctx,f"len:{hint}"]
-        parts.append(time_drift_prompt(now.hour))
-        if affection>=75: parts.append("AFFECTION_SOFT")
-        if trust>=70:     parts.append("TRUST_OPEN")
-        if is_owner:      parts.append("CREATOR")
-        if is_dm:         parts.append("DM_MODE")
-        awareness_hint = implementation_answer_hint(user_message)
-        if awareness_hint:
-            parts.append(awareness_hint)
-        # Relationship warmth is scoped to this user. The global attachment
-        # dimension still influences cadence through SELF_STATE, but cannot make
-        # one user's history soften replies to somebody else.
-        attachment_style = attachment_guard(affection / 10.0, trust)
-        if attachment_style:
-            parts.append(attachment_style)
-        repeated_count = sum(
-            1 for item in history[-16:]
-            if item.get("role") == "user" and item.get("content", "").strip().lower() == user_message.strip().lower()
-        )
-        turing_hint = reverse_turing_hint(user_message, repeated_count)
-        if interaction.allows("reverse_turing") and turing_hint and eligible_for_joke(user_message) and random.random() < .18:
-            allowed = await mem.consume_phrase(f"user:{user_id}", "reverse_turing", 3 * 86400)
-            if allowed:
-                parts.append(turing_hint)
-        parts.append(willingness_prompt(willingness_context(
-            user_message, repeated_count=repeated_count, permission_allowed=True,
-            conflict_open=conflict_open, trust=trust, irritation=irritation,
-        )))
-        dp = drift_phrase(drift, mood)
-        if dp: parts.append(dp)
-        if summary: parts.append(f"SUMMARY:{summary[:300]}")
-        speech_drift = describe_speech_drift(BOT_NAME, style_profile)
-        if speech_drift: parts.append(f"SPEECH_DRIFT:{speech_drift}")
-        emotional_arc = compute_emotional_arc(affection, trust, user.get("slow_burn", 0) if user else 0, conflict_open, repair_count)
-        arc_desc = describe_emotional_arc(BOT_NAME, emotional_arc)
-        if arc_desc: parts.append(f"ARC:{emotional_arc}|{arc_desc}")
-        scenario = detect_scenario(user_message, is_dm=is_dm)
-        scenario_desc = describe_scenario_context(BOT_NAME, scenario)
-        if scenario_desc: parts.append(f"SCENARIO:{scenario}|{scenario_desc}")
-        triggers = detect_emotional_triggers(user_message)
-        emotional_layer = describe_emotional_layers(BOT_NAME, mood, affection, trust, emotional_arc, triggers)
-        if emotional_layer: parts.append(f"EMOTIONAL_LAYER:{emotional_layer}")
-        emotional_event = describe_emotional_event(
-            BOT_NAME,
-            triggers,
-            affection=affection,
-            trust=trust,
-            conflict_open=conflict_open,
-            repair_progress=user.get("repair_progress", 0) if user else 0,
-        )
-        if emotional_event:
-            parts.append(emotional_event)
-        arc_unlocks = describe_arc_unlocks(BOT_NAME, emotional_arc)
-        if arc_unlocks: parts.append(f"ARC_UNLOCKS:{arc_unlocks}")
-        progression = describe_relationship_progression(
-            BOT_NAME,
-            affection,
-            trust,
-            romance_mode=bool(user.get("romance_mode")) if user else False,
-            conflict_open=conflict_open,
-            slow_burn=user.get("slow_burn", 0) if user else 0,
-        )
-        if progression: parts.append(f"PROGRESSION:{progression}")
-        if conflict_open and conflict_summary:
-            parts.append(f"CONFLICT_OPEN:{conflict_summary[:140]}")
-        conflict_aftermath = describe_conflict_aftermath(
-            BOT_NAME,
-            conflict_summary,
-            user.get("last_conflict_ts", 0) if user else 0,
-            user.get("repair_progress", 0) if user else 0,
-            conflict_open=conflict_open,
-        )
-        if conflict_aftermath:
-            parts.append(conflict_aftermath)
-        if interaction.allows("callback") and callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
-            parts.append(f"CALLBACK:{callback_memory[:180]}")
-        parts.extend(extract_continuity_hooks(history, user_message))
-        lore_hook = describe_lore_hook(BOT_NAME, user_message)
-        if lore_hook: parts.append(lore_hook)
-        lore_tree = describe_specific_lore_tree(BOT_NAME, user_message)
-        if lore_tree: parts.append(lore_tree)
-        live_world = describe_live_world_context(BOT_NAME, text=user_message)
-        if live_world: parts.append(live_world)
-        scene_desc = describe_scene_state(await mem.get_scene_state(channel_id))
-        if scene_desc:
-            parts.append(f"SCENE:{scene_desc}")
-        # User profile — what he actually knows about this person
-        if user and user.get("message_count",0) >= 20:
-            profile_parts = []
-            if user.get("romance_mode"): profile_parts.append("in romance mode with you")
-            if user.get("nsfw_mode"):    profile_parts.append("unfiltered mode on")
-            if days_ago > 1:            profile_parts.append(f"last spoke {days_ago}d ago")
-            if user.get("slow_burn",0)>=3: profile_parts.append(f"been kind {user['slow_burn']} days in a row")
-            if profile_parts:
-                parts.append("PROFILE:" + ", ".join(profile_parts))
-        if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
-        if user and user.get("grudge_nick") and not interaction.serious:
-            parts.append(f"GRUDGE:{user['grudge_nick']}")
-        msg_lower = user_message.lower()
-        if any(token in msg_lower for token in ["harbinger", "rank", "status", "authority", "power"]):
-            parts.append("SCARA_EDGE: show rank-conscious contempt and strategic respect for real strength")
-        if any(token in msg_lower for token in ["creator", "built you", "made you", "ei", "raiden", "abandoned", "discarded"]):
-            parts.append("SCARA_EDGE: creator wounds and abandonment should sharpen the answer, not stay generic")
-        if extra_context: parts.append(extra_context)
-        parts.extend(await _user_memory_context(user_id, user))
-        if user and not user.get("utility_mode", True):
-            parts.append("UTILITY_PREF: utility mode is off; keep facts natural instead of list-like")
-        if use_search or needs_search(user_message):
-            search_result, search_sources = await _grounded_search_bundle(user_message)
-            if search_result:
-                parts.append("FACT_MODE: answer accurately first, then add personality")
-                if user and user.get("utility_mode", True):
-                    parts.append("UTILITY_MODE: lead with crisp facts, then one in-character observation")
-                parts.append("CITATIONS: when using search results, cite claims inline like [1] or [2]")
-                parts.append(f"SEARCH_RESULT:{search_result[:1200]}")
-                debug_event("search", f"{BOT_NAME} injected web context for user={user_id}")
-
-        partner_context = await _partner_prompt_context(user_message)
-        duo_context = await _duo_prompt_context(channel_id, user_message)
-        channel_ctx = ""
-        if channel_obj and hasattr(channel_obj, 'history'):
-            channel_ctx = await fetch_channel_context(channel_obj)
-        base_context = "["+"|".join(parts)+"]\n"
-        if partner_context:
-            base_context += partner_context + "\n"
-        if duo_context:
-            base_context += duo_context + "\n"
-        if self_context:
-            base_context += self_context + "\n"
-        environment = heartbeat.last_environment
-        if environment and (
-            awareness_hint
-            or environment.database_health != "healthy"
-            or environment.provider_status != "healthy"
-            or environment.cpu_pressure in {"elevated", "high"}
-            or environment.memory_pressure in {"elevated", "high"}
-            or environment.disk_pressure in {"elevated", "high"}
-        ):
-            base_context += environment.prompt_fragment() + "\n"
-        if channel_ctx: base_context += channel_ctx + "\n\n"
-        # Last response-time directive wins over raw mood/arc/self-state inputs.
-        base_context += authoritative_prompt(interaction, user, self_dimensions) + "\n"
-        base_context += f"{display_name}: {user_message}"
-
-        repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
-        context_block = ((repeat_guard + "\n\n") if repeat_guard else "") + base_context
-
-        history.append({"role":"user","content":context_block})
-        system = build_system(
-            user, display_name, is_owner,
-            allow_nsfw=_channel_allows_nsfw(channel_obj, is_dm=is_dm),
-        )
-
-        reply = ""
-        retry_context = context_block
-        factual_mode = bool(search_sources)
-        for attempt in range(CONFIG.response_attempts):
-            msgs = [{"role":"system","content":system}] + history[:-1] + [{"role":"user","content":retry_context}]
-
-            def _blocking():
-                return ai.call_with_retry(
-                    model=GROQ_MODEL, max_completion_tokens=800, messages=msgs,
-                    temperature=0.9,
-                )
-
-            resp = await asyncio.get_event_loop().run_in_executor(None, _blocking)
-            environment_monitor.record_provider_success()
-            reply = resp.choices[0].message.content.strip() if resp.choices else ""
-            reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
-            if reply and not looks_repetitive(reply, recent_replies, include_shape=not factual_mode):
-                break
-            retry_context = context_block + "\n\nRETRY: The last draft was too close to your recent phrasing. "
-            retry_context += "Use a different opening, different mockery template, and different sentence rhythm."
-
-        if not reply:
-            reply = fallback_reply(BOT_NAME, recent_replies)
-        if search_sources:
-            reply = f"{reply}\n\n{search_sources}"
-
-    except Exception as e:
-        environment_monitor.record_provider_failure()
-        log_error("get_response", e)
-        reply = fallback_reply(BOT_NAME, recent_replies)
-
-    try:
-        await mem.add_message(user_id, channel_id, "user", user_message)
-        # NOTE: assistant reply is saved in on_message AFTER voice/text decision
-        msg_l = user_message.lower()
-        scenario = detect_scenario(user_message, is_dm=is_dm)
-        triggers = detect_emotional_triggers(user_message)
-
-        # Strong keyword triggers
-        if interaction.serious:
-            pass  # Serious disclosures do not mutate petty mood/relationship state.
-        elif any(k in msg_l for k in RUDE_KW):
-            await mem.update_mood(user_id, -2)
-            await mem.update_trust(user_id, -1)
-        elif any(k in msg_l for k in ROMANCE_KW):
-            # Auto-enable romance mode if not already on
-            user_data = await mem.get_user(user_id)
-            if user_data and not user_data.get("romance_mode", False):
-                await mem.set_mode(user_id, "romance_mode", True)
-                logger.info("romance mode enabled from explicit signal", extra={"user_id": user_id})
-            await mem.update_mood(user_id, +1)
-            await mem.update_affection(user_id, +1)
-            await mem.update_trust(user_id, +1)
-            await mem.update_drift(user_id, +1)
-            _, threshold = await mem.increment_slow_burn(user_id)
-            if threshold:
-                await self_store.record_event(
-                    "relationship_change",
-                    "A user sustained meaningful kindness across multiple days.",
-                    importance=8, related_user_id=user_id,
-                    dedupe_key=f"slow_burn_threshold:{user_id}",
-                )
-            await mem.update_last_statement(user_id, user_message[:200])
-        elif any(k in msg_l for k in NICE_KW):
-            await mem.update_mood(user_id, +1)
-            await mem.update_affection(user_id, +1)
-            await mem.update_trust(user_id, +1)
-            await mem.update_last_statement(user_id, user_message[:200])
-        else:
-            # Sentiment nudges for normal conversation — small but add up over time
-            positive = sum([
-                any(w in msg_l for w in ["haha","lol","lmao","hehe","cute","nice","cool","fun",
-                                          "good","great","enjoy","happy","excited","interesting",
-                                          "wow","omg","yes","yay","please","😂","😭","❤","💜","🥺"]),
-                msg_l.endswith("!") and len(user_message) > 8,
-                "?" in user_message and len(user_message) > 15,  # asking = engaged
-                len(user_message) > 100,                          # long = invested
-            ])
-            negative = sum([
-                any(w in msg_l for w in ["ugh","ew","boring","whatever","idc","nope",
-                                          "wrong","bad","hate","worst","terrible","awful",
-                                          "seriously","really","😒","🙄"]),
-                user_message.count("...") > 1,
-            ])
-
-            if positive >= 2:
-                await mem.update_affection(user_id, +1)
-                await mem.update_mood(user_id, +1)
-                await mem.update_trust(user_id, +1)
-                await mem.update_drift(user_id, +1)
-            elif positive == 1:
-                await mem.update_affection(user_id, +1)
-            elif negative >= 2:
-                await mem.update_mood(user_id, -1)
-                await mem.update_trust(user_id, -1)
-            elif negative == 1:
-                await mem.update_mood(user_id, -1)
-
-        if not interaction.serious and scenario == "emotional_comfort":
-            await mem.update_trust(user_id, +1)
-            if "softness" in triggers or "protectiveness" in triggers:
-                await mem.update_affection(user_id, +1)
-        elif not interaction.serious and scenario == "combat_action":
-            await mem.update_mood(user_id, -1)
-            await mem.update_trust(user_id, +1)
-        elif not interaction.serious and scenario == "lore_discussion":
-            await mem.update_trust(user_id, +1)
-            await mem.update_drift(user_id, +1)
-        elif not interaction.serious and scenario == "relationship_progression":
-            await mem.update_affection(user_id, +1)
-            await mem.update_trust(user_id, +1)
-        elif not interaction.serious and scenario == "introspection":
-            await mem.update_trust(user_id, +1)
-
-        if not interaction.serious and "jealousy" in triggers:
-            await mem.update_mood(user_id, -1)
-            await mem.update_affection(user_id, +1)
-        if not interaction.serious and "protectiveness" in triggers:
-            await mem.update_trust(user_id, +1)
-        if not interaction.serious and "boredom" in triggers:
-            await mem.update_mood(user_id, -1)
-
-        if not interaction.serious and random.random() < .05:
-            await mem.update_drift(user_id, +1)
-        await _learn_user_state(user_id, user_message)
-        for kind, memory_text, weight in extract_memory_events(user_message):
-            await mem.add_memory_event(user_id, kind, memory_text, max(weight, _memory_weight_for(kind)))
-            debug_event("memory", f"{BOT_NAME} memory_bank user={user_id} kind={kind}")
-        scene_update = infer_scene_update(user_message, display_name)
-        if scene_update:
-            await mem.update_scene_state(channel_id, **scene_update)
-            debug_event("scene", f"{BOT_NAME} channel={channel_id} fields={','.join(scene_update.keys())}")
-    except Exception as e:
-        log_error("get_response/post", e)
-
-    refreshed_user = None
-    try:
-        refreshed_user = await mem.get_user(user_id)
-        if refreshed_user:
-            progression = describe_relationship_progression(
-                BOT_NAME,
-                refreshed_user.get("affection", 0),
-                refreshed_user.get("trust", 0),
-                romance_mode=bool(refreshed_user.get("romance_mode")),
-                conflict_open=bool(refreshed_user.get("conflict_open")),
-                slow_burn=refreshed_user.get("slow_burn", 0),
-            )
-            stage = progression.split("|", 1)[0]
-            milestone_note = progression_milestone_note(BOT_NAME, stage)
-            marker = f"progress:{stage}"
-            if milestone_note and not await mem.has_milestone(f"{BOT_NAME}:user:{user_id}", marker):
-                await mem.add_milestone(f"{BOT_NAME}:user:{user_id}", marker, milestone_note)
-                debug_event("relationship", f"{BOT_NAME} user_progression user={user_id} stage={stage}")
-    except Exception:
-        refreshed_user = user
-    reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
-    reply = await _apply_phrase_policy(
-        reply,
-        recent_replies,
-        user_id=user_id,
-        mood=(refreshed_user or user or {}).get("mood", 0),
-        conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
+    """Coordinate typed context, generation, learning, and final shaping."""
+    request = ResponseRequest(
+        user_id, channel_id, user_message, display_name, author_mention,
+        use_search, extra_context, is_owner, channel_obj, is_dm,
+        prior_last_active,
     )
-    if not reply:
-        reply = fallback_reply(BOT_NAME, recent_replies)
+    interaction = interaction or current_or_classify(
+        user_message, user, user_id=user_id, channel_id=channel_id, is_dm=is_dm,
+    )
+    context = None
+    try:
+        context = await _load_response_context(request, user, interaction)
+        generated = await _generate_character_reply(context)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _response_error("load", exc, request, subsystem="persistence")
+        context = _minimal_response_context(request, user, interaction)
+        generated = GeneratedResponse(
+            fallback_reply(BOT_NAME, []), context, False, "", 0, True,
+        )
+    except Exception as exc:
+        _response_error("build_or_generate", exc, request)
+        context = context or _minimal_response_context(request, user, interaction)
+        generated = GeneratedResponse(
+            fallback_reply(BOT_NAME, context.recent_replies), context,
+            bool(context.search_sources), context.search_sources, 0, True,
+        )
+
+    try:
+        await _apply_interaction_learning(context)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _response_error("interaction_learning", exc, request, subsystem="persistence")
+    except Exception as exc:
+        _response_error("interaction_learning", exc, request)
+
+    refreshed_user = context.user
+    try:
+        refreshed_user = await _claim_response_progression(context)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _response_error("progression", exc, request, subsystem="persistence")
+    except Exception as exc:
+        _response_error("progression", exc, request)
+
+    try:
+        reply = await _finalize_character_reply(generated, refreshed_user)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _response_error("finalize", exc, request)
+        reply = fallback_reply(BOT_NAME, context.recent_replies)
     if not defer_delivery:
-        await _record_delivered_reply(user_id, reply)
-    if is_dm and HOME.client.enabled:
-        try: await HOME.roommate(user_id, reply, user or {})
-        except Exception: pass
+        await _record_generated_reply_state(user_id, reply)
     return reply
 
 
-async def _record_delivered_reply(user_id, reply):
+async def _record_generated_reply_state(user_id, reply):
+    """Update anti-repeat/self-behavior state; this is not conversation memory."""
     remember_output(BOT_NAME, reply)
     if re.search(r"\b(i care|i noticed|i remembered|stay|don't leave|i was wrong|not fair of me)\b", reply, re.I):
         try:
@@ -1735,6 +1900,13 @@ async def _record_delivered_reply(user_id, reply):
             )
         except Exception as exc:
             logger.warning("self behavior event failed", extra={"user_id": user_id, "error_category": type(exc).__name__})
+
+
+async def _record_delivered_reply(user_id, reply):
+    """Record generated-output state only after the staged pipeline delivers it."""
+    await _record_generated_reply_state(user_id, reply)
+
+
 def _qai_blocking(prompt, max_tokens=200):
     try:
         resp = ai.call_with_retry(
@@ -3391,7 +3563,7 @@ async def _generate_normal_reply(message, interaction, prepared, extra_context):
                 extra_context=extra_context, is_owner=prepared.is_owner,
                 channel_obj=message.channel, is_dm=prepared.is_dm,
                 prior_last_active=prepared.previous_last_active,
-                interaction=interaction,
+                interaction=interaction, defer_delivery=True,
             )
     except asyncio.CancelledError:
         raise
@@ -3472,6 +3644,20 @@ async def _record_assistant_delivery(message, interaction, prepared, content):
         _pipeline_error("assistant_memory", exc, message, interaction, subsystem="persistence")
 
 
+async def _run_home_roommate_side_effect(
+    message, interaction, *, user_id, user, is_dm, reply,
+):
+    """Notify the optional home relay only after a DM was actually delivered."""
+    if not is_dm or not HOME.client.enabled:
+        return
+    try:
+        await HOME.roommate(user_id, reply, user or {})
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _pipeline_error("home_roommate", exc, message, interaction, subsystem="home")
+
+
 async def _deliver_normal_reply(message, interaction, prepared, reply):
     mood = prepared.user.get("mood", 0)
     reference = prepared.reference_message
@@ -3513,6 +3699,11 @@ async def _deliver_normal_reply(message, interaction, prepared, reply):
                 await _record_assistant_delivery(
                     message, interaction, prepared, f"[voice message] {reply}",
                 )
+                await _record_delivered_reply(prepared.user_id, reply)
+                await _run_home_roommate_side_effect(
+                    message, interaction, user_id=prepared.user_id,
+                    user=prepared.user, is_dm=prepared.is_dm, reply=reply,
+                )
                 await maybe_react(message, prepared.romance, interaction)
                 return True
             if asked_for_voice:
@@ -3552,6 +3743,11 @@ async def _deliver_normal_reply(message, interaction, prepared, reply):
         _pipeline_error("text_delivery", exc, message, interaction, subsystem="delivery")
         return False
     await _record_assistant_delivery(message, interaction, prepared, reply)
+    await _record_delivered_reply(prepared.user_id, reply)
+    await _run_home_roommate_side_effect(
+        message, interaction, user_id=prepared.user_id,
+        user=prepared.user, is_dm=prepared.is_dm, reply=reply,
+    )
     await troll.after_reply(message, sent_message)
     await maybe_react(message, prepared.romance, interaction)
     return True
@@ -4651,10 +4847,17 @@ async def dm_cmd(ctx,*,message:str=None):
         user=await _setup(ctx)
         reply=await get_response(
             ctx.author.id,ctx.author.id,message or "The user wants to speak privately.",
-            user,ctx.author.display_name,ctx.author.mention,is_dm=True
+            user,ctx.author.display_name,ctx.author.mention,is_dm=True,
+            defer_delivery=True,
         )
         try:
-            await ctx.author.send(reply); await ctx.message.add_reaction("📨")
+            await ctx.author.send(reply)
+            await _record_delivered_reply(ctx.author.id, reply)
+            await _run_home_roommate_side_effect(
+                ctx.message, CURRENT.get(), user_id=ctx.author.id, user=user,
+                is_dm=True, reply=reply,
+            )
+            await ctx.message.add_reaction("📨")
         except discord.Forbidden:
             await safe_reply(ctx,"Your DMs are closed. How cowardly.")
     except Exception as e: log_error("dm_cmd",e)
