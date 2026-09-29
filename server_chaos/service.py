@@ -903,19 +903,21 @@ class ServerChaos:
             or not message.guild
             or not harmless(message.content)
         ):
-            return
+            return False
         if (
             self.cfg(message.guild.id).get("parody_mode") != "PARTY"
             or message.channel.id
             not in self.cfg(message.guild.id).get("allowed_channels", [])
             or not public_channel(message.channel)
         ):
-            return
+            return False
         if secrets.randbelow(1000) != 0:
-            return
+            return False
         if await self.enabled(message.guild.id, "parody"):
             with contextlib.suppress(ValueError, discord.HTTPException):
                 await self.translate(message)
+                return True
+        return False
 
     async def dispatch(self, ctx, command, action, argument):
         await self.store.init()
@@ -995,7 +997,6 @@ class ServerChaos:
 
     def install(self):
         self.bot.add_listener(self.on_ready, "on_ready")
-        self.bot.add_listener(self.on_message, "on_message")
         close = self.bot.close
 
         async def closing():

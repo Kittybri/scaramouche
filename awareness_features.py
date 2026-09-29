@@ -22,6 +22,7 @@ _DISTRESS = (
     "awful day", "terrible day", "overwhelmed", "falling apart", "i'm scared", "im scared",
     "i feel alone", "can't stop crying", "cant stop crying", "panic attack", "really upset",
     "not okay", "need someone", "everything hurts", "having a hard time",
+    "not doing well", "seriously struggling", "i feel unsafe", "i'm not safe", "i am not safe",
 )
 _FACTUAL_PREFIXES = (
     "what is ", "what are ", "when did ", "where is ", "who is ", "how many ",
@@ -63,17 +64,19 @@ class SafetyContext:
 
 
 def classify_safety(text: str) -> SafetyContext:
-    lowered = (text or "").lower()
+    lowered = (text or "").lower().replace("’", "'")
     crisis = any(marker in lowered for marker in _CRISIS)
-    high_stakes = crisis or any(marker in lowered for marker in _HIGH_STAKES)
+    high_stakes = crisis or any(marker in lowered for marker in _HIGH_STAKES) or any(
+        marker in lowered for marker in ("medical advice", "medication dose", "legal advice", "investment advice", "tax advice")
+    )
     distress_hits = sum(marker in lowered for marker in _DISTRESS)
     # A single explicit distress phrase is enough; ordinary negative adjectives are not.
     return SafetyContext(crisis=crisis, high_stakes=high_stakes, distressed=bool(distress_hits))
 
 
-def advice_kind(text: str) -> str:
+def advice_kind(text: str, *, safety=None) -> str:
     lowered = re.sub(r"<@!?\d+>", "", (text or "").strip().lower())
-    safety = classify_safety(lowered)
+    safety = safety if safety is not None else classify_safety(lowered)
     if safety.protective:
         return "high_stakes"
     if any(lowered.startswith(prefix) for prefix in _FACTUAL_PREFIXES) or any(term in lowered for term in _FACTUAL_TERMS):
@@ -83,12 +86,12 @@ def advice_kind(text: str) -> str:
     return "none"
 
 
-def choose_duo_advice_mode(text: str, roll: float) -> str:
+def choose_duo_advice_mode(text: str, roll: float, *, safety=None) -> str:
     """Choose a bounded duo mode. The caller supplies the random roll for testability."""
-    safety = classify_safety(text)
+    safety = safety if safety is not None else classify_safety(text)
     if safety.protective:
         return "protective"
-    kind = advice_kind(text)
+    kind = advice_kind(text, safety=safety)
     if kind != "values":
         return ""
     if roll < 0.06:

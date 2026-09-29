@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -211,3 +212,34 @@ def test_normal_generation_path_uses_bounded_persistent_context(monkeypatch, tmp
     assert "A familiar user returned after an absence" in rendered
     assert "LAST_SEEN:5.0d_ago" in rendered
     assert "IMPLEMENTATION_RELEVANT" in rendered
+    assert rendered.count("RESOLVED_CHARACTER_STATE:") == 1
+    assert "user-scoped relationship=" in rendered
+    assert messages[0]["content"].startswith("You are Scaramouche")
+    assert "You are Wanderer" not in messages[0]["content"]
+
+    memory.update_mood = AsyncMock()
+    memory.update_trust = AsyncMock()
+    memory.update_affection = AsyncMock()
+    serious_user = dict(user, mood=-10, grudge_nick="pest")
+    serious = runtime.classify_interaction(
+        "I haven't slept and I'm seriously not doing well.",
+        user_id=12,
+        channel_id=44,
+        user=serious_user,
+        direct=True,
+    )
+    run(runtime.get_response(
+        12, 44, "I haven't slept and I'm seriously not doing well.",
+        serious_user, "Twelve", "<@12>", interaction=serious,
+    ))
+
+    serious_rendered = "\n".join(
+        message["content"] for message in captured[-1]["messages"]
+    )
+    assert serious_rendered.count("RESOLVED_CHARACTER_STATE:") == 1
+    assert "PROTECTIVE_OVERRIDE: Scaramouche" in serious_rendered
+    assert "ACCURACY_FIRST:" in serious_rendered
+    assert "GRUDGE:pest" not in serious_rendered
+    memory.update_mood.assert_not_awaited()
+    memory.update_trust.assert_not_awaited()
+    memory.update_affection.assert_not_awaited()
