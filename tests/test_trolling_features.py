@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
@@ -154,10 +154,52 @@ def test_reaction_routes_only_harmless_statements(tmp_path, monkeypatch, text):
 def test_reaction_failure_falls_through(tmp_path, monkeypatch):
     async def check():
         e, o, c, s = await fixture(tmp_path, monkeypatch)
+        logged = Mock()
+        monkeypatch.setattr("trolling_features.log_operation_error", logged)
         s.add_reaction.side_effect = discord.Forbidden(
             NS(status=403, reason="no"), "no"
         )
         assert not await e.before_reply(s)
+        s.add_reaction.assert_awaited_once()
+        assert logged.call_args.kwargs["operation"] == "judge_reaction"
+        assert isinstance(logged.call_args.kwargs["error"], discord.Forbidden)
+
+    run(check())
+
+
+@pytest.mark.parametrize("failure", [discord.Forbidden, discord.NotFound])
+def test_visible_edit_discord_failure_is_logged_without_retry(
+    tmp_path, monkeypatch, failure,
+):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        logged = Mock()
+        monkeypatch.setattr("trolling_features.log_operation_error", logged)
+        sent = NS(id=102, author=o.bot.user, content="This is a good game.")
+        current = NS(
+            id=102, author=o.bot.user, content=sent.content, edit=AsyncMock(),
+        )
+        fresh = NS(**vars(s))
+        if failure is discord.NotFound:
+            c.channel.fetch_message.side_effect = discord.NotFound(
+                NS(status=404, reason="gone"), "gone",
+            )
+        else:
+            c.channel.fetch_message.side_effect = lambda mid: (
+                fresh if mid == s.id else current
+            )
+            current.edit.side_effect = discord.Forbidden(
+                NS(status=403, reason="no"), "no",
+            )
+        monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
+
+        await e.edit_later(s, sent)
+
+        assert c.channel.fetch_message.await_count == (1 if failure is discord.NotFound else 2)
+        assert current.edit.await_count == (0 if failure is discord.NotFound else 1)
+        assert logged.call_count == 1
+        assert logged.call_args.kwargs["operation"] == "delayed_reply_edit"
+        assert isinstance(logged.call_args.kwargs["error"], failure)
 
     run(check())
 
@@ -203,6 +245,22 @@ def test_edit_shutdown_cancels_tasks(tmp_path, monkeypatch):
         await e.shutdown()
         assert e.closed and not e.tasks and not e.edit_ids
         c.channel.fetch_message.assert_not_awaited()
+
+    run(check())
+
+
+def test_delayed_edit_cancellation_propagates_and_cleans_state(tmp_path, monkeypatch):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        sent = NS(id=102, author=o.bot.user, content="This is a good game.")
+        e.edit_ids.add(sent.id)
+        monkeypatch.setattr(
+            "trolling_features.asyncio.sleep",
+            AsyncMock(side_effect=asyncio.CancelledError()),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await e.edit_later(s, sent, await e.revision(5, 2))
+        assert sent.id not in e.edit_ids
 
     run(check())
 

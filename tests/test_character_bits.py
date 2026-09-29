@@ -70,7 +70,7 @@ class CharacterBitsTests(unittest.TestCase):
         self.assertIn("await troll.typing(channel, user)", typing_source)
         self.assertIn(
             "await troll.after_reply(message, sent_message)",
-            function_source("_on_message_routed"),
+            function_source("_deliver_normal_reply"),
         )
         timeout_source = function_source("scaratimeout_cmd")
         self.assertIn("timedelta(seconds=60)", timeout_source)
