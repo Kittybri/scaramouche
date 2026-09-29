@@ -180,8 +180,9 @@ def resolve_character(context, user=None, dimensions=None):
                                   bool(user.get("grudge_nick") or user.get("grudge_active")), willingness)
 
 
-def authoritative_prompt(context, user=None, dimensions=None):
-    resolved = resolve_character(context, user, dimensions).prompt()
+def authoritative_prompt(context, user=None, dimensions=None, *, resolved=None):
+    """Render the final directive, reusing a response's pre-resolved state."""
+    resolved = (resolved or resolve_character(context, user, dimensions)).prompt()
     if context.safety.protective:
         resolved += "\n" + protective_prompt("scaramouche", context.safety)
     if context.serious:

@@ -347,6 +347,60 @@ async def test_text_delivery_controls_assistant_memory(runtime, monkeypatch):
 
 
 @async_test
+async def test_dm_delivery_runs_home_roommate_only_after_success(runtime, monkeypatch):
+    message = fake_message(runtime, guild=False)
+    message.reply.return_value = NS(id=103, content="reply", author=NS(id=999))
+    interaction = classify("hello", user_id=7, channel_id=20, direct=True)
+    item = prepared()
+    item.is_dm = True
+    memory = NS(add_message=AsyncMock(), consume_phrase=AsyncMock(return_value=False))
+    home = NS(client=NS(enabled=True), roommate=AsyncMock())
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime, "HOME", home)
+    monkeypatch.setattr(runtime, "_record_delivered_reply", AsyncMock())
+    monkeypatch.setattr(runtime, "FISH_AUDIO_API_KEY", "")
+    monkeypatch.setattr(runtime.random, "random", lambda: 1.0)
+    monkeypatch.setattr(runtime, "maybe_react", AsyncMock())
+    monkeypatch.setattr(runtime.troll, "after_reply", AsyncMock())
+
+    assert await runtime._deliver_normal_reply(message, interaction, item, "reply")
+    home.roommate.assert_awaited_once_with(7, "reply", item.user)
+
+    home.roommate.reset_mock()
+    message.reply.side_effect = discord_error(discord.Forbidden)
+    assert not await runtime._deliver_normal_reply(message, interaction, item, "reply")
+    home.roommate.assert_not_awaited()
+
+
+@async_test
+async def test_home_roommate_failure_is_logged_without_breaking_dm_delivery(
+    runtime, monkeypatch,
+):
+    message = fake_message(runtime, guild=False)
+    message.reply.return_value = NS(id=103, content="reply", author=NS(id=999))
+    interaction = classify("hello", user_id=7, channel_id=20, direct=True)
+    item = prepared()
+    item.is_dm = True
+    errors = Mock()
+    monkeypatch.setattr(runtime, "mem", NS(
+        add_message=AsyncMock(), consume_phrase=AsyncMock(return_value=False),
+    ))
+    monkeypatch.setattr(runtime, "HOME", NS(
+        client=NS(enabled=True), roommate=AsyncMock(side_effect=OSError("relay down")),
+    ))
+    monkeypatch.setattr(runtime, "_record_delivered_reply", AsyncMock())
+    monkeypatch.setattr(runtime, "log_operation_error", errors)
+    monkeypatch.setattr(runtime, "FISH_AUDIO_API_KEY", "")
+    monkeypatch.setattr(runtime.random, "random", lambda: 1.0)
+    monkeypatch.setattr(runtime, "maybe_react", AsyncMock())
+    monkeypatch.setattr(runtime.troll, "after_reply", AsyncMock())
+
+    assert await runtime._deliver_normal_reply(message, interaction, item, "reply")
+    assert errors.call_args.kwargs["subsystem"] == "home"
+    assert errors.call_args.kwargs["operation"] == "home_roommate"
+
+
+@async_test
 async def test_http_delivery_failure_stops_without_retry_or_memory(runtime, monkeypatch):
     message = fake_message(runtime)
     message.reply.side_effect = discord_error(discord.HTTPException)
@@ -474,6 +528,7 @@ async def test_provider_generation_is_called_once(runtime, monkeypatch):
 
     assert await runtime._generate_normal_reply(message, interaction, prepared(), "ctx") == "reply"
     provider.assert_awaited_once()
+    assert provider.await_args.kwargs["defer_delivery"] is True
 
 
 @async_test
