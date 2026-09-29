@@ -8,12 +8,16 @@ memory summaries, muted users, contradiction tracking, name progression.
 from __future__ import annotations
 
 import aiosqlite
+import asyncio
 import time
 import json
 import logging
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from db_migrations import (
+    LOCAL_MIGRATIONS, SHARED_MIGRATIONS, migration_status, run_migrations,
+)
 
 # Use Railway volume if available, otherwise current directory
 _data_dir = "/data" if os.path.isdir("/data") else "."
@@ -234,70 +238,16 @@ class Memory:
                     PRIMARY KEY (channel_id, setting)
                 );
             """)
-            # Idempotent preference migration; preserves existing rows and defaults.
-            await db.execute("BEGIN IMMEDIATE")
-            columns = {row[1] for row in await (await db.execute("PRAGMA table_info(user_preferences)")).fetchall()}
-            for field, definition in (("grudge_enabled", "INTEGER DEFAULT 1"),
-                                      ("lullaby_enabled", "INTEGER DEFAULT 0"),
-                                      ("lullaby_start_hour", "INTEGER DEFAULT 23"),
-                                      ("home_presence_enabled", "INTEGER DEFAULT 0"),
-                                      ("home_actions_enabled", "INTEGER DEFAULT 0"),
-                                      ("home_alarms_enabled", "INTEGER DEFAULT 0"),
-                                      ("voice_output_target", "TEXT DEFAULT ''")):
-                if field not in columns:
-                    await db.execute(f"ALTER TABLE user_preferences ADD COLUMN {field} {definition}")
-            migrations = [
-                ("username",           "TEXT"),
-                ("display_name",       "TEXT"),
-                ("romance_mode",       "INTEGER DEFAULT 0"),
-                ("nsfw_mode",          "INTEGER DEFAULT 0"),
-                ("proactive",          "INTEGER DEFAULT 1"),
-                ("allow_dms",          "INTEGER DEFAULT 1"),
-                ("timezone_name",      "TEXT DEFAULT 'America/Los_Angeles'"),
-                ("quiet_hours_start",  "INTEGER DEFAULT 23"),
-                ("quiet_hours_end",    "INTEGER DEFAULT 8"),
-                ("dm_frequency_hours", "INTEGER DEFAULT 8"),
-                ("recent_activity_grace_minutes", "INTEGER DEFAULT 45"),
-                ("mood",               "INTEGER DEFAULT 0"),
-                ("affection",          "INTEGER DEFAULT 0"),
-                ("trust",              "INTEGER DEFAULT 0"),
-                ("rival_id",           "INTEGER DEFAULT NULL"),
-                ("grudge_nick",        "TEXT DEFAULT NULL"),
-                ("affection_nick",     "TEXT DEFAULT NULL"),
-                ("message_count",      "INTEGER DEFAULT 0"),
-                ("milestone_last",     "INTEGER DEFAULT 0"),
-                ("first_seen",         "REAL DEFAULT 0"),
-                ("last_seen",          "REAL DEFAULT 0"),
-                ("last_active",        "REAL DEFAULT 0"),
-                ("greeted_today",      "INTEGER DEFAULT 0"),
-                ("anniversary_last",   "INTEGER DEFAULT 0"),
-                ("slow_burn",          "INTEGER DEFAULT 0"),
-                ("slow_burn_day",      "INTEGER DEFAULT 0"),
-                ("slow_burn_fired",    "INTEGER DEFAULT 0"),
-                ("drift_score",        "INTEGER DEFAULT 0"),
-                ("memory_summary",     "TEXT DEFAULT NULL"),
-                ("summary_msg_count",  "INTEGER DEFAULT 0"),
-                ("last_statement",     "TEXT DEFAULT NULL"),
-                ("style_profile",      "TEXT DEFAULT NULL"),
-                ("emotional_arc",      "TEXT DEFAULT 'guarded'"),
-                ("conflict_open",      "INTEGER DEFAULT 0"),
-                ("conflict_summary",   "TEXT DEFAULT NULL"),
-                ("last_conflict_ts",   "REAL DEFAULT 0"),
-                ("repair_progress",    "INTEGER DEFAULT 0"),
-                ("callback_memory",    "TEXT DEFAULT NULL"),
-                ("callback_ts",        "REAL DEFAULT 0"),
-                ("repair_count",       "INTEGER DEFAULT 0"),
-                ("weather_location",   "TEXT DEFAULT NULL"),
-            ]
-            for col, default in migrations:
-                try:
-                    await db.execute(f"ALTER TABLE users ADD COLUMN {col} {default}")
-                except aiosqlite.OperationalError as exc:
-                    if "duplicate column name" not in str(exc).lower():
-                        log.exception("users migration failed", extra={"column": col})
-                        raise
+            await run_migrations(
+                db, "local", LOCAL_MIGRATIONS, bot_name=self.bot_name,
+            )
             now = time.time()
             await db.execute("DELETE FROM bot_mutes WHERE expires_ts<=?", (now,))
+            await db.execute(
+                "DELETE FROM privacy_deletion_jobs "
+                "WHERE status='COMPLETE' AND completed_at<?",
+                (now - 30 * 86400,),
+            )
             async with db.execute("SELECT user_id,expires_ts FROM bot_mutes") as cur:
                 self._muted = {int(row[0]): float(row[1]) for row in await cur.fetchall()}
             await db.commit()
@@ -378,42 +328,31 @@ class Memory:
                     updated_ts  REAL DEFAULT 0
                 );
             """)
-            for stmt in (
-                "ALTER TABLE duo_sessions ADD COLUMN initiator_user_id INTEGER DEFAULT 0",
-                "ALTER TABLE duo_sessions ADD COLUMN awaiting_bot TEXT DEFAULT NULL",
-                "ALTER TABLE duo_sessions ADD COLUMN autoplay_remaining INTEGER DEFAULT 0",
-                "ALTER TABLE duo_sessions ADD COLUMN next_autoplay_ts REAL DEFAULT 0",
-            ):
-                try:
-                    await db.execute(stmt)
-                except aiosqlite.OperationalError as exc:
-                    if "duplicate column name" not in str(exc).lower():
-                        log.exception("shared migration failed", extra={"statement": stmt})
-                        raise
-            await db.commit()
-
-        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
-            try:
-                await db.execute("ALTER TABLE messages ADD COLUMN bot_name TEXT DEFAULT NULL")
-            except aiosqlite.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
-                    raise
-            try:
-                await db.execute("ALTER TABLE scene_state ADD COLUMN important_prop TEXT DEFAULT NULL")
-            except aiosqlite.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
-                    raise
-            await db.execute("UPDATE messages SET bot_name=? WHERE bot_name IS NULL", (self.bot_name,))
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_user_channel_role_ts "
-                "ON messages(user_id,channel_id,role,ts DESC)"
+            await run_migrations(
+                db, "shared", SHARED_MIGRATIONS, bot_name=self.bot_name,
             )
             await db.commit()
 
+    async def schema_status(self) -> dict:
+        local, shared = await asyncio.gather(
+            migration_status(self.db_path, "local", LOCAL_MIGRATIONS),
+            migration_status(self.shared_db_path, "shared", SHARED_MIGRATIONS),
+        )
+        return {"local": local, "shared": shared}
+
     @staticmethod
     async def _configure_database(db: aiosqlite.Connection) -> None:
-        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=15000")
+        # Configure the wait policy before WAL negotiation: Scaramouche and
+        # Wanderer can open the shared file at the same instant on deploy.
+        for attempt in range(6):
+            try:
+                await db.execute("PRAGMA journal_mode=WAL")
+                break
+            except aiosqlite.OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == 5:
+                    raise
+                await asyncio.sleep(0.05 * (2 ** attempt))
         await db.execute("PRAGMA synchronous=NORMAL")
         await db.execute("PRAGMA foreign_keys=ON")
 
@@ -1705,7 +1644,8 @@ class Memory:
                 return {"id": row[0], "content": content, "ts": row[2] or 0}
         return None
 
-    async def reset_user(self, user_id: int):
+    async def reset_user_local(self, user_id: int):
+        """Delete one user's bot-local records in a single transaction."""
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM messages WHERE user_id=?", (user_id,))
@@ -1724,6 +1664,10 @@ class Memory:
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
             await db.execute("DELETE FROM users WHERE user_id=?", (user_id,))
             await db.commit()
+        self._muted.pop(user_id, None)
+
+    async def reset_user_shared(self, user_id: int):
+        """Delete user-scoped shared records without touching bot-pair state."""
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
@@ -1731,7 +1675,11 @@ class Memory:
             await db.execute("DELETE FROM duo_sessions WHERE initiator_user_id=?", (user_id,))
             await db.execute("DELETE FROM shared_users WHERE user_id=?", (user_id,))
             await db.commit()
-        self._muted.pop(user_id, None)
+
+    async def reset_user(self, user_id: int):
+        """Backward-compatible full memory reset across local and shared scopes."""
+        await self.reset_user_local(user_id)
+        await self.reset_user_shared(user_id)
 
     # ── Mute ──────────────────────────────────────────────────────────────────
     async def mute_user(self, user_id: int, seconds: int = 600):

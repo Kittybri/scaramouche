@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 import aiosqlite
+from db_migrations import ensure_feature_preference_schema
 from world_store import WorldStore
 
 PREFS = ("chaos_parody", "chaos_ping", "chaos_gossip", "chaos_court")
@@ -31,20 +32,7 @@ class ChaosState(WorldStore):
         if self.ready:
             return
         await super().init()
-        async with aiosqlite.connect(self.mem.db_path, timeout=15) as db:
-            await db.execute("BEGIN IMMEDIATE")
-            cols = {
-                r[1]
-                for r in await (
-                    await db.execute("PRAGMA table_info(user_preferences)")
-                ).fetchall()
-            }
-            for key in PREFS:
-                if key not in cols:
-                    await db.execute(
-                        f"ALTER TABLE user_preferences ADD COLUMN {key} INTEGER DEFAULT 0"
-                    )
-            await db.commit()
+        await ensure_feature_preference_schema(self.mem.db_path)
         async with self.connect() as db:
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS chaos_wallet(guild_id INTEGER,user_id INTEGER,balance INTEGER NOT NULL CHECK(balance>=0),PRIMARY KEY(guild_id,user_id))"

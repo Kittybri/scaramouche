@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 import aiosqlite
+from db_migrations import ensure_feature_preference_schema
 
 PREFERENCES = (
     "vc_party_features_enabled",
@@ -31,20 +32,7 @@ class SocialStore:
     async def init(self):
         if self.ready:
             return
-        async with aiosqlite.connect(self.mem.db_path, timeout=15) as db:
-            await db.execute("BEGIN IMMEDIATE")
-            columns = {
-                r[1]
-                for r in await (
-                    await db.execute("PRAGMA table_info(user_preferences)")
-                ).fetchall()
-            }
-            for name in PREFERENCES:
-                if name not in columns:
-                    await db.execute(
-                        f"ALTER TABLE user_preferences ADD COLUMN {name} INTEGER DEFAULT 0"
-                    )
-            await db.commit()
+        await ensure_feature_preference_schema(self.mem.db_path)
         async with aiosqlite.connect(self.mem.shared_db_path, timeout=15) as db:
             await db.executescript("""
                 CREATE TABLE IF NOT EXISTS vc_social (

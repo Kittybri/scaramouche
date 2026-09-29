@@ -39,6 +39,7 @@ from response_context import (
     GeneratedResponse, PromptFragments, RawRelationshipState, ResponseContext,
     ResponseRequest, derive_response_state,
 )
+from runtime_cache import BoundedTTLCache, BoundedTTLSet
 from awareness_features import (
     activity_snapshot, choose_duo_advice_mode,
     parse_id_set, playful_negative_target, protective_prompt,
@@ -486,14 +487,14 @@ _runtime_initialized = False
 _initialization_lock: asyncio.Lock | None = None
 _member_announcement_last_sent: dict[int, float] = {}
 
-_hostages:       dict[int, str]   = {}
+_hostages = BoundedTTLCache(ttl_seconds=24 * 3600, max_entries=512)
 _tedtalk_active: set[int]         = set()  # message IDs currently being processed
-_tedtalk_cache:  dict[int, dict]  = {}
-_processed_msgs: set[int]         = set()  # dedup: prevent double-processing
+_tedtalk_cache = BoundedTTLCache(ttl_seconds=2 * 3600, max_entries=128)
+_processed_msgs = BoundedTTLSet(ttl_seconds=3600, max_entries=500)
 _typing_gag_inflight: set[tuple[int, int]] = set()
-_weather_cache: dict[str, tuple[float, dict | None]] = {}
-_presence_activity: dict[tuple[int, int], dict] = {}
-_voice_state_cache: dict[int, object] = {}
+_weather_cache = BoundedTTLCache(ttl_seconds=3600, max_entries=256)
+_presence_activity = BoundedTTLCache(ttl_seconds=6 * 3600, max_entries=4096)
+_voice_state_cache = BoundedTTLCache(ttl_seconds=30 * 86400, max_entries=2048)
 
 SOUNDBOARD_GUILD_IDS = parse_id_set(os.getenv("SOUNDBOARD_GUILD_IDS", ""))
 NEW_MEMBER_INTERVIEW_GUILD_IDS = parse_id_set(os.getenv("NEW_MEMBER_INTERVIEW_GUILD_IDS", ""))
@@ -2105,16 +2106,15 @@ class ResetView(discord.ui.View):
         try:
             if interaction.user.id!=self.uid:
                 await interaction.response.send_message("This isn't your button, fool.",ephemeral=True); return
-            await mem.reset_user(self.uid)
-            await WORLD.forget(self.uid)
-            await FACE_PROFILES.init()
-            await FACE_PROFILES.delete(self.uid)
-            await self_store.delete_user_scoped_data(self.uid)
-            await CHAOS.forget(self.uid)
-            await VOICE_CONVERSATION.features.forget_user(self.uid)
-            await PC.require_forget(self.uid)
-            button.disabled=True; button.label="✓ Memory Wiped"
-            await interaction.response.edit_message(content=random.choice(["...Gone. Good.","Erased.","Wiped."]),view=self)
+            result = await PRIVACY_DELETION.run(self.uid)
+            if result.complete:
+                button.disabled=True; button.label="✓ Memory Wiped"
+                content=random.choice(["...Gone. Good.","Erased.","Wiped."])
+            else:
+                button.label="↻ Retry Pending Wipe"
+                content=("The deletion is incomplete and remains queued. "
+                         f"Pending stage: `{result.pending_stage}`. Press retry after the subsystem recovers.")
+            await interaction.response.edit_message(content=content,view=self)
         except Exception as e:
             log_error("ResetView", e)
             if not interaction.response.is_done():
@@ -2462,6 +2462,13 @@ def _reserve_member_announcement(guild_id: int, *, now: float | None = None,
                                  cooldown_seconds: int = 300) -> bool:
     """Bound join/leave chatter during raids or reconnect bursts."""
     now = now or time.time()
+    for stale_id, timestamp in list(_member_announcement_last_sent.items()):
+        if now - timestamp >= 86400:
+            _member_announcement_last_sent.pop(stale_id, None)
+    if len(_member_announcement_last_sent) >= 2048 and guild_id not in _member_announcement_last_sent:
+        _member_announcement_last_sent.pop(
+            min(_member_announcement_last_sent, key=_member_announcement_last_sent.get), None,
+        )
     last_sent = _member_announcement_last_sent.get(guild_id, 0.0)
     if now - last_sent < max(60, cooldown_seconds):
         return False
@@ -2553,6 +2560,7 @@ async def on_member_join(member):
 @bot.event
 async def on_member_remove(member):
     try:
+        _presence_activity.pop((member.guild.id, member.id), None)
         if random.random()>.4: return
         ch = discord.utils.get(member.guild.text_channels,name="general") or member.guild.system_channel
         if not ch: return
@@ -5771,6 +5779,59 @@ CHAOS.install()
 from trolling_features import TrollingEngine
 troll = TrollingEngine(CHAOS)
 troll.install()
+
+from privacy_deletion import PrivacyDeletionCoordinator
+
+
+async def _delete_face_stage(uid):
+    await FACE_PROFILES.init()
+    await FACE_PROFILES.delete(uid)
+
+
+async def _delete_runtime_stage(uid):
+    _hostages.pop(uid, None)
+    _tedtalk_cache.pop(uid, None)
+    _voice_state_cache.pop(uid, None)
+    for key in list(_presence_activity):
+        if key[1] == uid:
+            _presence_activity.pop(key, None)
+
+
+PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
+    "memory_local": mem.reset_user_local,
+    "memory_shared": mem.reset_user_shared,
+    "persistent_world": WORLD.forget,
+    "face_memory": _delete_face_stage,
+    "self_model": self_store.delete_user_scoped_data,
+    "server_chaos": CHAOS.forget,
+    "voice_social": VOICE_CONVERSATION.features.forget_user,
+    "runtime_ephemeral": _delete_runtime_stage,
+    "companion": PC.require_forget,
+})
+
+
+@bot.command(name="persistence")
+async def persistence_cmd(ctx):
+    """Owner-only schema, deletion-ledger, and cache-count diagnostic."""
+    if not is_owner_user(ctx.author.id):
+        await safe_reply(ctx, "That diagnostic is owner-only.")
+        return
+    schema = await mem.schema_status()
+    pending = await PRIVACY_DELETION.pending_count()
+    caches = {
+        "tedtalk": len(_tedtalk_cache), "weather": len(_weather_cache),
+        "voice": len(_voice_state_cache), "presence": len(_presence_activity),
+        "hostage": len(_hostages), "processed": len(_processed_msgs),
+    }
+    local, shared = schema["local"], schema["shared"]
+    await safe_reply(ctx, (
+        f"Persistence: local v{local['version']}/{local['current']} "
+        f"pending={local['pending']} error={local['error'] or 'none'} | "
+        f"shared v{shared['version']}/{shared['current']} "
+        f"pending={shared['pending']} error={shared['error'] or 'none'} | "
+        f"deletion_jobs_pending={pending} | caches="
+        + ",".join(f"{key}:{value}" for key, value in caches.items())
+    ))
 
 if __name__=="__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
