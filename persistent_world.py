@@ -37,8 +37,8 @@ class PersistentWorld:
                 await self.journal.init()
                 self.ready = True
 
-    async def response_context(self, user_id, channel_id, text, user):
-        if classify_safety(text).protective:
+    async def response_context(self, user_id, channel_id, text, user, interaction=None):
+        if (interaction.safety.protective if interaction else classify_safety(text).protective):
             return user, ""
         await self.init()
         enabled = (user or {}).get("grudge_enabled",True)
@@ -70,8 +70,9 @@ class PersistentWorld:
                     break
         return adjusted, context
 
-    async def observe(self, message, user):
-        if message.author.bot or message.content.startswith("!") or classify_safety(message.content).protective:
+    async def observe(self, message, user, interaction=None):
+        if (message.author.bot or message.content.startswith("!")
+                or (interaction.safety.protective if interaction else classify_safety(message.content).protective)):
             return
         user = user or {}
         reference = getattr(getattr(message,"reference",None),"resolved",None)

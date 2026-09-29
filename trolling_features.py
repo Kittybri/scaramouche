@@ -12,6 +12,7 @@ from discord.ext import commands
 
 from server_chaos.errors import ChaosError
 from server_chaos.service import harmless, public_channel, quiet
+from interaction_policy import optional_allowed, gags_paused
 
 log = logging.getLogger("scaramouche.trolling")
 
@@ -71,7 +72,8 @@ class TrollingEngine:
         return record.get("flags", {})
 
     async def gate(self, channel, user, feature, *, personal=True):
-        if self.closed or not self.bot.user or not getattr(channel, "guild", None):
+        if (self.closed or not self.bot.user or not getattr(channel, "guild", None)
+                or not optional_allowed("trolling") or gags_paused(channel.guild.id)):
             return False
         if user.bot or user.id == self.bot.user.id:
             return False

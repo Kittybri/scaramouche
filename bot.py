@@ -5,7 +5,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands, tasks
 from groq import Groq
-import os, re, random, asyncio, io, time, logging, json
+import os, re, random, asyncio, io, time, logging, json, sqlite3
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -27,8 +27,13 @@ from character_bits import (
     is_serious_or_utility, reverse_turing_hint,
     selective_hearing_hint, significant_weather, time_drift_prompt,
 )
+from interaction_policy import (
+    CURRENT, Outcome, classify as classify_interaction, current_or_classify,
+    authoritative_prompt, optional_allowed, optional_command_blocked, credential_disclosure,
+    pause_gags,
+)
 from awareness_features import (
-    activity_snapshot, choose_duo_advice_mode, classify_safety,
+    activity_snapshot, choose_duo_advice_mode,
     parse_id_set, playful_negative_target, protective_prompt,
     resolve_voice_state, select_relevant_recall, style_voice_text,
 )
@@ -1318,11 +1323,17 @@ async def _fetch_nws_weather(location: str) -> dict | None:
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False,
-                       prior_last_active: float | None = None, defer_delivery=False):
+                       prior_last_active: float | None = None, defer_delivery=False,
+                       interaction=None):
     recent_replies: list[str] = []
     search_sources = ""
     try:
-        user, world_context = await WORLD.response_context(user_id, channel_id, user_message, user)
+        interaction = interaction or current_or_classify(
+            user_message, user, user_id=user_id, channel_id=channel_id, is_dm=is_dm
+        )
+        user, world_context = await WORLD.response_context(
+            user_id, channel_id, user_message, user, interaction=interaction,
+        )
         extra_context += "\n" + world_context
         history = await mem.get_history(
             user_id, channel_id, limit=CONFIG.conversation_history_limit,
@@ -1343,15 +1354,19 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         try:
             modeled_self = await self_store.context(user_id)
             self_context = modeled_self.prompt_fragment()
-            irritation = modeled_self.dimensions.get("irritation", 0)
+            self_dimensions = modeled_self.dimensions
+            irritation = self_dimensions.get("irritation", 0)
         except Exception as exc:
             logger.warning("self context unavailable", extra={"user_id": user_id, "error_category": type(exc).__name__})
             self_context = ""
+            self_dimensions = {}
             irritation = 0
 
         depth = (user or {}).get("rp_depth", "medium")
         r = random.random()
-        if depth == "low":
+        if interaction.serious:
+            hint = "Use enough words to answer the current need clearly; do not force brevity."
+        elif depth == "low":
             hint = "One sentence."
         elif depth == "high":
             if r < .3: hint = "2-3 sentences."
@@ -1397,7 +1412,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             if item.get("role") == "user" and item.get("content", "").strip().lower() == user_message.strip().lower()
         )
         turing_hint = reverse_turing_hint(user_message, repeated_count)
-        if turing_hint and eligible_for_joke(user_message) and random.random() < .18:
+        if interaction.allows("reverse_turing") and turing_hint and eligible_for_joke(user_message) and random.random() < .18:
             allowed = await mem.consume_phrase(f"user:{user_id}", "reverse_turing", 3 * 86400)
             if allowed:
                 parts.append(turing_hint)
@@ -1451,7 +1466,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         )
         if conflict_aftermath:
             parts.append(conflict_aftermath)
-        if callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
+        if interaction.allows("callback") and callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
             parts.append(f"CALLBACK:{callback_memory[:180]}")
         parts.extend(extract_continuity_hooks(history, user_message))
         lore_hook = describe_lore_hook(BOT_NAME, user_message)
@@ -1473,7 +1488,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             if profile_parts:
                 parts.append("PROFILE:" + ", ".join(profile_parts))
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
-        if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
+        if user and user.get("grudge_nick") and not interaction.serious:
+            parts.append(f"GRUDGE:{user['grudge_nick']}")
         msg_lower = user_message.lower()
         if any(token in msg_lower for token in ["harbinger", "rank", "status", "authority", "power"]):
             parts.append("SCARA_EDGE: show rank-conscious contempt and strategic respect for real strength")
@@ -1516,6 +1532,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         ):
             base_context += environment.prompt_fragment() + "\n"
         if channel_ctx: base_context += channel_ctx + "\n\n"
+        # Last response-time directive wins over raw mood/arc/self-state inputs.
+        base_context += authoritative_prompt(interaction, user, self_dimensions) + "\n"
         base_context += f"{display_name}: {user_message}"
 
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
@@ -1566,7 +1584,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         triggers = detect_emotional_triggers(user_message)
 
         # Strong keyword triggers
-        if any(k in msg_l for k in RUDE_KW):
+        if interaction.serious:
+            pass  # Serious disclosures do not mutate petty mood/relationship state.
+        elif any(k in msg_l for k in RUDE_KW):
             await mem.update_mood(user_id, -2)
             await mem.update_trust(user_id, -1)
         elif any(k in msg_l for k in ROMANCE_KW):
@@ -1623,31 +1643,32 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             elif negative == 1:
                 await mem.update_mood(user_id, -1)
 
-        if scenario == "emotional_comfort":
+        if not interaction.serious and scenario == "emotional_comfort":
             await mem.update_trust(user_id, +1)
             if "softness" in triggers or "protectiveness" in triggers:
                 await mem.update_affection(user_id, +1)
-        elif scenario == "combat_action":
+        elif not interaction.serious and scenario == "combat_action":
             await mem.update_mood(user_id, -1)
             await mem.update_trust(user_id, +1)
-        elif scenario == "lore_discussion":
+        elif not interaction.serious and scenario == "lore_discussion":
             await mem.update_trust(user_id, +1)
             await mem.update_drift(user_id, +1)
-        elif scenario == "relationship_progression":
+        elif not interaction.serious and scenario == "relationship_progression":
             await mem.update_affection(user_id, +1)
             await mem.update_trust(user_id, +1)
-        elif scenario == "introspection":
+        elif not interaction.serious and scenario == "introspection":
             await mem.update_trust(user_id, +1)
 
-        if "jealousy" in triggers:
+        if not interaction.serious and "jealousy" in triggers:
             await mem.update_mood(user_id, -1)
             await mem.update_affection(user_id, +1)
-        if "protectiveness" in triggers:
+        if not interaction.serious and "protectiveness" in triggers:
             await mem.update_trust(user_id, +1)
-        if "boredom" in triggers:
+        if not interaction.serious and "boredom" in triggers:
             await mem.update_mood(user_id, -1)
 
-        if random.random() < .05: await mem.update_drift(user_id, +1)
+        if not interaction.serious and random.random() < .05:
+            await mem.update_drift(user_id, +1)
         await _learn_user_state(user_id, user_message)
         for kind, memory_text, weight in extract_memory_events(user_message):
             await mem.add_memory_event(user_id, kind, memory_text, max(weight, _memory_weight_for(kind)))
@@ -2444,14 +2465,21 @@ async def _verified_tattletale_line(message) -> str:
     return f'I hear you have been discussing me. Your exact words were: “{exact[:180]}”'
 
 
-async def _medium_awareness_context(message, user: dict | None, content: str, *, is_dm: bool) -> list[str]:
+async def _medium_awareness_context(
+    message, user: dict | None, content: str, *, is_dm: bool, interaction=None,
+) -> list[str]:
     context: list[str] = []
-    safety = classify_safety(content)
+    interaction = interaction or current_or_classify(
+        content, user, user_id=message.author.id,
+        channel_id=message.author.id if is_dm else message.channel.id,
+        is_dm=is_dm,
+    )
+    safety = interaction.safety
     protective = protective_prompt(BOT_NAME, safety)
     if protective:
         context.append(protective)
 
-    if random.random() < 0.03:
+    if interaction.allows("recall") and random.random() < 0.03:
         candidates = await mem.get_user_message_candidates(message.author.id, message.author.id if is_dm else message.channel.id, 100)
         match = select_relevant_recall(content, candidates)
         if match and await mem.consume_phrase(f"user:{message.author.id}", "this_you", 5 * 86400):
@@ -2465,7 +2493,7 @@ async def _medium_awareness_context(message, user: dict | None, content: str, *,
         return context
     if await mem.get_duo_session(message.channel.id):
         return context
-    mode = choose_duo_advice_mode(content, random.random())
+    mode = choose_duo_advice_mode(content, random.random(), safety=safety)
     if mode == "protective" and random.random() >= 0.15:
         return context
     if mode not in {"goodcop", "contradict", "protective"}:
@@ -2485,8 +2513,188 @@ async def _medium_awareness_context(message, user: dict | None, content: str, *,
     return context
 
 # ── on_message ────────────────────────────────────────────────────────────────
+async def _interaction_session(message, interaction):
+    """Read existing session state once; participant and channel scoped."""
+    interaction.duo = await mem.get_duo_session(message.channel.id)
+    interaction.trivia = await mem.get_active_trivia(message.channel.id)
+    duo = interaction.duo
+    if duo and duo.get("mode") in {"interview", "welcome_interview"}:
+        if int(duo.get("initiator_user_id") or 0) == message.author.id:
+            return "interview", duo
+        # Interview ownership is participant-scoped; a bystander in the same
+        # channel must not be mistaken for the person being interviewed.
+        duo = None
+        interaction.duo = None
+    if message.guild:
+        # One connection, bounded indexed-kind reads. No REST/history calls.
+        try:
+            async with WORLD.store.connect() as db:
+                rows = await (await db.execute(
+                    "SELECT kind,payload FROM persistent_world_events WHERE kind IN ('chaos_court','chaos_wager') "
+                    "AND json_extract(payload,'$.guild_id')=? AND json_extract(payload,'$.channel')=? "
+                    "AND json_extract(payload,'$.expires')>? AND json_extract(payload,'$.state') IN ('created','awaiting_defense','awaiting_verdict')",
+                    (message.guild.id, message.channel.id, time.time()),
+                )).fetchall()
+                for kind, payload in rows:
+                    try:
+                        data = json.loads(payload)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if message.author.id in data.get("participants", []):
+                        return kind.removeprefix("chaos_"), data
+                exists = await (await db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='vc_games'"
+                )).fetchone()
+                if exists:
+                    rows = await (await db.execute(
+                        "SELECT data FROM vc_games WHERE guild_id=? AND expires>? "
+                        "AND state NOT IN ('completed','cancelled','expired','failed','solved')",
+                        (message.guild.id, time.time()),
+                    )).fetchall()
+                    for row in rows:
+                        try:
+                            game = json.loads(row[0])
+                        except (TypeError, json.JSONDecodeError):
+                            continue
+                        if (message.author.id in game.get("participants", [])
+                                and message.channel.id in {game.get("channel"), game.get("parent")}):
+                            return "vcgame", game
+        except sqlite3.Error as exc:
+            logger.warning("structured session lookup unavailable", extra={
+                "error_category": type(exc).__name__, "guild_id": message.guild.id,
+            })
+    if interaction.trivia and int(interaction.trivia.get("asker_id") or 0) == message.author.id:
+        return "trivia", interaction.trivia
+    if duo:
+        return "duo", duo
+    return "", None
+
+
+async def _priority_reply(message, interaction):
+    if not interaction.consume("serious_response" if interaction.serious else "normal_response"):
+        return
+    reply = await get_response(
+        message.author.id, interaction.channel_id, message.content, interaction.user,
+        message.author.display_name, message.author.mention, channel_obj=message.channel,
+        is_dm=not bool(message.guild), is_owner=is_owner_user(message.author.id),
+        prior_last_active=interaction.prior_last_active, interaction=interaction,
+    )
+    await message.reply(reply, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    await mem.add_message(message.author.id, interaction.channel_id, "assistant", reply)
+
+
+def _cached_reference(message):
+    reference = getattr(message, "reference", None)
+    if not reference:
+        return None
+    resolved = getattr(reference, "resolved", None)
+    if resolved is not None:
+        return resolved
+    message_id = getattr(reference, "message_id", None)
+    return discord.utils.get(bot.cached_messages, id=message_id) if message_id else None
+
+
 @bot.event
 async def on_message(message):
+    """Single dispatcher: sibling listeners may not independently answer."""
+    if not bot.user or message.author.id == bot.user.id:
+        return
+    if message.author.bot:
+        if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID and not message.content.startswith("[Server game]"):
+            await _handle_partner_message(message)
+        return
+    if message.id in _processed_msgs:
+        return
+    _processed_msgs.add(message.id)
+    if len(_processed_msgs) > 500:
+        _processed_msgs.discard(min(_processed_msgs))
+    reference_target = _cached_reference(message)
+    interaction = classify_interaction(message.content, user_id=message.author.id,
+        channel_id=message.channel.id if message.guild else message.author.id,
+        guild_id=message.guild.id if message.guild else None,
+        command=bool(re.match(r'^![a-zA-Z]', message.content.strip())),
+        direct=(
+            not message.guild
+            or bot.user in message.mentions
+            or bool(
+                reference_target
+                and not isinstance(reference_target, discord.DeletedReferencedMessage)
+                and reference_target.author == bot.user
+            )
+        ),
+        media=bool(message.attachments or getattr(reference_target, "attachments", None)))
+    token = CURRENT.set(interaction)
+    try:
+        if interaction.safety.protective:
+            pause_gags(interaction.guild_id)
+        # Credentials are never handed to commands/providers. Privacy controls
+        # themselves still dispatch normally when no credential is disclosed.
+        if credential_disclosure(message.content):
+            interaction.consume("privacy")
+            await message.reply("Keep credentials out of chat. Remove that message and rotate any real credential you posted; I will not send it to the model.", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+            return
+        if interaction.command:
+            ctx = await bot.get_context(message)
+            name = ctx.command.name if ctx.command else ""
+            argument = message.content.partition(" ")[2]
+            if optional_command_blocked(interaction, name, argument):
+                interaction.consume("serious_command_override")
+                await message.reply("This sounds serious. I won't turn it into a game. Tell me what you need help with; cancellation and privacy controls remain available.", mention_author=False)
+                return
+            interaction.consume("command")
+            await bot.process_commands(message)
+            return
+        interaction.prior_last_active = await mem.upsert_user(
+            message.author.id, str(message.author), message.author.display_name,
+        )
+        if message.guild:
+            await mem.track_channel(message.channel.id, message.guild.id)
+        user = await mem.get_user(message.author.id) or {}
+        interaction.user = user
+        interaction.opted_out = not user.get("proactive", True)
+        interaction.quiet_hours = _is_in_quiet_hours(user)
+        interaction.muted = bool(message.guild and await mem.is_muted(message.author.id))
+        if interaction.muted or interaction.boundary:
+            interaction.consume("user_boundary", suppressed=True)
+            return
+        if PARTNER_BOT_ID and message.guild and any(u.id == PARTNER_BOT_ID for u in message.mentions) and bot.user not in message.mentions:
+            interaction.consume("partner_target", suppressed=True)
+            return
+        if interaction.safety.protective:
+            await _priority_reply(message, interaction)
+            return
+        interaction.session_owner, interaction.session = await _interaction_session(message, interaction)
+        if interaction.session_owner and interaction.session_owner != "duo":
+            interaction.consume("session:" + interaction.session_owner)
+            if interaction.session_owner == "interview":
+                return  # Existing bounded worker owns delivery.
+            ctx = await bot.get_context(message)
+            if interaction.session_owner == "trivia":
+                await answer_cmd.callback(ctx, response=message.content)
+            elif interaction.session_owner == "vcgame":
+                game = interaction.session
+                if game.get("kind") == "escape" and game.get("state") in {"active", "hint_requested"} and game.get("channel") == message.channel.id:
+                    await VOICE_CONVERSATION.features.games.command(ctx, "answer", game["id"] + " " + message.content)
+                else:
+                    await message.reply("Your voluntary game is active. Use !vcgame status, accept or cancel; I won't start a competing conversation.", mention_author=False)
+            else:
+                await message.reply("This game owns the interaction. Use !court defend/accept/cancel or !wager accept/reject/cancel with its ID.", mention_author=False)
+            return
+        if (interaction.opted_out or interaction.quiet_hours) and not interaction.direct:
+            interaction.consume("ambient_opt_out", suppressed=True)
+            return
+        await _on_message_routed(message, interaction)
+        if interaction.outcome == Outcome.CONTINUE:
+            interaction.consume("routed_response")
+    except (discord.HTTPException, asyncio.TimeoutError) as exc:
+        interaction.consume("delivery_unavailable", suppressed=True)
+        logger.warning("interaction delivery unavailable", extra={"error_category": type(exc).__name__})
+    finally:
+        logger.debug("interaction route", extra=interaction.debug())
+        CURRENT.reset(token)
+
+
+async def _on_message_routed(message, interaction):
     try:
         PC.observe_message(message)
         logger.debug("message received", extra={
@@ -2495,42 +2703,6 @@ async def on_message(message):
             "channel_id": getattr(message.channel, "id", 0),
             "content_chars": len(message.content or ""),
         })
-        # Always ignore own messages first
-        if message.author.id == bot.user.id:
-            return
-        # Dedup: prevent processing the same message twice
-        if message.id in _processed_msgs:
-            return
-        _processed_msgs.add(message.id)
-        if len(_processed_msgs) > 500:
-            _processed_msgs.clear()
-        if message.author.bot:
-            # Allow partner (Wanderer) bot messages through for cross-bot interaction
-            if not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
-                return
-
-        # Cross-bot: if message is from Wanderer bot
-        if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
-            await _handle_partner_message(message)
-            return
-
-        await bot.process_commands(message)
-        logger.debug("command processing complete", extra={"message_id": message.id})
-        # Stop here for actual command messages — not just exclamation marks
-        stripped_msg = message.content.strip()
-        if re.match(r'^![a-zA-Z]', stripped_msg):
-            logger.debug("command message handled", extra={"message_id": message.id})
-            return
-
-        # The bounded duo worker owns interview replies. Keeping the ordinary
-        # chat path silent here prevents duplicate questions from both bots.
-        try:
-            interview = await mem.get_duo_session(message.channel.id)
-            if interview and interview.get("mode") in {"interview", "welcome_interview"}:
-                return
-        except Exception as e:
-            log_error("interview_route", e)
-
         # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
         # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
         if PARTNER_BOT_ID and message.guild:
@@ -2573,15 +2745,7 @@ async def on_message(message):
             except Exception as e:
                 log_error("speaker_mode_check", e)
 
-        previous_last_active = 0.0
-        try:
-            previous_last_active = await mem.upsert_user(
-                message.author.id, str(message.author), message.author.display_name,
-            )
-            if message.guild:
-                await mem.track_channel(message.channel.id, message.guild.id)
-            # DMs: don't track channel, use user_id as stable channel key for history
-        except Exception as e: log_error("on_message/upsert", e)
+        previous_last_active = interaction.prior_last_active
 
         # (cross-bot coordination removed for stability)
 
@@ -2597,25 +2761,23 @@ async def on_message(message):
         romance  = False
         is_owner = is_owner_user(message.author.id)
         try:
-            user    = await mem.get_user(message.author.id)
+            user    = interaction.user
             romance = user.get("romance_mode",False) if user else False
         except Exception as e: log_error("on_message/get_user", e)
 
         # Mute check (only in guilds, not DMs)
-        if not is_dm and await mem.is_muted(message.author.id):
-            if random.random()<.2:
-                try: await message.add_reaction("🔇")
-                except Exception: pass
+        if interaction.muted:
             return
 
         content = message.content.strip()
         try:
-            await WORLD.observe(message, user)
+            await WORLD.observe(message, user, interaction=interaction)
         except Exception as exc:
             log_error("world_observe", type(exc).__name__)
-        if not content: return
+        if not content and not message.attachments: return
         try:
-            await _record_tattletale_if_eligible(message, content)
+            if interaction.allows("tattletale"):
+                await _record_tattletale_if_eligible(message, content)
         except Exception as e:
             log_error("tattletale_record", e)
         returned_after_absence = bool(
@@ -2629,14 +2791,14 @@ async def on_message(message):
         # Milestone / anniversary checks
         try:
             count, milestone = await mem.increment_message_count(message.author.id)
-            if milestone:
+            if milestone and interaction.select("milestone"):
                 msg = await qai(f"You've had {count} messages with {message.author.display_name}. Acknowledge while pretending you weren't counting. 1-2 sentences.",150)
                 await message.channel.send(f"{message.author.mention} {msg}"); return
         except Exception as e: log_error("on_message/milestone", e)
 
         try:
-            anniversary_year = await mem.claim_anniversary(message.author.id)
-            if anniversary_year:
+            anniversary_year = await mem.claim_anniversary(message.author.id) if interaction.allows("anniversary", preemptive=True) else 0
+            if anniversary_year and interaction.select("anniversary"):
                 if anniversary_year == 1:
                     msg = "A full year since you first appeared. Don't look so pleased—I only noticed because your persistence is statistically irritating."
                 elif anniversary_year <= 3:
@@ -2650,17 +2812,18 @@ async def on_message(message):
         # Morning/night greeting
         try:
             hour = datetime.now().hour
-            if (6<=hour<=10 or 22<=hour<=23) and romance:
-                if await mem.should_greet(message.author.id):
+            if interaction.allows("greeting", preemptive=True) and (6<=hour<=10 or 22<=hour<=23) and romance:
+                if await mem.should_greet(message.author.id) and interaction.select("greeting"):
                     gtype = "morning" if 6<=hour<=10 else "late night"
                     msg = await qai(f"It's {gtype}. {message.author.display_name} appeared. Send a {gtype} message in denial about why. 1-2 sentences.",120)
                     await message.channel.send(f"{message.author.mention} {msg}")
                     await mem.mark_greeted(message.author.id)
+                    return
         except Exception as e: log_error("on_message/greeting", e)
 
         # Memory summary
         try:
-            if await mem.needs_summary(message.author.id):
+            if interaction.allows("summary") and await mem.needs_summary(message.author.id):
                 recent = await mem.get_recent_messages(message.author.id, 30)
                 sample = " | ".join(recent[:20])[:800]
                 summary = await qai(f"Summarize your relationship with {message.author.display_name} based on: '{sample}'. Your compressed memory. 3-4 sentences.",300)
@@ -2688,6 +2851,9 @@ async def on_message(message):
                 except Exception:
                     pass
 
+            if vid or img:
+                if not interaction.consume("media"):
+                    return
             # ── Video handling ──
             if vid:
                 try:
@@ -2803,34 +2969,40 @@ async def on_message(message):
                         return
         except Exception as e: log_error("on_message/image", e)
 
+        if interaction.outcome != Outcome.CONTINUE:
+            return  # Media/selected feature owns failures as well as success.
+
         # Special triggers
         try:
             cl = content.lower()
-            if VILLAIN_TRIGGER in content.lower():
+            if VILLAIN_TRIGGER in content.lower() and interaction.select("villain"):
                 m = await qai("Someone said 'you will never win'. Full theatrical villain monologue. 4-6 sentences. NO asterisk actions.",400)
                 await message.reply(strip_narration(m)); return
             # If someone says "wanderer" — check if Wanderer bot is in server
             if re.search(r"\bwanderer\b", cl) and not re.search(r"\bthe wanderer\b", cl):
                 partner_present = bool(PARTNER_BOT_ID and message.guild and message.guild.get_member(PARTNER_BOT_ID))
-                if not partner_present and random.random() < .5:
+                if not partner_present and random.random() < .5 and interaction.select("partner_jab"):
                     msg = await qai("Someone mentioned 'wanderer' — some imposter who claims to be a version of you. React with contempt or dismissal. 1 sentence. Sharp.", 80)
                     await message.channel.send(strip_narration(msg))
+                    return
 
             # Hat trigger — only exact standalone words, never substrings
             content_words = set(re.sub(r"[^\w\s]","",content.lower()).split())
-            if content_words & {"hat","headwear","headpiece"}:
+            if content_words & {"hat","headwear","headpiece"} and interaction.select("hat"):
                 m = await qai("Someone mentioned your hat. React with disproportionate intensity while pretending to be completely normal about it. 1-2 sentences. NO asterisk actions.",150)
                 await message.reply(strip_narration(m)); return
-            if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35:
+            if any(re.search(k, cl) for k in FOOD_KW) and random.random()<.35 and interaction.select("food"):
                 await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35:
+            if any(re.search(k, cl) for k in SLEEP_KW) and random.random()<.35 and interaction.select("sleep"):
                 await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(k in cl for k in PLAN_KW) and random.random()<.25:
+            if any(k in cl for k in PLAN_KW) and random.random()<.25 and interaction.select("plans"):
                 await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
-            if romance and any(k in cl for k in OTHER_BOT_KW):
+            if romance and any(k in cl for k in OTHER_BOT_KW) and interaction.select("jealousy"):
                 m = await qai(f"{message.author.display_name} mentioned preferring something else. Jealousy masked as contempt. 1-2 sentences.",120)
                 await message.reply(m); await mem.update_mood(message.author.id,-1); return
         except Exception as e: log_error("on_message/triggers", e)
+        if interaction.outcome != Outcome.CONTINUE:
+            return
 
         mentioned = bot.user in message.mentions
         is_reply  = (message.reference and message.reference.resolved and
@@ -2890,8 +3062,8 @@ async def on_message(message):
             await maybe_react(message,romance); return
 
         try:
-            tattletale_line = await _verified_tattletale_line(message)
-            if tattletale_line:
+            tattletale_line = await _verified_tattletale_line(message) if interaction.allows("tattletale", preemptive=True) else ""
+            if tattletale_line and interaction.select("tattletale"):
                 await message.reply(tattletale_line)
                 return
         except Exception as e:
@@ -2899,11 +3071,15 @@ async def on_message(message):
 
         # Rare, deterministic-cost interaction flourishes. Important questions and
         # serious contexts always continue into the normal response path.
-        if await troll.before_reply(message):
+        if interaction.allows("party_parody", preemptive=True) and await CHAOS.on_message(message):
+            interaction.select("party_parody")
             return
-        if eligible_for_silent_judge(content) and random.random() < .002 and not await mem.get_active_trivia(message.channel.id):
+        if interaction.allows("trolling", preemptive=True) and await troll.before_reply(message):
+            interaction.select("trolling")
+            return
+        if interaction.allows("popquiz", preemptive=True) and eligible_for_silent_judge(content) and random.random() < .002 and not interaction.trivia:
             material = await mem.get_quizable_assistant_message(message.author.id)
-            if material and await mem.consume_phrase(f"user:{message.author.id}", "memory_pop_quiz", 7 * 86400):
+            if material and await mem.consume_phrase(f"user:{message.author.id}", "memory_pop_quiz", 7 * 86400) and interaction.select("popquiz"):
                 words = material["content"].split()
                 cut = min(8, len(words) - 2)
                 prefix, answer = " ".join(words[:cut]), " ".join(words[cut:])
@@ -2912,8 +3088,8 @@ async def on_message(message):
                 await message.reply(question)
                 return
         typing_key = (message.channel.id, message.author.id)
-        if eligible_for_silent_judge(content) and typing_key not in _typing_gag_inflight and random.random() < .006:
-            if await mem.consume_phrase(f"channel_user:{message.channel.id}:{message.author.id}", "fake_long_typing", 3 * 86400):
+        if interaction.allows("fake_typing", preemptive=True) and eligible_for_silent_judge(content) and typing_key not in _typing_gag_inflight and random.random() < .006:
+            if await mem.consume_phrase(f"channel_user:{message.channel.id}:{message.author.id}", "fake_long_typing", 3 * 86400) and interaction.select("fake_typing"):
                 _typing_gag_inflight.add(typing_key)
                 try:
                     async with message.channel.typing():
@@ -2926,7 +3102,9 @@ async def on_message(message):
         # Build extra context
         parts = []
         try:
-            parts.extend(await _medium_awareness_context(message, user, content, is_dm=is_dm))
+            parts.extend(await _medium_awareness_context(
+                message, user, content, is_dm=is_dm, interaction=interaction,
+            ))
             if random.random()<.12:
                 old = await mem.get_random_old_message(message.author.id)
                 if old: parts.append(f'RECALL:"{old[:120]}"')
@@ -2957,6 +3135,8 @@ async def on_message(message):
 
         # Main response
         try:
+            if not interaction.consume("session:duo" if interaction.session_owner else "normal_response"):
+                return
             if is_dm:
                 logger.debug("generating direct-message response", extra={"user_id": message.author.id})
             async with message.channel.typing():
@@ -2966,7 +3146,7 @@ async def on_message(message):
                     user, message.author.display_name, message.author.mention,
                     extra_context=extra, is_owner=is_owner,
                     channel_obj=message.channel, is_dm=is_dm,
-                    prior_last_active=previous_last_active,
+                    prior_last_active=previous_last_active, interaction=interaction,
                 )
         except Exception as e:
             log_error("on_message/get_response", e)
@@ -2980,9 +3160,7 @@ async def on_message(message):
             if user and user.get("mood",0)<=-8 and not user.get("grudge_nick"):
                 nick = await qai(f"You have a grudge against {message.author.display_name}. ONE degrading nickname. 1-3 words.",20)
                 if nick and len(nick)<30: await mem.set_grudge_nick(message.author.id,nick.strip('"\''))
-            if "TRUST_OPEN" in extra and random.random()<.5:
-                await asyncio.sleep(1.5)
-                await message.channel.send(await _pick_fresh_pool_line(TRUST_REVEALS, channel_id=message.channel.id, user_id=message.author.id))
+            # Trust reveals now belong to the one normal reply via its prompt.
             if len(content)>20 and random.random()<.04:
                 check = await qai(f"Is this quotable as a running inside joke? '{content[:100]}' YES or NO only.",10)
                 if "YES" in check.upper():
@@ -3036,7 +3214,7 @@ async def on_message(message):
                     sent = await send_voice(
                         message.channel, reply, ref=message, mood=mood_val,
                         guild=message.guild, user=user, user_id=message.author.id,
-                        delivery_intent="protective concern" if classify_safety(content).protective else "",
+                        delivery_intent="protective concern" if interaction.safety.protective else "",
                     )
                     logger.debug("voice send completed", extra={"voice_sent": sent})
                     if sent:
@@ -4992,7 +5170,8 @@ async def on_command_error(ctx,error):
     try:
         harmless = isinstance(error, (commands.CommandNotFound, commands.MemberNotFound,
                                       commands.MissingRequiredArgument, commands.BadArgument))
-        if harmless and random.random() < .08 and not await mem.is_muted(ctx.author.id):
+        if (harmless and optional_allowed("scapegoat", preemptive=True)
+                and random.random() < .08 and not await mem.is_muted(ctx.author.id)):
             if await mem.consume_phrase(f"channel:{ctx.channel.id}", "scapegoat", 2 * 86400):
                 await safe_reply(ctx, f"A harmless little failure, and somehow {ctx.author.display_name} is standing closest to the evidence. Convenient.")
                 return
