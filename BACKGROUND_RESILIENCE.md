@@ -50,7 +50,7 @@ successful iteration timestamps; restoration also publishes the pending legacy
 receipt count. No prompts, message text, reflection text, secrets, or user content
 are stored in task health.
 
-The owner-only `!tasks` / `!taskhealth` command shows compact supervised-worker and
+The owner-only `!taskhealth` / `!workerhealth` command shows compact supervised-worker and
 Discord-loop health. It warns when legacy restoration receipts are pending while
 the restoration worker is unhealthy. It is diagnostic only and never performs a
 restoration.
@@ -86,7 +86,7 @@ and a sufficiently long database outage may eventually expire a pending receipt.
 - A live but internally hung coroutine is visible through stale progress time but
   is not force-cancelled by an aggressive watchdog.
 - Feature-owned server-chaos and advanced-voice loops are reported by their own
-  established recovery/owner-alert paths rather than the central `!tasks` table.
+  established recovery/owner-alert paths rather than the central `!taskhealth` table.
 - Discord task loops use discord.py lifecycle semantics; they are not wrapped in a
   second restart system.
 - Legacy slowmode receipts lack the applied-value evidence needed for safe

@@ -44,8 +44,9 @@ class MyAnimeListService:
         cached = self._cache.get(key)
         if cached and time.time() - cached[0] < 900:
             return cached[1]
+        from urllib.parse import quote
         query = urlencode({"limit":"20", "fields":"list_status"})
-        result = await self.client.request("GET", f"https://api.myanimelist.net/v2/users/{username.strip()}/animelist?{query}", headers={"X-MAL-CLIENT-ID":self.client_id})
+        result = await self.client.request("GET", f"https://api.myanimelist.net/v2/users/{quote(username.strip(), safe='')}/animelist?{query}", headers={"X-MAL-CLIENT-ID":self.client_id})
         self._cache[key] = (time.time(), result)
         return result
 
