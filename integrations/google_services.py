@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from .http import AsyncJSONClient, IntegrationAuthError
+from .http import AsyncJSONClient, IntegrationAuthError, IntegrationError
 
 
 class _GoogleBase:
@@ -20,14 +20,19 @@ class _GoogleBase:
             return token
         refresh = str(self.account.get("refresh_token") or "")
         if not refresh:
-            if token:
-                return token
             raise IntegrationAuthError("Google account is not authorized")
-        result = await self.client.request("POST", "https://oauth2.googleapis.com/token", data={
-            "client_id":self.account.get("client_id", ""), "client_secret":self.account.get("client_secret", ""),
-            "refresh_token":refresh, "grant_type":"refresh_token",
-        })
+        if not self.account.get("client_id") or not self.account.get("client_secret"):
+            raise IntegrationAuthError("Google refresh credentials are incomplete")
+        try:
+            result = await self.client.request("POST", "https://oauth2.googleapis.com/token", data={
+                "client_id":self.account.get("client_id", ""), "client_secret":self.account.get("client_secret", ""),
+                "refresh_token":refresh, "grant_type":"refresh_token",
+            })
+        except IntegrationError as exc:
+            raise IntegrationAuthError("Google token refresh was rejected") from exc
         self.account["access_token"] = result.get("access_token", "")
+        if not self.account["access_token"]:
+            raise IntegrationAuthError("Google token refresh returned no access token")
         self.account["expires_at"] = time.time() + int(result.get("expires_in", 3600))
         return str(self.account["access_token"])
 
@@ -36,19 +41,39 @@ class _GoogleBase:
 
 
 class GoogleTasksService(_GoogleBase):
-    async def list_tasks(self, tasklist: str = "@default") -> dict:
-        return await self.client.request("GET", f"https://tasks.googleapis.com/tasks/v1/lists/{tasklist}/tasks", headers=await self._headers())
+    async def list_tasks(self, tasklist: str = "@default", *, show_completed: bool = False,
+                         max_results: int = 20) -> dict:
+        from urllib.parse import quote, urlencode
+        query = urlencode({
+            "showCompleted": str(bool(show_completed)).lower(),
+            "showHidden": "false",
+            "maxResults": max(1, min(50, int(max_results))),
+        })
+        return await self.client.request(
+            "GET",
+            f"https://tasks.googleapis.com/tasks/v1/lists/{quote(tasklist, safe='')}/tasks?{query}",
+            headers=await self._headers(),
+        )
 
     async def create_task(self, title: str, *, notes: str = "", due: datetime | None = None, tasklist: str = "@default") -> dict:
+        if not str(title).strip():
+            raise ValueError("task title is required")
         payload = {"title":title[:250], "notes":notes[:2000]}
         if due:
             if due.tzinfo is None:
                 raise ValueError("due datetime must include a timezone")
             payload["due"] = due.isoformat()
-        return await self.client.request("POST", f"https://tasks.googleapis.com/tasks/v1/lists/{tasklist}/tasks", headers=await self._headers(), json=payload)
+        from urllib.parse import quote
+        return await self.client.request("POST", f"https://tasks.googleapis.com/tasks/v1/lists/{quote(tasklist, safe='')}/tasks", headers=await self._headers(), json=payload)
 
     async def update_task(self, task_id: str, changes: dict, tasklist: str = "@default") -> dict:
         allowed = {key:value for key, value in changes.items() if key in {"title", "notes", "due", "status"}}
+        if not str(task_id).strip() or not allowed:
+            raise ValueError("task_id and at least one supported change are required")
+        if "title" in allowed and not str(allowed["title"]).strip():
+            raise ValueError("task title cannot be empty")
+        if "status" in allowed and allowed["status"] not in {"completed", "needsAction"}:
+            raise ValueError("unsupported task status")
         if "due" in allowed:
             due = allowed["due"]
             if isinstance(due, datetime):
@@ -61,20 +86,44 @@ class GoogleTasksService(_GoogleBase):
                     raise ValueError("due datetime must include a timezone")
             else:
                 raise ValueError("due must be a timezone-aware datetime or ISO string")
-        return await self.client.request("PATCH", f"https://tasks.googleapis.com/tasks/v1/lists/{tasklist}/tasks/{task_id}", headers=await self._headers(), json=allowed)
+        from urllib.parse import quote
+        return await self.client.request("PATCH", f"https://tasks.googleapis.com/tasks/v1/lists/{quote(tasklist, safe='')}/tasks/{quote(str(task_id), safe='')}", headers=await self._headers(), json=allowed)
 
 
 class GoogleCalendarService(_GoogleBase):
-    async def upcoming(self, *, calendar_id: str = "primary", time_min: datetime) -> dict:
-        if time_min.tzinfo is None:
-            raise ValueError("time_min must include a timezone")
+    async def upcoming(self, *, calendar_id: str = "primary", time_min: datetime,
+                       time_max: datetime | None = None, max_results: int = 20) -> dict:
+        if time_min.tzinfo is None or (time_max is not None and time_max.tzinfo is None):
+            raise ValueError("calendar bounds must include a timezone")
+        if time_max is not None and time_max <= time_min:
+            raise ValueError("time_max must be after time_min")
         from urllib.parse import quote, urlencode
-        query = urlencode({"timeMin":time_min.isoformat(), "singleEvents":"true", "orderBy":"startTime", "maxResults":"20"})
+        query_values = {
+            "timeMin": time_min.isoformat(), "singleEvents": "true",
+            "orderBy": "startTime", "maxResults": max(1, min(50, int(max_results))),
+        }
+        if time_max is not None:
+            query_values["timeMax"] = time_max.isoformat()
+        query = urlencode(query_values)
         return await self.client.request("GET", f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events?{query}", headers=await self._headers())
+
+    async def get_event(self, event_id: str, *, calendar_id: str = "primary") -> dict:
+        from urllib.parse import quote
+        if not str(event_id).strip():
+            raise ValueError("event_id is required")
+        return await self.client.request(
+            "GET",
+            f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events/{quote(str(event_id), safe='')}",
+            headers=await self._headers(),
+        )
 
     async def create_event(self, summary: str, start: datetime, end: datetime, *, calendar_id: str = "primary", description: str = "", confirmed: bool = False) -> dict:
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("calendar datetimes must include a timezone")
+        if not str(summary).strip():
+            raise ValueError("calendar summary is required")
+        if end <= start:
+            raise ValueError("calendar end must be after start")
         from urllib.parse import quote
         payload = {"summary":summary[:250], "description":description[:2000], "start":{"dateTime":start.isoformat()}, "end":{"dateTime":end.isoformat()},
                    "extendedProperties":{"private":{"created_by":"scara-wanderer-bots"}}}
@@ -88,6 +137,10 @@ class GoogleCalendarService(_GoogleBase):
             raise PermissionError("only bot-created events may be updated")
         from urllib.parse import quote
         allowed = {key:value for key, value in changes.items() if key in {"summary", "description", "start", "end"}}
+        if not str(event_id).strip() or not allowed:
+            raise ValueError("event_id and at least one supported change are required")
+        if "summary" in allowed and not str(allowed["summary"]).strip():
+            raise ValueError("calendar summary cannot be empty")
         for key in ("start", "end"):
             value = allowed.get(key)
             if value and isinstance(value, dict) and value.get("dateTime"):
@@ -96,7 +149,7 @@ class GoogleCalendarService(_GoogleBase):
                     raise ValueError("calendar datetimes must include a timezone")
         if not confirmed:
             return {"dry_run": True, "operation": "update_event", "event_id": event_id, "changes": allowed}
-        return await self.client.request("PATCH", f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events/{event_id}", headers=await self._headers(), json=allowed)
+        return await self.client.request("PATCH", f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events/{quote(str(event_id), safe='')}", headers=await self._headers(), json=allowed)
 
 
 class GoogleSheetsService(_GoogleBase):

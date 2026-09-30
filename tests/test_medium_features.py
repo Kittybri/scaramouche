@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import asyncio
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -230,10 +230,10 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await service.update_bot_event("id", {}, {"summary":"changed"})
         aware = datetime.now(timezone.utc)
-        preview = await service.create_event("Event", aware, aware)
+        preview = await service.create_event("Event", aware, aware + timedelta(hours=1))
         self.assertTrue(preview["dry_run"])
         self.assertEqual(fake.calls, [])
-        await service.create_event("Event", aware, aware, confirmed=True)
+        await service.create_event("Event", aware, aware + timedelta(hours=1), confirmed=True)
 
     async def test_google_account_separation_tasks_and_sheet_allowlist(self):
         config = IntegrationConfig({"google":{"accounts":{"7":{"access_token":"a"},"8":{"access_token":"b"}}}})

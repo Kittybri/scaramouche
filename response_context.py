@@ -115,6 +115,7 @@ class PromptFragments:
     behavioral: list[str] = field(default_factory=list)
     memory: list[str] = field(default_factory=list)
     world: list[str] = field(default_factory=list)
+    integrations: list[str] = field(default_factory=list)
     factual: list[str] = field(default_factory=list)
 
     def ordered(self) -> list[str]:
@@ -125,6 +126,7 @@ class PromptFragments:
             *self.behavioral,
             *self.memory,
             *self.world,
+            *self.integrations,
             *self.factual,
         ]
 

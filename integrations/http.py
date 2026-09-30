@@ -2,14 +2,34 @@ from __future__ import annotations
 
 import asyncio
 import aiohttp
+from enum import Enum
+
+
+class IntegrationErrorCategory(str, Enum):
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    AUTH_FAILED = "AUTH_FAILED"
+    FORBIDDEN = "FORBIDDEN"
+    NOT_FOUND = "NOT_FOUND"
+    RATE_LIMITED = "RATE_LIMITED"
+    TIMEOUT = "TIMEOUT"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    INVALID_REQUEST = "INVALID_REQUEST"
 
 
 class IntegrationError(RuntimeError):
-    pass
+    def __init__(self, message: str, category: IntegrationErrorCategory = IntegrationErrorCategory.PROVIDER_UNAVAILABLE):
+        super().__init__(message)
+        self.category = category
 
 
 class IntegrationAuthError(IntegrationError):
-    pass
+    def __init__(self, message: str = "integration authorization failed"):
+        super().__init__(message, IntegrationErrorCategory.AUTH_FAILED)
+
+
+class IntegrationForbiddenError(IntegrationError):
+    def __init__(self, message: str = "integration access was forbidden"):
+        super().__init__(message, IntegrationErrorCategory.FORBIDDEN)
 
 
 class AsyncJSONClient:
@@ -27,8 +47,10 @@ class AsyncJSONClient:
                             if response.status == 204:
                                 return None
                             return await response.json(content_type=None)
-                        if response.status in {401, 403}:
-                            raise IntegrationAuthError(f"authentication rejected ({response.status})")
+                        if response.status == 401:
+                            raise IntegrationAuthError()
+                        if response.status == 403:
+                            raise IntegrationForbiddenError()
                         if response.status == 429 or response.status >= 500:
                             if attempt == 0:
                                 retry_after = response.headers.get("Retry-After", "1")
@@ -38,14 +60,25 @@ class AsyncJSONClient:
                                     delay = 1.0
                                 await self.sleep(delay)
                                 continue
-                        raise IntegrationError(f"service request failed ({response.status})")
+                        if response.status == 429:
+                            raise IntegrationError("integration rate limit reached", IntegrationErrorCategory.RATE_LIMITED)
+                        if response.status >= 500:
+                            raise IntegrationError("integration provider is unavailable", IntegrationErrorCategory.PROVIDER_UNAVAILABLE)
+                        if response.status == 404:
+                            raise IntegrationError("integration resource was not found", IntegrationErrorCategory.NOT_FOUND)
+                        if response.status in {400, 405, 409, 412, 422}:
+                            raise IntegrationError("integration request was rejected", IntegrationErrorCategory.INVALID_REQUEST)
+                        raise IntegrationError("integration request failed", IntegrationErrorCategory.PROVIDER_UNAVAILABLE)
             except asyncio.TimeoutError as exc:
                 if attempt == 0:
                     continue
-                raise IntegrationError("service request timed out") from exc
+                raise IntegrationError("integration request timed out", IntegrationErrorCategory.TIMEOUT) from exc
             except aiohttp.ClientError as exc:
                 if attempt == 0:
                     await self.sleep(0.25)
                     continue
-                raise IntegrationError("service connection failed") from exc
-        raise IntegrationError("service request failed")
+                raise IntegrationError(
+                    "integration provider is unavailable",
+                    IntegrationErrorCategory.PROVIDER_UNAVAILABLE,
+                ) from exc
+        raise IntegrationError("integration request failed", IntegrationErrorCategory.PROVIDER_UNAVAILABLE)
