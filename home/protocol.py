@@ -62,6 +62,25 @@ NOTES = {
 }
 
 
+def failure_category(error):
+    """Collapse internal/provider failures into a small non-sensitive taxonomy."""
+    value = str(error).lower()
+    if "expired" in value or "stale" in value:
+        return "expired"
+    if "offline" in value or "unavailable" in value:
+        return "offline"
+    if any(
+        word in value
+        for word in (
+            "denied", "disabled", "required", "unsafe", "outside_allowed",
+            "unknown", "identity", "capability", "actor", "preset",
+            "out_of_range", "unsupported", "replay",
+        )
+    ):
+        return "permission"
+    return "provider_error"
+
+
 def canonical(value):
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False

@@ -8,7 +8,6 @@ import logging
 import random
 import signal
 import time
-from pathlib import Path
 import aiohttp
 from home.protocol import (
     Rejected,
@@ -17,10 +16,11 @@ from home.protocol import (
     verify,
     secure_url,
     validate,
-    secret_ok,
+    failure_category,
 )
 from home.permissions import registry, authorize
 from home.storage import Store
+from home.config import validate_agent_config, load_config
 from .devices import providers
 
 
@@ -33,14 +33,9 @@ class Agent:
             logger.propagate = False
             if not any(isinstance(h, logging.NullHandler) for h in logger.handlers):
                 logger.addHandler(logging.NullHandler())
-        self.config = config
+        self.config = validate_agent_config(config)
         self.id = config["agent_id"]
         self.secret = config["secret"]
-        for field in ("enabled", "mock"):
-            if field in config and type(config[field]) is not bool:
-                raise Rejected("invalid_configuration_boolean")
-        if not secret_ok(self.secret):
-            raise Rejected("weak_credential")
         self.url = secure_url(
             config["url"], websocket=True, mock=config.get("mock", False)
         )
@@ -78,29 +73,53 @@ class Agent:
         if not isinstance(payload, dict) or set(payload) != {"command", "media"}:
             raise Rejected("malformed_request")
         c = validate(payload["command"])
-        if self.lock.locked() and c["action"] != "stop":
+        device_type = self.devices.get(c["device_id"], {}).get("type")
+        interrupt = (
+            (c["action"] == "stop" and device_type == "computer")
+            or (c["action"] in {"pause", "stop"} and device_type == "cast")
+        )
+        if self.lock.locked() and not interrupt:
             raise Rejected("agent_busy")
-        if (
-            c["action"] == "stop"
-            and self.devices.get(c["device_id"], {}).get("type") == "computer"
-        ):
-            # Stop must interrupt audio rather than waiting behind it.
+        if interrupt:
+            # Stop/pause must be able to interrupt a bounded bot-owned session.
             authorize(
                 c,
                 self.devices,
                 self.config.get("enabled", False)
-                and self.computer.enabled
+                and (self.computer.enabled if device_type == "computer" else True)
                 and not await self.store.get("disabled", False)
                 and not await self.store.get("disabled:" + c["device_id"], False),
             )
             await self.store.reserve(c, self.devices[c["device_id"]])
-            await self.computer.platform.stop()
-            await self.store.result(c["request_id"], "completed")
-            return {
+            error_category = "provider_error"
+            try:
+                if device_type == "computer":
+                    await self.computer.platform.stop()
+                    result = "completed"
+                else:
+                    d = dict(self.devices[c["device_id"]], _expires_at=c["expires_at"])
+                    result = await self.adapters["cast"].execute(
+                        d, c["action"], c["parameters"], payload["media"]
+                    )
+                result = result if result in {"completed", "submitted"} else "failed"
+            except asyncio.CancelledError:
+                await self.store.result(c["request_id"], "cancelled")
+                raise
+            except Exception as exc:
+                result = "failed"
+                error_category = failure_category(exc)
+            await self.store.result(
+                c["request_id"], error_category if result == "failed" else result
+            )
+            response = {
                 "type": "result",
                 "request_id": c["request_id"],
-                "result": "completed",
+                "device_id": c["device_id"],
+                "result": result,
             }
+            if result == "failed":
+                response["error_category"] = error_category
+            return response
         async with self.lock:
             enabled = (
                 self.config.get("enabled", False)
@@ -117,6 +136,7 @@ class Agent:
             c = authorize(c, self.devices, enabled)
             d = dict(self.devices[c["device_id"]], _expires_at=c["expires_at"])
             await self.store.reserve(c, d)
+            error_category = "provider_error"
             try:
                 remaining = c["expires_at"] - time.time()
                 if remaining <= 0:
@@ -145,14 +165,20 @@ class Agent:
             except asyncio.CancelledError:
                 await self.store.result(c["request_id"], "cancelled")
                 raise
-            except Exception:
+            except Exception as exc:
                 result = "failed"
-            await self.store.result(c["request_id"], result)
+                error_category = failure_category(exc)
+            await self.store.result(
+                c["request_id"], error_category if result == "failed" else result
+            )
             response = {
                 "type": "result",
                 "request_id": c["request_id"],
+                "device_id": c["device_id"],
                 "result": result,
             }
+            if result == "failed":
+                response["error_category"] = error_category
             if result == "completed" and c["action"] == "screen":
                 response["screen"] = screen
             return response
@@ -228,16 +254,23 @@ class Agent:
             await ws.send_json(result)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             # Only echo an authenticated, format-validated request ID, never vendor errors.
             try:
                 payload = verify(self.secret, "command:" + self.id, data)
-                rid = payload["command"]["request_id"]
+                c = validate(payload["command"])
+                rid = c["request_id"]
                 import re
 
                 if re.fullmatch(r"[0-9a-f]{32}", rid):
                     await ws.send_json(
-                        {"type": "result", "request_id": rid, "result": "failed"}
+                        {
+                            "type": "result",
+                            "request_id": rid,
+                            "device_id": c["device_id"],
+                            "result": "failed",
+                            "error_category": failure_category(exc),
+                        }
                     )
             except Exception:
                 pass
@@ -363,7 +396,7 @@ def main():
 
     parser.add_argument("--event", choices=sorted(EVENTS))
     args = parser.parse_args()
-    config = json.loads(Path(args.config).read_text())
+    config = load_config(args.config)
 
     async def launch():
         agent = Agent(config)

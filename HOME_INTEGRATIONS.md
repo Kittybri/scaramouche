@@ -118,6 +118,8 @@ Supported actions are power, brightness, configured XY colors, color temperature
 (153–500 mirek), and recall of configured scene UUIDs. Put identical named
 `colors`/`scenes` on hub and relay. Exclude unsupported actions for your actual light.
 Brightness defaults to 10–70%; policy may narrow/change bounds within 1–100%.
+Out-of-range values are rejected at both hub and provider boundaries, never clamped
+after signing, so an approved command cannot silently change meaning.
 Changes have a minimum 60-second cooldown and maximum six/hour, even if a config
 requests less/more. No strobe, flashing, or dynamic-scene command exists. Approve
 only static scenes. See [official Hue developer information](https://developers.meethue.com/).
@@ -133,7 +135,8 @@ The default category is `NEVER_AUTOMATE`. Only explicitly reviewed `DECORATIVE`,
 `LIGHTING` or `LOW_RISK` devices may use autonomous triggers, and then only in
 `AUTONOMOUS_SAFE` mode. Never register heaters, medical equipment, fridges/freezers,
 cooking equipment, routers, PC power, or life-safety equipment for character control.
-`NEVER_AUTOMATE` can still allow deliberate manual actions if configured; use
+`NEVER_AUTOMATE` rejects proposal, autonomous, roommate and alarm triggers even if
+later confirmed. It can still allow deliberate `!home do` manual actions if configured; use
 `DISABLED`/no registration to prohibit all control. See
 [python-kasa connection guidance](https://python-kasa.readthedocs.io/en/stable/guides/connect.html).
 
@@ -144,7 +147,9 @@ For `type:"cast"` add `host` (private IP), exact `uuid`, and optionally
 discovery of other devices cannot authorize them. The configured home host must be
 on the appropriate LAN/subnet and able to reach the Cast device.
 
-Actions: `play`, `pause`, `stop`, bounded `volume`, `test`. Default volume range is
+Actions: `play`, `pause`, `stop`, bounded `volume`, `test`. Pause/stop control only
+a session started and still owned by this relay; stop is idempotent when no such
+session exists and never adopts unrelated room playback. Default volume range is
 0.10–0.50 and 0.50 is a hard upper bound. Current emotion-aware Fish TTS is called
 unchanged; the bridge uploads its output, not credentials or internal prompts.
 Audio is limited to 5 MB, MIME+signature-checked MP3/WAV/OGG, in-memory, 120-second
@@ -218,18 +223,28 @@ The normal proactive opt-in, quiet hours, shared per-device/user cooldown, and b
 device policies gate these actions. No LLM-generated IPs, URLs or raw commands are
 used. Scheduler hooks reuse the existing reminder task; no duplicate bot heartbeat.
 
+Bot-local `device_aliases` enables a deliberately small natural grammar such as
+“Turn my bedroom lamp on,” “Set the bedroom lamp to purple,” or “Say take a break
+through my bedroom speaker.” It uses zero LLM calls, requires an exact unambiguous
+configured alias, and creates only a 30-second structured proposal. Ambiguous or
+unsupported language receives explicit `!home do` guidance. Generated character
+prose is never parsed as authority, and serious/protective interactions do not enter
+this proposal route.
+
 Modes:
 
 | Mode | Meaning |
 | --- | --- |
 | DISABLED | No action, including test |
 | MANUAL | Explicit allowlisted user requests only |
-| CONFIRM | Request produces a user/bot-bound confirmation, valid for <=30 seconds |
+| CONFIRM | Request produces a user/bot/guild-bound confirmation, valid for <=30 seconds |
 | AUTONOMOUS_SAFE | Only preconfigured, opted-in, bounded triggers plus manual requests |
 
 Additional `confirmation_required:true` can require confirmation in another mode.
 Automatic rules never confirm themselves; they will not execute a proposal silently.
-Failed/expired confirmation requires a fresh request. The current scheduler does
+Confirmations are atomically consumed: wrong user, bot, or guild cannot consume
+them, while a successful confirmation cannot be replayed. Failed/expired confirmation
+requires a fresh request. The current scheduler does
 not deliver autonomous confirmation proposals as a separate notification; use manual
 `!home do` for confirmed actions. `hours:[0,0]` means all day; defaults are 08–22 UTC.
 
@@ -237,6 +252,8 @@ Owner-only **DM** diagnostics: `!home status`, `devices`, `agent`, `permissions`
 `audit`, `test <device>`. Both the bot's existing OWNER_ID and the hub's `admins`
 must authorize the owner. Diagnostics expose logical IDs, modes, allowed actions,
 relay heartbeat, cooldown and last result—not network addresses or secrets.
+Status includes relay configuration/reachability and healthy/degraded/unavailable
+counts; agent output includes bounded heartbeat age so a stale socket is visible.
 An online relay is not proof a physical device is available; `test` is a bounded
 read-only probe and still uses policy/cooldown. Availability remains marked unverified
 until you perform live tests; audit results show the actual last probe/action result.
@@ -295,7 +312,8 @@ Existing shared cooldown storage coordinates the bots when configured to share i
 Each hub/relay SQLite file holds replay/rate receipts, runtime disable/proposal
 state, minimal action audit, and ephemeral events (location only on the hub).
 Audit fields are timestamp, request ID, bot, user, logical device, action, trigger,
-result. No payload/audio/credential/face-memory/chat-body columns. Audits expire in
+result. Rejections use only bounded categories (`permission`, `expired`, `offline`,
+`provider_error`), never vendor bodies. No payload/audio/credential/face-memory/chat-body columns. Audits expire in
 30 days; proposals/nonces expire promptly. Cleanup runs during idle service periods.
 Short-lived raw audio is RAM-only, not SQLite. A compromised host/database is still
 a privacy risk: use OS disk encryption, restricted permissions and protected backups.
@@ -318,8 +336,9 @@ Disable cancels in-flight relay tasks and stops best-effort Cast playback. It ca
 undo a light/plug command already sent or paper already accepted. Per-device disable
 may conservatively cancel another currently active action on the same relay.
 If hub connectivity is lost, the relay cancels work; no stale action is replayed
-after reconnection. Action failure is generic and private diagnostics retain only
-safe result codes. No repeated channel error spam or automatic owner-alert loop.
+after reconnection. Action failure is generic in public behavior and private
+diagnostics retain only safe result categories. No repeated channel error spam or
+automatic owner-alert loop.
 
 Troubleshooting order: validate both config files; check IDs/keys/TLS/time sync;
 check relay heartbeat; confirm both `enabled` flags and runtime disables; verify
@@ -332,10 +351,11 @@ credentials in chat. Never bypass TLS or widen permission scopes to mask an erro
 Automated tests cover signed real loopback HTTP/WebSocket roundtrips, replay,
 confirmation, reconnect/duplicate connections, kill switches, timeout/offline,
 OwnTracks privacy, temporary audio, adapter requests/cleanup, quotas, preferences,
-commands and scheduler gates. Vendor hardware/TTS calls are mocked. To rerun:
+commands, deterministic proposals, exact device advertisement, result correlation,
+and scheduler gates. Vendor hardware/TTS calls are mocked. To rerun:
 
 ```sh
-python -m pytest tests/test_home_bridge.py tests/test_home_network.py tests/test_home_providers.py tests/test_home_bot.py -q
+python -m pytest tests/test_home_bridge.py tests/test_home_network.py tests/test_home_providers.py tests/test_home_bot.py tests/test_home_hardening.py -q
 python -m pytest -q
 ```
 

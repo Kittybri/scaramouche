@@ -3324,6 +3324,21 @@ async def _dispatch_message(message):
         if (interaction.opted_out or interaction.quiet_hours) and not interaction.direct:
             interaction.consume("ambient_opt_out", suppressed=True)
             return
+        if interaction.direct and not interaction.serious:
+            proposal = await HOME.natural_proposal(
+                message.author.id,
+                message.guild.id if message.guild else 0,
+                message.content,
+                user,
+            )
+            if proposal:
+                interaction.consume("home_proposal")
+                await message.reply(
+                    proposal,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
         await _on_message_routed(message, interaction)
         if interaction.outcome == Outcome.CONTINUE:
             interaction.consume("routed_response")

@@ -55,10 +55,10 @@ def test_confirmation_screen_roundtrip_and_revocation(tmp_path, monkeypatch):
             proposal = await client.call("action", 1, command=lock)
             assert proposal["confirmation_required"] == lock["request_id"]
             agent.computer.platform.action.assert_not_awaited()
-            assert not (await client.call("confirm", 2, request_id=lock["request_id"]))[
+            assert not (await client.call("confirm", 2, request_id=lock["request_id"], guild_id=0))[
                 "ok"
             ]
-            assert (await client.call("confirm", 1, request_id=lock["request_id"]))[
+            assert (await client.call("confirm", 1, request_id=lock["request_id"], guild_id=0))[
                 "ok"
             ]
             # Separate device cooldown is intentional; age only test fixtures to exercise a second action.

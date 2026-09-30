@@ -232,7 +232,7 @@ def test_presence_expiry_conflict_and_cross_app_screen():
         presence(dict(local, window_title="secret"), now=1050)
 
 
-def test_computer_policy_owner_manual_confirmation_and_clamp():
+def test_computer_policy_owner_manual_confirmation_and_bounds():
     devices = registry({"pc": device()})
     c = command("pc", "lock", {}, 1, 0, "scaramouche")
     with pytest.raises(Rejected, match="confirmation_required"):
@@ -242,7 +242,8 @@ def test_computer_policy_owner_manual_confirmation_and_clamp():
         with pytest.raises(Rejected):
             authorize(dict(c, confirmed=True, **changes), devices, True)
     v = command("pc", "volume", {"value": 100}, 1, 0, "scaramouche")
-    assert authorize(v, devices, True)["parameters"]["value"] == 0.5
+    with pytest.raises(Rejected, match="volume_out_of_range"):
+        authorize(v, devices, True)
     with pytest.raises(Rejected):
         validate(dict(v, expires_at=time.time() - 1))
 
