@@ -15,6 +15,8 @@ class ReflectionRequest:
     observation: str
     importance: int
     related_user_id: int | None
+    related_goal_id: int | None = None
+    related_belief_id: int | None = None
 
 
 class ReflectionEngine:
@@ -33,12 +35,22 @@ class ReflectionEngine:
         if now - self._last_requested_at < 900:
             return None
         self._last_requested_at = now
-        related = {e.get("related_user_id") for e in meaningful if e.get("related_user_id") is not None}
-        user_id = related.pop() if len(related) == 1 else top.get("related_user_id")
-        observation = " | ".join(str(e.get("summary", ""))[:240] for e in meaningful[:4])
+        # A persisted reflection belongs to at most one user. Global events may
+        # accompany that user's events, but events about another user may not.
+        user_id = top.get("related_user_id")
+        selected = [
+            event for event in meaningful
+            if event.get("related_user_id") in ({None, user_id} if user_id is not None else {None})
+        ][:4]
+        goal_ids = {e.get("related_goal_id") for e in selected if e.get("related_goal_id") is not None}
+        belief_ids = {e.get("related_belief_id") for e in selected if e.get("related_belief_id") is not None}
+        goal_id = next(iter(goal_ids)) if len(goal_ids) == 1 else None
+        belief_id = next(iter(belief_ids)) if len(belief_ids) == 1 else None
+        observation = " | ".join(str(e.get("summary", ""))[:240] for e in selected)
         return ReflectionRequest(
-            tuple(int(e["id"]) for e in meaningful[:4]), str(top.get("event_type", "event")),
+            tuple(int(e["id"]) for e in selected), str(top.get("event_type", "event")),
             observation, int(top.get("importance", 1)), int(user_id) if user_id else None,
+            int(goal_id) if goal_id else None, int(belief_id) if belief_id else None,
         )
 
     @staticmethod

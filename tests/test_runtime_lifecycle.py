@@ -194,6 +194,10 @@ def _proactive_fakes(runtime, monkeypatch, *, finish_action=None, generation=Non
         provider_failed=AsyncMock(),
     )
     monkeypatch.setattr(runtime, "self_store", store)
+    monkeypatch.setattr(
+        runtime, "SELF_MODEL_POLICY",
+        SimpleNamespace(store=store, observe=AsyncMock()),
+    )
     monkeypatch.setattr(runtime, "mem", memory)
     monkeypatch.setattr(runtime, "heartbeat", coordinator)
     monkeypatch.setattr(runtime.bot, "get_channel", lambda channel_id: channel)
@@ -221,7 +225,7 @@ def test_proactive_send_is_delivered_before_isolated_followups(monkeypatch):
     statuses = [call.args[1] for call in store.finish_action.await_args_list]
     assert statuses == ["delivered"]
     memory.set_proactive_sent.assert_awaited_once()
-    store.record_event.assert_awaited_once()
+    runtime.SELF_MODEL_POLICY.observe.assert_awaited_once()
 
 
 def test_proactive_marker_failure_keeps_send_success_and_pending_barrier(monkeypatch):
@@ -447,7 +451,10 @@ def test_normal_generation_path_uses_bounded_persistent_context(monkeypatch, tmp
     monkeypatch.setattr(runtime, "WORLD", PersistentWorld("scaramouche", memory, {}, self_store=store))
     monkeypatch.setattr(runtime, "heartbeat", HeartbeatCoordinator(store, EnvironmentMonitor(config=config), config))
     monkeypatch.setattr(runtime, "ai", FakeAI())
-    run(runtime._record_self_perception(12, "I'm back", returned_after_absence=True))
+    run(runtime._record_self_perception(
+        12, "I'm back", returned_after_absence=True,
+        relationship_significance=80,
+    ))
     user = run(memory.get_user(12))
     prior = time.time() - 5 * 86400
     reply = run(runtime.get_response(
