@@ -54,7 +54,7 @@ def test_hue_explicit_resource_verified_tls_and_payload(monkeypatch):
     response.json = AsyncMock(
         return_value={"errors": [{"description": "secret-vendor-error"}]}
     )
-    with pytest.raises(Rejected, match="^device_error$"):
+    with pytest.raises(Rejected, match="^hue_api_error$"):
         run(Hue().execute(d, "power", {"on": True}))
     d["_expires_at"] = 0
     with pytest.raises(Rejected, match="expired_command"):
@@ -167,6 +167,31 @@ def test_cast_cancellation_and_activation_failure_cleanup(monkeypatch):
     with pytest.raises(Rejected, match="cast_activation_failed"):
         run(provider.execute(d, "play", {"asset": "random", "volume": 0.25}, media))
     assert cast.media_controller.stop.call_count == 2
+
+
+def test_cast_pause_stop_only_control_bot_owned_session(monkeypatch):
+    cast, discover, cleanup, d, media = cast_fixture(monkeypatch)
+    provider = Cast("https://home.example")
+    # An absent managed session is never discovered/adopted from the room.
+    assert run(provider.execute(d, "stop", {})) == "completed"
+    with pytest.raises(Rejected, match="no_managed_cast_session"):
+        run(provider.execute(d, "pause", {}))
+    discover.assert_not_called()
+    cancelled = threading.Event()
+    provider.managed[d["uuid"]] = (cast.media_controller, cancelled)
+    assert run(provider.execute(d, "pause", {})) == "completed"
+    cast.media_controller.pause.assert_called_once()
+    assert run(provider.execute(d, "stop", {})) == "completed"
+    assert cancelled.is_set()
+
+
+def test_cast_provider_rejects_out_of_range_volume(monkeypatch):
+    cast, discover, cleanup, d, media = cast_fixture(monkeypatch)
+    provider = Cast("https://home.example")
+    with pytest.raises(Rejected, match="volume_out_of_range"):
+        run(provider.execute(d, "volume", {"value": 0.9}))
+    with pytest.raises(Rejected, match="volume_out_of_range"):
+        run(provider.execute(d, "play", {"asset": "random", "volume": 0.9}, media))
 
 
 @pytest.mark.parametrize(

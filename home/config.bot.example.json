@@ -3,6 +3,19 @@
     "enabled": false,
     "url": "https://home.example.com",
     "secret": "REPLACE_WITH_THIS_BOTS_RANDOM_SECRET",
+    "device_aliases": {
+      "bedroom_lamp": {
+        "friendly_name": "bedroom lamp",
+        "aliases": ["bedroom lamp"],
+        "actions": ["power", "brightness", "color"],
+        "colors": ["purple"]
+      },
+      "bedroom_clock": {
+        "friendly_name": "bedroom speaker",
+        "aliases": ["bedroom speaker"],
+        "actions": ["speak"]
+      }
+    },
     "users": {
       "123456789": {
         "rules": [

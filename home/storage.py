@@ -82,6 +82,32 @@ class Store:
             )
             await db.commit()
 
+    async def consume_proposal(self, request_id, user_id, guild_id, bot):
+        """Atomically bind and consume one exact confirmation proposal."""
+        key = "proposal:" + request_id
+        async with self.db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute("SELECT payload FROM home_state WHERE key=?", (key,))
+            ).fetchone()
+            if not row:
+                raise Rejected("unknown_confirmation")
+            try:
+                proposal = json.loads(row[0])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise Rejected("unknown_confirmation") from exc
+            if (
+                proposal.get("user_id") != user_id
+                or proposal.get("guild_id") != guild_id
+                or proposal.get("bot") != bot
+            ):
+                raise Rejected("unknown_confirmation")
+            cursor = await db.execute("DELETE FROM home_state WHERE key=?", (key,))
+            if cursor.rowcount != 1:
+                raise Rejected("unknown_confirmation")
+            await db.commit()
+            return proposal
+
     async def reserve(self, c, d, now=None):
         now = time.time() if now is None else now
         cooldown = max(60, float(d.get("cooldown_seconds", 300)))
@@ -90,12 +116,13 @@ class Store:
             await db.execute("BEGIN IMMEDIATE")
             rows = await (
                 await db.execute(
-                    "SELECT ts FROM home_audit WHERE device=? AND ts>? ORDER BY ts DESC",
+                    "SELECT ts FROM home_audit WHERE device=? AND ts>? "
+                    "AND result NOT IN ('permission','expired') ORDER BY ts DESC",
                     (c["device_id"], now - 3600),
                 )
             ).fetchall()
             if (
-                c["action"] != "stop"
+                c["action"] not in {"stop", "pause"}
                 and rows
                 and (now - rows[0][0] < cooldown or len(rows) >= limit)
             ):
@@ -136,11 +163,29 @@ class Store:
             "timeout",
             "cancelled",
             "reserved",
+            "permission",
+            "expired",
+            "provider_error",
         }
         async with self.db() as db:
             await db.execute(
                 "UPDATE home_audit SET result=? WHERE request_id=?",
                 (result if result in allowed else "failed", rid),
+            )
+            await db.commit()
+
+    async def rejection(self, c, category, now=None):
+        """Record a bounded rejected physical request without message/provider detail."""
+        if category not in {"permission", "expired", "offline", "provider_error"}:
+            category = "provider_error"
+        async with self.db() as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO home_audit VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    c["request_id"], time.time() if now is None else now, c["bot"],
+                    c["user_id"], c["device_id"], c["action"], c["trigger"],
+                    category,
+                ),
             )
             await db.commit()
 

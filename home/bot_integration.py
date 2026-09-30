@@ -16,6 +16,80 @@ from .protocol import command, Rejected, ID
 SIGNALS = {"irritated", "calm_night", "birthday"}
 
 
+def _aliases(config):
+    """Return validated, non-secret routing metadata from bot-local configuration."""
+    result = []
+    raw = config.get("device_aliases", {})
+    if not isinstance(raw, dict):
+        return result
+    for device_id, item in raw.items():
+        if not ID.fullmatch(device_id) or not isinstance(item, dict):
+            continue
+        names = item.get("aliases", [])
+        actions = item.get("actions", [])
+        if not isinstance(names, list) or not isinstance(actions, list):
+            continue
+        names = [
+            name.strip().lower() for name in names
+            if isinstance(name, str) and 1 <= len(name.strip()) <= 64
+        ]
+        if not names:
+            continue
+        result.append({
+            "device": device_id,
+            "friendly": str(item.get("friendly_name") or names[0])[:64],
+            "aliases": names,
+            "actions": set(actions) & {
+                "power", "brightness", "color", "speak",
+            },
+            "colors": {
+                str(value).strip().lower() for value in item.get("colors", [])
+                if isinstance(value, str)
+            },
+        })
+    return result
+
+
+def natural_intent(text, config):
+    """Deterministically parse a small safe grammar; never consult an LLM."""
+    lowered = " ".join((text or "").lower().strip().split())
+    if not lowered or not re.search(r"\b(turn|set|say|play)\b", lowered):
+        return None
+    matches = []
+    for item in _aliases(config):
+        if any(re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", lowered) for alias in item["aliases"]):
+            matches.append(item)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        return {"ambiguous": True}
+    item = matches[0]
+    action = parameters = None
+    if "power" in item["actions"] and re.search(r"\bturn\b.*\bon\b|\bturn on\b", lowered):
+        action, parameters = "power", {"on": True}
+    elif "power" in item["actions"] and re.search(r"\bturn\b.*\boff\b|\bturn off\b", lowered):
+        action, parameters = "power", {"on": False}
+    elif "brightness" in item["actions"]:
+        found = re.search(r"\bbrightness\b(?:\s+to|\s+at)?\s+(\d{1,3})(?:\s*%)?\b", lowered)
+        if found:
+            action, parameters = "brightness", {"value": int(found.group(1))}
+    if action is None and "color" in item["actions"] and re.search(r"\bset\b", lowered):
+        colors = [color for color in item["colors"] if re.search(r"(?<!\w)" + re.escape(color) + r"(?!\w)", lowered)]
+        if len(colors) == 1:
+            action, parameters = "color", {"name": colors[0]}
+    if action is None and "speak" in item["actions"]:
+        alias_pattern = "|".join(re.escape(alias) for alias in sorted(item["aliases"], key=len, reverse=True))
+        found = re.search(
+            r"\bsay\s+(.{1,240}?)\s+(?:through|on)\s+(?:my\s+|the\s+)?(?:" + alias_pattern + r")[.!?]*$",
+            lowered,
+        )
+        if found and found.group(1).strip() not in {"this", "that", "it"}:
+            action, parameters = "speak", {"text": found.group(1).strip()}
+    if action is None:
+        return {"unsupported": True, "friendly": item["friendly"]}
+    return dict(item, action=action, parameters=parameters)
+
+
 def quiet(user, now=None):
     local = (now or datetime.now(ZoneInfo(user.get("timezone_name") or "UTC"))).hour
     start = int(user.get("quiet_hours_start", 23))
@@ -98,6 +172,40 @@ class HomeBot:
             except Exception:
                 pass  # A memory failure must not turn a completed physical action into a retry.
         return result
+
+    async def natural_proposal(self, uid, gid, text, user):
+        """Return a deterministic reply for an explicit request, or None if unrelated."""
+        intent = natural_intent(text, self.config)
+        if intent is None:
+            return None
+        if intent.get("ambiguous"):
+            return "That device name matches more than one configured device. Use `!home do <device> <action> <JSON>` so I don't guess."
+        if intent.get("unsupported"):
+            return "I recognized the configured device, but not a safe action. Use `!home do <device> <action> <JSON>`."
+        if not user.get("home_actions_enabled", False):
+            return "Home action proposals are off. Enable them with `!home actions on` first."
+        if intent["action"] == "speak":
+            result = await self.speak(
+                uid, intent["device"], intent["parameters"]["text"], user,
+                trigger="proposal", guild_id=gid,
+            )
+            summary = "speak through " + intent["friendly"]
+        else:
+            result = await self.action(
+                uid, gid, intent["device"], intent["action"],
+                intent["parameters"], "proposal",
+            )
+            summary = (
+                f"{intent['friendly']} → {intent['action']} "
+                + json.dumps(intent["parameters"], sort_keys=True, separators=(",", ":"))
+            )
+        if result.get("confirmation_required"):
+            return (
+                "I can propose that: " + summary + ". Confirm this exact action within "
+                "30 seconds with `!home confirm "
+                + result["confirmation_required"] + "`."
+            )
+        return render(result)
 
     async def speak(self, uid, device, text, user, trigger="manual", guild_id=0):
         if not self.client.enabled or not device or not ID.fullmatch(device):
@@ -339,7 +447,8 @@ class HomeBot:
                 ctx,
                 render(
                     await self.client.call(
-                        "confirm", ctx.author.id, request_id=request_id
+                        "confirm", ctx.author.id, request_id=request_id,
+                        guild_id=ctx.guild.id if ctx.guild else 0,
                     )
                 ),
             )
@@ -392,7 +501,7 @@ class HomeBot:
                         op, ctx.author.id, **({"device": device} if device else {})
                     )
                 )
-                await say(ctx, json.dumps(result, ensure_ascii=True))
+                await say(ctx, render_diagnostic(op, result))
 
             home.command(name=operation)(make_callback(operation))
 
@@ -413,4 +522,34 @@ def render(result):
         "That action did not go through ("
         + str(result.get("error", "device unavailable"))
         + ")."
+    )
+
+
+def render_diagnostic(operation, result):
+    """Compact safe diagnostics; the hub response never contains provider secrets."""
+    if not result.get("ok"):
+        return render(result)
+    if operation == "audit":
+        rows = result.get("actions", [])
+        return "Recent actions: " + (" · ".join(
+            f"{row.get('device','?')}:{row.get('action','?')}={row.get('result','?')}"
+            for row in rows[:10]
+        ) or "none")
+    agents = result.get("agents", {})
+    devices = result.get("devices", {})
+    if operation == "agent":
+        return "Agents: " + (" · ".join(
+            f"{name}={item.get('health','unavailable')} age={item.get('health_age_seconds','n/a')}s"
+            for name, item in agents.items()
+        ) or "none configured")
+    if operation in {"devices", "permissions"}:
+        return "Devices: " + (" · ".join(
+            f"{name} ({item.get('type','?')}, {item.get('mode','DISABLED')}, "
+            f"{'online' if item.get('agent_online') else 'offline'})"
+            for name, item in devices.items()
+        ) or "none configured")
+    return (
+        f"Home {'enabled' if result.get('enabled') else 'disabled'}; relay "
+        f"{'reachable' if result.get('relay_reachable') else 'unavailable'}; "
+        f"devices={len(devices)}; agents={len(agents)}."
     )

@@ -54,12 +54,22 @@ class Hue:
         if action == "power":
             payload = {"on": {"on": p["on"]}}
         elif action == "brightness":
+            lo = max(1, min(100, float(d.get("min_brightness", 10))))
+            hi = max(lo, min(100, float(d.get("max_brightness", 70))))
+            if not lo <= p["value"] <= hi:
+                raise Rejected("brightness_out_of_range")
             payload = {"dimming": {"brightness": p["value"]}}
         elif action == "color":
+            if p["name"] not in d.get("colors", {}):
+                raise Rejected("preset_denied")
             payload = {"color": {"xy": d["colors"][p["name"]]}}
         elif action == "color_temperature":
+            if type(p["mirek"]) is not int or not 153 <= p["mirek"] <= 500:
+                raise Rejected("color_temperature_out_of_range")
             payload = {"color_temperature": {"mirek": p["mirek"]}}
         elif action == "scene":
+            if p["name"] not in d.get("scenes", {}):
+                raise Rejected("preset_denied")
             resource = str(UUID(d["scenes"][p["name"]]))
             payload = {"recall": {"action": "active"}}
         elif action != "test":
@@ -77,11 +87,13 @@ class Hue:
                 ssl=context,
                 allow_redirects=False,
             ) as response:
+                if response.status in {401, 403}:
+                    raise Rejected("hue_authentication_failed")
                 if response.status != 200:
-                    raise Rejected("device_error")
+                    raise Rejected("hue_bridge_error")
                 result = await response.json()
                 if result.get("errors"):
-                    raise Rejected("device_error")
+                    raise Rejected("hue_api_error")
         return "completed"
 
     async def close(self):
@@ -133,8 +145,12 @@ class Cast:
         self.media_origin = media_origin
         self.connections = {}
         self.cancellations = set()
+        self.managed = {}
+        self.guard = threading.Lock()
 
     async def execute(self, d, action, p, media=None):
+        if action in {"pause", "stop"}:
+            return await asyncio.to_thread(self._control_managed, d, action)
         cancelled = threading.Event()
         self.cancellations.add(cancelled)
         try:
@@ -142,6 +158,22 @@ class Cast:
         finally:
             cancelled.set()
             self.cancellations.discard(cancelled)
+
+    def _control_managed(self, d, action):
+        """Control only a session this process started; never adopt ambient media."""
+        with self.guard:
+            managed = self.managed.get(d["uuid"])
+        if not managed:
+            if action == "stop":
+                return "completed"  # Idempotent stop is safe when nothing is ours.
+            raise Rejected("no_managed_cast_session")
+        controller, cancelled = managed
+        if action == "pause":
+            controller.pause()
+        else:
+            cancelled.set()
+            controller.stop()
+        return "completed"
 
     def _run(self, d, action, p, media, cancelled):
         import pychromecast
@@ -174,11 +206,11 @@ class Cast:
             if action == "test":
                 return "completed"
             if action == "volume":
+                lo = max(0, min(0.5, float(d.get("min_volume", 0.1))))
+                hi = max(lo, min(0.5, float(d.get("max_volume", 0.5))))
+                if not lo <= p["value"] <= hi:
+                    raise Rejected("volume_out_of_range")
                 cast.set_volume(p["value"])
-            elif action == "pause":
-                controller.pause()
-            elif action == "stop":
-                controller.stop()
             elif action == "play":
                 if media:
                     parsed = urlsplit(media["url"])
@@ -197,6 +229,10 @@ class Cast:
                     mime = asset["mime"]
                 if mime not in {"audio/mpeg", "audio/wav", "audio/ogg"}:
                     raise Rejected("invalid_audio")
+                lo = max(0, min(0.5, float(d.get("min_volume", 0.1))))
+                hi = max(lo, min(0.5, float(d.get("max_volume", 0.5))))
+                if not lo <= p["volume"] <= hi:
+                    raise Rejected("volume_out_of_range")
                 cast.set_volume(p["volume"])
                 started = controller
                 controller.play_media(url, mime)
@@ -211,6 +247,8 @@ class Cast:
                     if cancelled.is_set() or time.monotonic() >= ready_by:
                         raise Rejected("cast_activation_failed")
                     time.sleep(0.1)
+                with self.guard:
+                    self.managed[d["uuid"]] = (controller, cancelled)
                 # Intentionally short; never indefinite room audio or high-volume alarms.
                 end = time.monotonic() + min(
                     12, max(1, int(d.get("max_play_seconds", 12)))
@@ -225,6 +263,10 @@ class Cast:
                 raise Rejected("unsupported_action")
             return "completed"
         finally:
+            with self.guard:
+                current = self.managed.get(d["uuid"])
+                if current and current[1] is cancelled:
+                    self.managed.pop(d["uuid"], None)
             if started is not None:
                 try:
                     started.stop()
@@ -258,37 +300,80 @@ def deadline(d):
 
 
 def validate_devices(config):
-    if config.get("mock", False):
-        return
     from uuid import UUID
     from home.protocol import ID
 
     for d in config.get("devices", {}).values():
         kind = d["type"]
         if kind not in {"printer", "computer"}:
+            if not isinstance(d.get("host"), str):
+                raise Rejected("missing_device_host")
             lan_host(d["host"])
         if kind == "hue":
-            UUID(d["resource_id"])
-            if not d.get("application_key"):
+            try:
+                UUID(d["resource_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise Rejected("invalid_hue_resource") from exc
+            if not isinstance(d.get("application_key"), str) or not d["application_key"]:
                 raise Rejected("missing_hue_key")
             if d.get("tls_fingerprint"):
-                if len(bytes.fromhex(d["tls_fingerprint"])) != 32:
+                try:
+                    valid_pin = len(bytes.fromhex(d["tls_fingerprint"])) == 32
+                except (TypeError, ValueError):
+                    valid_pin = False
+                if not valid_pin:
                     raise Rejected("invalid_tls_pin")
-            elif not Path(d.get("ca_file", "")).is_file():
+            elif not isinstance(d.get("ca_file"), str) or not d["ca_file"]:
                 raise Rejected("missing_hue_tls_trust")
-            for xy in d.get("colors", {}).values():
+            elif not config.get("mock", False) and not Path(d["ca_file"]).is_file():
+                raise Rejected("missing_hue_tls_trust")
+            colors = d.get("colors", {})
+            scenes = d.get("scenes", {})
+            if not isinstance(colors, dict) or not isinstance(scenes, dict):
+                raise Rejected("invalid_hue_presets")
+            for name, xy in colors.items():
                 if (
-                    set(xy) != {"x", "y"}
-                    or not all(0 <= float(v) <= 1 for v in xy.values())
-                    or sum(float(v) for v in xy.values()) > 1
+                    not ID.fullmatch(name)
+                    or not isinstance(xy, dict)
+                    or set(xy) != {"x", "y"}
                 ):
                     raise Rejected("invalid_color")
-            for scene in d.get("scenes", {}).values():
-                UUID(scene)
+                try:
+                    values = [float(v) for v in xy.values()]
+                except (TypeError, ValueError) as exc:
+                    raise Rejected("invalid_color") from exc
+                if not all(0 <= value <= 1 for value in values) or sum(values) > 1:
+                    raise Rejected("invalid_color")
+            for name, scene in scenes.items():
+                try:
+                    if not ID.fullmatch(name):
+                        raise ValueError
+                    UUID(scene)
+                except (TypeError, ValueError) as exc:
+                    raise Rejected("invalid_scene") from exc
+        if kind == "kasa":
+            if "child_id" in d and (
+                not isinstance(d["child_id"], str) or not d["child_id"]
+            ):
+                raise Rejected("invalid_kasa_child")
+            for key in ("username", "password"):
+                if key in d and not isinstance(d[key], str):
+                    raise Rejected("invalid_kasa_credentials")
         if kind == "cast":
-            UUID(d["uuid"])
-            secure_url(config["media_origin"], mock=config.get("mock", False))
-            for asset in d.get("asset_urls", {}).values():
+            try:
+                UUID(d["uuid"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise Rejected("invalid_cast_uuid") from exc
+            secure_url(config.get("media_origin", ""), mock=config.get("mock", False))
+            duration = d.get("max_play_seconds", 12)
+            if type(duration) is not int or not 1 <= duration <= 12:
+                raise Rejected("invalid_cast_duration")
+            assets = d.get("asset_urls", {})
+            if not isinstance(assets, dict):
+                raise Rejected("invalid_cast_assets")
+            for name, asset in assets.items():
+                if not ID.fullmatch(name) or not isinstance(asset, dict) or set(asset) != {"url", "mime"}:
+                    raise Rejected("invalid_cast_assets")
                 secure_url(asset["url"])
                 if asset["mime"] not in {"audio/mpeg", "audio/wav", "audio/ogg"}:
                     raise Rejected("invalid_audio")

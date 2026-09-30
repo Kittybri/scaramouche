@@ -8,21 +8,26 @@ import json
 import os
 import ssl
 import time
-from pathlib import Path
+from dataclasses import dataclass
 from aiohttp import web, WSMsgType
-from .protocol import Rejected, verify, sign, validate, secret_ok
+from .protocol import Rejected, verify, sign, validate, failure_category, secret_ok
 from .permissions import registry, authorize
 from .storage import Store
 from .location import ingest, events, delete_location
 from .media import AudioVault
+from .config import validate_hub_config, load_config
+
+
+@dataclass
+class PendingAction:
+    agent_id: str
+    device_id: str
+    future: asyncio.Future
 
 
 class Hub:
     def __init__(self, config):
-        self.config = config
-        for field in ("enabled", "mock", "trust_loopback_proxy"):
-            if field in config and type(config[field]) is not bool:
-                raise Rejected("invalid_configuration_boolean")
+        self.config = validate_hub_config(config)
         self.devices = registry(config.get("devices", {}))
         self.store = Store(
             config.get("database", "home.db"),
@@ -38,11 +43,6 @@ class Hub:
         self.vault = AudioVault(
             config.get("public_url", "https://localhost"), config.get("mock", False)
         )
-        for secret in list(config.get("clients", {}).values()) + list(
-            config.get("agents", {}).values()
-        ):
-            if not secret_ok(secret):
-                raise Rejected("weak_credential")
         self.app = web.Application(client_max_size=7_100_000, middlewares=[self.guard])
         self.app.router.add_post("/rpc/{client}", self.rpc)
         self.app.router.add_get("/agent/{agent}", self.agent)
@@ -70,9 +70,9 @@ class Hub:
         await asyncio.gather(self.maintenance, return_exceptions=True)
         for ws in list(self.agents.values()):
             await ws.close()
-        for _, future in list(self.pending.values()):
-            if not future.done():
-                future.cancel()
+        for pending in list(self.pending.values()):
+            if not pending.future.done():
+                pending.future.cancel()
         self.vault.items.clear()
 
     @web.middleware
@@ -169,11 +169,13 @@ class Hub:
                     return_exceptions=True,
                 )
             if op == "disable":
-                for aid, future in list(self.pending.values()):
+                for pending in list(self.pending.values()):
                     if (
-                        device is None or self.devices[device].get("agent") == aid
-                    ) and not future.done():
-                        future.set_result({"result": "cancelled"})
+                        device is None or pending.device_id == device
+                    ) and not pending.future.done():
+                        pending.future.set_result({
+                            "result": "cancelled", "device_id": pending.device_id,
+                        })
             return web.json_response({"ok": True, "result": op})
         if op in {"status", "devices", "agent", "permissions"}:
             rows = {}
@@ -186,18 +188,49 @@ class Hub:
                     "agent_online": d.get("agent") in self.agents,
                 }
                 rows[key].update(await self.store.device_status(key, d))
+            now = time.time()
+            agents = {}
+            for agent_id in self.config.get("agents", {}):
+                last = self.last_health.get(agent_id, 0)
+                age = round(max(0, now - last), 1) if last else None
+                online = agent_id in self.agents
+                agents[agent_id] = {
+                    "online": online,
+                    "health": (
+                        "healthy" if online and age is not None and age <= 30
+                        else "degraded" if online and age is not None and age <= 60
+                        else "unavailable"
+                    ),
+                    "health_age_seconds": age,
+                    "last_heartbeat": last,
+                }
+            health_counts = {
+                label: sum(item["health"] == label for item in agents.values())
+                for label in ("healthy", "degraded", "unavailable")
+            }
+            for device_id, item in rows.items():
+                agent_health = agents.get(
+                    self.devices[device_id].get("agent"), {}
+                ).get("health", "unavailable")
+                item["health"] = (
+                    "unavailable" if agent_health == "unavailable"
+                    else "degraded" if item["last_result"] in {
+                        "failed", "provider_error", "offline", "timeout"
+                    }
+                    else agent_health
+                )
             return web.json_response(
                 {
                     "ok": True,
                     "enabled": bool(await self.enabled()),
+                    "relay_configured": bool(self.config.get("agents")),
+                    "relay_reachable": bool(agents) and all(
+                        item["health"] in {"healthy", "degraded"}
+                        for item in agents.values()
+                    ),
+                    "health_summary": health_counts,
                     "devices": rows,
-                    "agents": {
-                        a: {
-                            "online": a in self.agents,
-                            "last_heartbeat": self.last_health.get(a, 0),
-                        }
-                        for a in self.config.get("agents", {})
-                    },
+                    "agents": agents,
                     "recent_actions": await self.store.audit(),
                 }
             )
@@ -236,13 +269,19 @@ class Hub:
             key = self.vault.add(payload.get("data"), payload.get("mime"), uid, client)
             return web.json_response({"ok": True, "asset": key})
         if op == "confirm":
-            proposal = await self.store.get(
-                "proposal:" + str(payload.get("request_id", ""))
-            )
-            if not proposal or proposal["user_id"] != uid or proposal["bot"] != client:
+            request_id = payload.get("request_id", "")
+            guild_id = payload.get("guild_id")
+            if (
+                not isinstance(request_id, str)
+                or type(guild_id) is not int
+                or guild_id < 0
+            ):
                 raise Rejected("unknown_confirmation")
+            proposal = await self.store.consume_proposal(
+                request_id, uid, guild_id, client
+            )
             c = validate(proposal)
-            c["confirmed"] = True
+            c = dict(c, confirmed=True)
         elif op == "action":
             c = validate(payload.get("command"))
             if c["user_id"] != uid or c["bot"] != client or c["confirmed"]:
@@ -262,6 +301,7 @@ class Hub:
                         "expires_at": c["expires_at"],
                     }
                 )
+            await self.store.rejection(c, failure_category(exc))
             raise
         return web.json_response(await self.dispatch(c))
 
@@ -273,14 +313,14 @@ class Hub:
         if not ws or ws.closed:
             await self.store.result(c["request_id"], "offline")
             return {"ok": False, "error": "relay_offline"}
-        if c["action"] != "stop" and any(
-            agent == aid for agent, _ in self.pending.values()
+        if c["action"] not in {"stop", "pause"} and any(
+            pending.agent_id == aid for pending in self.pending.values()
         ):
-            await self.store.result(c["request_id"], "failed")
+            await self.store.result(c["request_id"], "provider_error")
             return {"ok": False, "error": "relay_busy"}
         media = None
         future = asyncio.get_running_loop().create_future()
-        self.pending[c["request_id"]] = (aid, future)
+        self.pending[c["request_id"]] = PendingAction(aid, c["device_id"], future)
         try:
             if c["action"] == "play" and c["parameters"]["asset"] not in d.get(
                 "assets", []
@@ -300,8 +340,17 @@ class Hub:
                 future, max(0.1, min(25, c["expires_at"] - time.time()))
             )
             outcome = result.get("result", "failed")
-            await self.store.result(c["request_id"], outcome)
+            category = result.get("error_category", "provider_error")
+            if category not in {"permission", "expired", "offline", "provider_error"}:
+                category = "provider_error"
+            audit_outcome = (
+                category
+                if outcome == "failed" else outcome
+            )
+            await self.store.result(c["request_id"], audit_outcome)
             response = {"ok": outcome in {"completed", "submitted"}, "result": outcome}
+            if outcome == "failed":
+                response["error"] = audit_outcome
             if c["action"] == "screen" and outcome == "completed":
                 await self.companion.allowed(c)
                 screen = result.get("screen", {})
@@ -318,9 +367,13 @@ class Hub:
         except asyncio.CancelledError:
             await self.store.result(c["request_id"], "cancelled")
             raise
+        except Rejected as exc:
+            category = failure_category(exc)
+            await self.store.result(c["request_id"], category)
+            return {"ok": False, "error": category}
         except Exception:
-            await self.store.result(c["request_id"], "failed")
-            return {"ok": False, "error": "action_failed"}
+            await self.store.result(c["request_id"], "provider_error")
+            return {"ok": False, "error": "provider_error"}
         finally:
             self.pending.pop(c["request_id"], None)
             if media:
@@ -374,7 +427,8 @@ class Hub:
                     }
                     if (
                         not isinstance(advertised, list)
-                        or not set(advertised) <= expected
+                        or len(advertised) != len(set(advertised))
+                        or set(advertised) != expected
                     ):
                         await ws.close(code=1008)
                         break
@@ -398,9 +452,14 @@ class Hub:
                     "failed",
                     "cancelled",
                 }:
-                    pair = self.pending.get(data.get("request_id"))
-                    if pair and pair[0] == aid and not pair[1].done():
-                        pair[1].set_result(data)
+                    pending = self.pending.get(data.get("request_id"))
+                    if (
+                        pending
+                        and pending.agent_id == aid
+                        and data.get("device_id") == pending.device_id
+                        and not pending.future.done()
+                    ):
+                        pending.future.set_result(data)
                 else:
                     await ws.close(code=1008)
                     break
@@ -411,9 +470,11 @@ class Hub:
             self.connecting.discard(aid)
             if self.agents.get(aid) is ws:
                 self.agents.pop(aid, None)
-            for agent, future in list(self.pending.values()):
-                if agent == aid and not future.done():
-                    future.set_result({"result": "failed"})
+            for pending in list(self.pending.values()):
+                if pending.agent_id == aid and not pending.future.done():
+                    pending.future.set_result({
+                        "result": "failed", "device_id": pending.device_id,
+                    })
         return ws
 
     async def owntracks(self, request):
@@ -460,7 +521,7 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--validate", action="store_true")
     args = parser.parse_args()
-    config = json.loads(Path(args.config).read_text())
+    config = load_config(args.config)
     hub = Hub(config)
     if args.validate:
         print("Home hub configuration valid; credentials redacted.")

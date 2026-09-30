@@ -27,7 +27,7 @@ def run(c):
 
 
 def device(kind="hue", mode="MANUAL"):
-    return {
+    value = {
         "type": kind,
         "enabled": True,
         "mode": mode,
@@ -52,6 +52,24 @@ def device(kind="hue", mode="MANUAL"):
         "colors": {"purple": {"x": 0.2, "y": 0.2}},
         "scenes": {"calm": "00000000-0000-0000-0000-000000000001"},
     }
+    if kind == "hue":
+        value.update(
+            host="192.168.1.2",
+            resource_id="00000000-0000-0000-0000-000000000002",
+            application_key="local-test-key",
+            tls_fingerprint="00" * 32,
+        )
+    elif kind == "kasa":
+        value.update(host="192.168.1.3")
+    elif kind == "cast":
+        value.update(
+            host="192.168.1.4",
+            uuid="00000000-0000-0000-0000-000000000003",
+            asset_urls={},
+        )
+    elif kind == "printer":
+        value.update(queue="safe_queue")
+    return value
 
 
 def cmd(action="power", p=None, trigger="manual", now=NOW):
@@ -148,23 +166,18 @@ def test_policy_scope(field, value):
 
 def test_limits_presets_no_strobe():
     d = device()
-    assert (
-        authorize(cmd("brightness", {"value": 1000}), {"lamp": d}, True, NOW)[
-            "parameters"
-        ]["value"]
-        == 70
-    )
+    with pytest.raises(Rejected, match="brightness_out_of_range"):
+        authorize(cmd("brightness", {"value": 1000}), {"lamp": d}, True, NOW)
+    valid = cmd("brightness", {"value": 40})
+    before = copy.deepcopy(valid)
+    assert authorize(valid, {"lamp": d}, True, NOW) == before
     with pytest.raises(Rejected):
         authorize(cmd("scene", {"name": "not_allowed"}), {"lamp": d}, True, NOW)
     with pytest.raises(Rejected):
         cmd("strobe", {})
     cast = device("cast")
-    assert (
-        authorize(cmd("volume", {"value": 100}), {"lamp": cast}, True, NOW)[
-            "parameters"
-        ]["value"]
-        == 0.5
-    )
+    with pytest.raises(Rejected, match="volume_out_of_range"):
+        authorize(cmd("volume", {"value": 100}), {"lamp": cast}, True, NOW)
 
 
 @pytest.mark.parametrize("category", ["NEVER_AUTOMATE", None])

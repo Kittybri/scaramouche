@@ -36,9 +36,14 @@ def registry(devices):
             or d.get("type") not in TYPES
         ):
             raise Rejected("invalid_device_config")
+        if not isinstance(d.get("agent"), str) or not ID.fullmatch(d["agent"]):
+            raise Rejected("invalid_device_agent")
+        actions = d.get("actions", [])
         if (
             d.get("mode", "DISABLED") not in MODES
-            or not set(d.get("actions", [])) <= TYPES[d["type"]]
+            or not isinstance(actions, list)
+            or len(actions) != len(set(actions))
+            or not set(actions) <= TYPES[d["type"]]
         ):
             raise Rejected("invalid_device_policy")
         if d["type"] == "computer":
@@ -58,8 +63,11 @@ def registry(devices):
             "NEVER_AUTOMATE",
         }:
             raise Rejected("invalid_plug_category")
-        ZoneInfo(d.get("timezone", "UTC"))
-        in_window(0, d.get("hours", [8, 22]))
+        try:
+            ZoneInfo(d.get("timezone", "UTC"))
+            in_window(0, d.get("hours", [8, 22]))
+        except (KeyError, TypeError, ValueError):
+            raise Rejected("invalid_device_policy")
         for field in (
             "enabled",
             "confirmation_required",
@@ -80,6 +88,18 @@ def registry(devices):
             "wanderer",
         }:
             raise Rejected("invalid_policy_bots")
+        if "friendly_name" in d and (
+            not isinstance(d["friendly_name"], str)
+            or not 1 <= len(d["friendly_name"].strip()) <= 64
+        ):
+            raise Rejected("invalid_device_alias")
+        aliases = d.get("aliases", [])
+        if not isinstance(aliases, list) or any(
+            not isinstance(alias, str)
+            or not 1 <= len(alias.strip()) <= 64
+            for alias in aliases
+        ):
+            raise Rejected("invalid_device_alias")
         for field in (
             "min_brightness",
             "max_brightness",
@@ -96,6 +116,36 @@ def registry(devices):
                 or d[field] < 0
             ):
                 raise Rejected("invalid_policy_limit")
+        for low, high in (
+            ("min_brightness", "max_brightness"),
+            ("min_volume", "max_volume"),
+        ):
+            if low in d and high in d and float(d[low]) > float(d[high]):
+                raise Rejected("invalid_policy_limit")
+        for field in ("min_brightness", "max_brightness"):
+            if field in d and not 1 <= float(d[field]) <= 100:
+                raise Rejected("invalid_policy_limit")
+        for field in ("min_volume", "max_volume"):
+            if field in d and not 0 <= float(d[field]) <= 0.5:
+                raise Rejected("invalid_policy_limit")
+        if "cooldown_seconds" in d and not 60 <= float(d["cooldown_seconds"]) <= 86400:
+            raise Rejected("invalid_policy_limit")
+        if "max_changes_hour" in d and (
+            type(d["max_changes_hour"]) is not int
+            or not 1 <= d["max_changes_hour"] <= 6
+        ):
+            raise Rejected("invalid_policy_limit")
+        if "max_jobs_day" in d and (
+            type(d["max_jobs_day"]) is not int
+            or not 0 <= d["max_jobs_day"] <= 3
+        ):
+            raise Rejected("invalid_policy_limit")
+        if d["type"] == "printer" and (
+            d.get("document_types", ["text/plain"]) != ["text/plain"]
+            or type(d.get("max_pages_per_job", 1)) is not int
+            or d.get("max_pages_per_job", 1) != 1
+        ):
+            raise Rejected("invalid_printer_policy")
     return devices
 
 
@@ -154,22 +204,22 @@ def authorize(command, devices, enabled, now=None):
     auto = c["trigger"] in {"autonomous", "alarm", "roommate"}
     if auto and mode != "AUTONOMOUS_SAFE":
         raise Rejected("autonomy_denied")
+    if (
+        d["type"] == "kasa"
+        and c["trigger"] != "manual"
+        and d.get("category", "NEVER_AUTOMATE") == "NEVER_AUTOMATE"
+    ):
+        raise Rejected("unsafe_plug")
     if c["trigger"] == "roommate" and not d.get("allow_roommate", False):
         raise Rejected("roommate_denied")
     if c["trigger"] == "alarm" and not d.get("allow_alarm", False):
         raise Rejected("alarm_denied")
     if (
-        d["type"] == "kasa"
-        and auto
-        and d.get("category", "NEVER_AUTOMATE")
-        not in {"DECORATIVE", "LIGHTING", "LOW_RISK"}
-    ):
-        raise Rejected("unsafe_plug")
-    if (
         (
             mode == "CONFIRM"
             or d.get("confirmation_required", False)
             or c["trigger"] == "proposal"
+            or (d["type"] == "printer" and c["action"] == "print_note")
         )
         and not c["confirmed"]
         and c["action"] != "stop"
@@ -179,18 +229,21 @@ def authorize(command, devices, enabled, now=None):
     if c["action"] == "brightness":
         lo = max(1, min(100, float(d.get("min_brightness", 10))))
         hi = max(lo, min(100, float(d.get("max_brightness", 70))))
-        p["value"] = max(lo, min(hi, p["value"]))
+        if not lo <= p["value"] <= hi:
+            raise Rejected("brightness_out_of_range")
     if c["action"] in {"volume", "play"}:
         key = "volume" if c["action"] == "play" else "value"
         lo = max(0, min(0.5, float(d.get("min_volume", 0.1))))
         hi = max(lo, min(0.5, float(d.get("max_volume", 0.5))))
-        p[key] = max(lo, min(hi, p[key]))
+        if not lo <= p[key] <= hi:
+            raise Rejected("volume_out_of_range")
     if c["action"] in {"color", "scene"} and p["name"] not in d.get(
         "colors" if c["action"] == "color" else "scenes", {}
     ):
         raise Rejected("preset_denied")
     if c["action"] == "color_temperature":
-        p["mirek"] = int(max(153, min(500, p["mirek"])))
+        if type(p["mirek"]) is not int or not 153 <= p["mirek"] <= 500:
+            raise Rejected("color_temperature_out_of_range")
     if c["action"] == "print_note" and (
         int(d.get("max_pages_per_job", 1)) < 1
         or "text/plain" not in d.get("document_types", ["text/plain"])

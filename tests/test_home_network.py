@@ -12,7 +12,7 @@ import pytest
 
 from home.hub import Hub
 from home.client import HomeClient
-from home.protocol import canonical, sign, command, Rejected
+from home.protocol import canonical, sign, command, Rejected, verify
 from home_agent.agent import Agent
 from test_home_bridge import SECRET, device, location_config
 
@@ -36,6 +36,7 @@ async def system(tmp_path, *, mode="MANUAL", kind="hue", relay=True):
         "mock": True,
         "enabled": True,
         "database": str(tmp_path / "hub.db"),
+        **({"public_url": "http://localhost"} if kind == "cast" else {}),
         "clients": {"scaramouche": SECRET, "wanderer": SECRET + "w"},
         "agents": {"main": SECRET + "a"},
         "admins": [1],
@@ -60,6 +61,7 @@ async def system(tmp_path, *, mode="MANUAL", kind="hue", relay=True):
             "url": url.replace("http:", "ws:"),
             "mock": True,
             "enabled": True,
+            "media_origin": "http://localhost" if kind == "cast" else "https://home.example",
             "database": str(tmp_path / "agent.db"),
             "devices": {"lamp": d},
         }
@@ -80,12 +82,12 @@ async def system(tmp_path, *, mode="MANUAL", kind="hue", relay=True):
 def test_outbound_roundtrip_replay_authentication_and_redaction(tmp_path):
     async def check():
         async with system(tmp_path) as (hub, agent, client, url, task):
-            c = command("lamp", "brightness", {"value": 999}, 1, 0, "scaramouche")
+            c = command("lamp", "brightness", {"value": 40}, 1, 0, "scaramouche")
             assert await client.call("action", 1, command=c) == {
                 "ok": True,
                 "result": "completed",
             }
-            assert agent.adapters["hue"].calls[0][2] == {"value": 70}
+            assert agent.adapters["hue"].calls[0][2] == {"value": 40}
             assert (await hub.store.audit())[0]["result"] == "completed"
             envelope = sign(SECRET, "rpc:scaramouche", {"op": "status", "user_id": 1})
             async with aiohttp.ClientSession() as session:
@@ -141,6 +143,7 @@ def test_duplicate_connection_reconnect_and_kill_switch(tmp_path):
             new = asyncio.create_task(agent.connect_once())
             try:
                 await eventually(lambda: "main" in hub.agents)
+                c = command("lamp", "power", {"on": True}, 1, 0, "scaramouche")
                 assert (await client.call("action", 1, command=c))["ok"]
                 assert len(agent.adapters["hue"].calls) == 1
             finally:
@@ -157,15 +160,18 @@ def test_confirmation_bound_to_user_bot_and_one_execution(tmp_path):
             result = await client.call("action", 1, command=c)
             assert result["confirmation_required"] == c["request_id"]
             assert not agent.adapters["hue"].calls
-            assert not (await client.call("confirm", 2, request_id=c["request_id"]))[
+            assert not (await client.call("confirm", 2, request_id=c["request_id"], guild_id=0))[
                 "ok"
             ]
+            assert not (await client.call(
+                "confirm", 1, request_id=c["request_id"], guild_id=99
+            ))["ok"]
             other = HomeClient("wanderer", dict(client.config, secret=SECRET + "w"))
-            assert not (await other.call("confirm", 1, request_id=c["request_id"]))[
+            assert not (await other.call("confirm", 1, request_id=c["request_id"], guild_id=0))[
                 "ok"
             ]
-            assert (await client.call("confirm", 1, request_id=c["request_id"]))["ok"]
-            assert not (await client.call("confirm", 1, request_id=c["request_id"]))[
+            assert (await client.call("confirm", 1, request_id=c["request_id"], guild_id=0))["ok"]
+            assert not (await client.call("confirm", 1, request_id=c["request_id"], guild_id=0))[
                 "ok"
             ]
             assert len(agent.adapters["hue"].calls) == 1
@@ -248,11 +254,11 @@ def test_temporary_audio_roundtrip_cleanup_and_failed_asset_audit(tmp_path):
                         and response.headers["Cache-Control"] == "no-store"
                     )
             c = command(
-                "lamp", "play", {"asset": key, "volume": 1}, 1, 0, "scaramouche"
+                "lamp", "play", {"asset": key, "volume": 0.2}, 1, 0, "scaramouche"
             )
             assert (await client.call("action", 1, command=c))["ok"]
             assert not hub.vault.items
-            assert agent.adapters["cast"].calls[0][2]["volume"] == 0.5
+            assert agent.adapters["cast"].calls[0][2]["volume"] == 0.2
             hub.devices["second"] = device("cast")
             c = command(
                 "second",
@@ -263,7 +269,7 @@ def test_temporary_audio_roundtrip_cleanup_and_failed_asset_audit(tmp_path):
                 "scaramouche",
             )
             assert not (await hub.dispatch(c))["ok"]
-            assert (await hub.store.audit())[0]["result"] == "failed"
+            assert (await hub.store.audit())[0]["result"] == "expired"
 
     run(check())
 
@@ -289,5 +295,73 @@ def test_physical_failure_cancel_and_stale_are_not_retried(tmp_path):
             assert (await agent.store.audit())[0]["result"] == "cancelled"
             c["expires_at"] = time.time() - 1
             assert not (await client.call("action", 1, command=c))["ok"]
+
+    run(check())
+
+
+def test_result_is_correlated_to_request_agent_and_device_and_duplicate_is_harmless(tmp_path):
+    async def check():
+        async with system(tmp_path, relay=False) as (hub, agent, client, url, task):
+            header = base64.b64encode(
+                canonical(sign(SECRET + "a", "agent-connect:main", {"agent_id": "main"}))
+            ).decode()
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    url.replace("http:", "ws:") + "/agent/main",
+                    headers={"X-Home-Auth": header},
+                ) as ws:
+                    # Persistent global and per-device kill-switch reconciliation.
+                    await ws.receive_json()
+                    await ws.receive_json()
+                    await ws.send_json({
+                        "type": "hello", "devices": ["lamp"], "capabilities": ["hue"]
+                    })
+                    await eventually(lambda: "main" in hub.agents)
+                    c = command("lamp", "power", {"on": True}, 1, 0, "scaramouche")
+                    pending = asyncio.create_task(client.call("action", 1, command=c))
+                    envelope = await ws.receive_json()
+                    payload = verify(SECRET + "a", "command:main", envelope)
+                    assert payload["command"] == c
+                    wrong = {
+                        "type": "result", "request_id": c["request_id"],
+                        "device_id": "other", "result": "completed",
+                    }
+                    await ws.send_json(wrong)
+                    await asyncio.sleep(0.05)
+                    assert not pending.done()
+                    correct = dict(wrong, device_id="lamp")
+                    await ws.send_json(correct)
+                    assert (await pending)["ok"]
+                    await ws.send_json(correct)  # stale duplicate cannot execute/complete again
+                    await ws.send_json({
+                        "type": "health", "devices": ["lamp"], "capabilities": ["hue"]
+                    })
+                    await asyncio.sleep(0.05)
+                    assert not ws.closed and len(await hub.store.audit()) == 1
+
+    run(check())
+
+
+def test_agent_must_advertise_exact_configured_device_set(tmp_path):
+    async def check():
+        async with system(tmp_path, relay=False) as (hub, agent, client, url, task):
+            header = base64.b64encode(
+                canonical(sign(SECRET + "a", "agent-connect:main", {"agent_id": "main"}))
+            ).decode()
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    url.replace("http:", "ws:") + "/agent/main",
+                    headers={"X-Home-Auth": header},
+                ) as ws:
+                    await ws.receive_json()
+                    await ws.receive_json()
+                    await ws.send_json({"type": "hello", "devices": [], "capabilities": []})
+                    for _ in range(100):
+                        if ws.closed:
+                            break
+                        message = await ws.receive(timeout=0.1)
+                        if message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED}:
+                            break
+                    await eventually(lambda: "main" not in hub.agents)
 
     run(check())
