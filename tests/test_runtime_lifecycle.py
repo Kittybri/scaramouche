@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import sqlite3
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -91,6 +92,263 @@ def test_runtime_initialization_is_once_even_when_ready_overlaps(monkeypatch):
     assert fake_memory.init_calls == 1
     assert fake_store.init_calls == 1
     assert len(fake_store.beliefs) == 3
+
+
+def test_runtime_initialization_failure_can_retry(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+
+    class FakeMemory:
+        def __init__(self):
+            self.calls = 0
+
+        async def init(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise sqlite3.OperationalError("temporarily unavailable")
+
+    class FakeStore:
+        async def init(self):
+            return None
+
+        async def add_belief(self, *args, **kwargs):
+            return None
+
+    memory = FakeMemory()
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime, "self_store", FakeStore())
+    monkeypatch.setattr(runtime, "_runtime_initialized", False)
+    monkeypatch.setattr(runtime, "_initialization_lock", None)
+    with pytest.raises(sqlite3.OperationalError):
+        run(runtime._initialize_runtime_once())
+    assert runtime._runtime_initialized is False
+    run(runtime._initialize_runtime_once())
+    assert runtime._runtime_initialized is True
+    assert memory.calls == 2
+
+
+def test_multiple_ready_events_do_not_duplicate_workers_or_discord_loops(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+
+    class FakeLoop:
+        def __init__(self):
+            self.running = False
+            self.starts = 0
+
+        def is_running(self):
+            return self.running
+
+        def start(self):
+            self.running = True
+            self.starts += 1
+
+    async def scenario():
+        supervisor = runtime.TaskSupervisor(logger=runtime.logger)
+        gate = asyncio.Event()
+
+        async def worker():
+            await gate.wait()
+
+        monkeypatch.setattr(runtime, "_task_supervisor", supervisor)
+        monkeypatch.setattr(runtime, "_background_tasks", supervisor.tasks)
+        monkeypatch.setattr(runtime, "_initialize_runtime_once", AsyncMock())
+        monkeypatch.setattr(runtime, "_self_heartbeat_loop", worker)
+        monkeypatch.setattr(runtime, "_duo_autoplay_loop", worker)
+        monkeypatch.setattr(runtime, "_weather_proactive_loop", worker)
+        monkeypatch.setattr(runtime, "_temporary_setting_restore_loop", worker)
+        loops = [FakeLoop(), FakeLoop(), FakeLoop()]
+        monkeypatch.setattr(runtime, "status_rotation", loops[0])
+        monkeypatch.setattr(runtime, "reminder_checker", loops[1])
+        monkeypatch.setattr(runtime, "daily_reset", loops[2])
+        monkeypatch.setattr(runtime, "PARTNER_BOT_ID", 0)
+        monkeypatch.setattr(runtime.bot._connection, "user", SimpleNamespace(id=99))
+        await runtime.on_ready()
+        await runtime.on_ready()
+        await asyncio.sleep(0)
+        assert all(loop.starts == 1 for loop in loops)
+        assert len(supervisor.tasks) == 4
+        assert all(item["starts"] == 1 for item in supervisor.snapshot())
+        await supervisor.stop()
+
+    run(scenario())
+
+
+def _proactive_fakes(runtime, monkeypatch, *, finish_action=None, generation=None, send=None):
+    member = SimpleNamespace(id=7, display_name="User", mention="<@7>")
+    guild = SimpleNamespace(get_member=lambda user_id: member if user_id == 7 else None)
+    channel = SimpleNamespace(guild=guild, send=send or AsyncMock())
+    store = SimpleNamespace(
+        reserve_action=AsyncMock(return_value=12),
+        finish_action=finish_action or AsyncMock(return_value=True),
+        record_event=AsyncMock(),
+        add_belief=AsyncMock(return_value=3),
+        add_belief_evidence=AsyncMock(),
+    )
+    memory = SimpleNamespace(
+        get_user=AsyncMock(return_value={}),
+        add_message=AsyncMock(),
+        set_proactive_sent=AsyncMock(),
+    )
+    coordinator = SimpleNamespace(
+        reserve_autonomous_call=AsyncMock(return_value=True),
+        provider_succeeded=AsyncMock(),
+        provider_failed=AsyncMock(),
+    )
+    monkeypatch.setattr(runtime, "self_store", store)
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime, "heartbeat", coordinator)
+    monkeypatch.setattr(runtime.bot, "get_channel", lambda channel_id: channel)
+    monkeypatch.setattr(
+        runtime,
+        "_autonomous_character_generation",
+        generation or AsyncMock(return_value="You took long enough."),
+    )
+    action = SimpleNamespace(
+        action=runtime.ActionType.SEND_PROACTIVE_MESSAGE,
+        reason="unfinished conversation",
+        user_id=7,
+        channel_id=8,
+        payload={"display_name": "User", "context": "a prior topic"},
+    )
+    return action, channel, store, memory, coordinator
+
+
+def test_proactive_send_is_delivered_before_isolated_followups(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    action, channel, store, memory, _ = _proactive_fakes(runtime, monkeypatch)
+    memory.add_message.side_effect = sqlite3.OperationalError("memory unavailable")
+    run(runtime._execute_proactive_action(action))
+    channel.send.assert_awaited_once()
+    statuses = [call.args[1] for call in store.finish_action.await_args_list]
+    assert statuses == ["delivered"]
+    memory.set_proactive_sent.assert_awaited_once()
+    store.record_event.assert_awaited_once()
+
+
+def test_proactive_marker_failure_keeps_send_success_and_pending_barrier(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    statuses = []
+
+    async def finish_action(action_id, status, **kwargs):
+        statuses.append(status)
+        if status == "delivered":
+            raise sqlite3.OperationalError("marker unavailable")
+        return True
+
+    action, channel, _, memory, _ = _proactive_fakes(
+        runtime, monkeypatch, finish_action=finish_action,
+    )
+    run(runtime._execute_proactive_action(action))
+    channel.send.assert_awaited_once()
+    assert statuses == ["delivered"]
+    memory.add_message.assert_awaited_once()
+
+
+def test_proactive_provider_failure_never_sends(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    generation = AsyncMock(side_effect=TimeoutError("provider timeout"))
+    action, channel, store, _, coordinator = _proactive_fakes(
+        runtime, monkeypatch, generation=generation,
+    )
+    run(runtime._execute_proactive_action(action))
+    channel.send.assert_not_awaited()
+    coordinator.provider_failed.assert_awaited_once()
+    assert [call.args[1] for call in store.finish_action.await_args_list] == ["failed"]
+
+
+def test_proactive_forbidden_is_terminal_without_retry(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+
+    class Response:
+        status = 403
+        reason = "Forbidden"
+        headers = {}
+
+    send = AsyncMock(side_effect=runtime.discord.Forbidden(Response(), "forbidden"))
+    action, channel, store, _, _ = _proactive_fakes(runtime, monkeypatch, send=send)
+    run(runtime._execute_proactive_action(action))
+    channel.send.assert_awaited_once()
+    assert [call.args[1] for call in store.finish_action.await_args_list] == ["failed"]
+
+
+def test_weather_candidate_failure_does_not_block_next_candidate(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    candidates = [
+        {"user_id": 1},
+        {"user_id": 2, "weather_location": "San Jose", "timezone_name": "UTC",
+         "quiet_hours_start": 0, "quiet_hours_end": 0},
+    ]
+    member = SimpleNamespace(mention="<@2>")
+    me = object()
+    guild = SimpleNamespace(me=me, get_member=lambda uid: member)
+    channel = SimpleNamespace(
+        guild=guild,
+        permissions_for=lambda _: SimpleNamespace(send_messages=True),
+        send=AsyncMock(),
+    )
+    memory = SimpleNamespace(
+        get_weather_candidates=AsyncMock(return_value=candidates),
+        phrase_cooldown_remaining=AsyncMock(return_value=0),
+        get_user_last_channel=AsyncMock(return_value=9),
+        consume_phrase=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime.bot, "wait_until_ready", AsyncMock())
+    monkeypatch.setattr(runtime.bot, "is_closed", lambda: False if memory.get_weather_candidates.await_count == 0 else True)
+    monkeypatch.setattr(runtime.bot, "get_channel", lambda _: channel)
+    monkeypatch.setattr(runtime, "_fetch_nws_weather", AsyncMock(return_value={
+        "place": "San Jose", "forecast": "Severe thunderstorms", "temperature": 70,
+        "temperature_unit": "F", "wind_speed": "10 mph", "wind_direction": "W",
+    }))
+    monkeypatch.setattr(runtime.asyncio, "sleep", AsyncMock())
+    run(runtime._weather_proactive_loop())
+    channel.send.assert_awaited_once()
+
+
+def test_stale_duo_session_does_not_kill_scan(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    memory = SimpleNamespace(get_due_duo_sessions=AsyncMock(return_value=["bad", {"channel_id": 99, "mode": "argue"}]))
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime.bot, "wait_until_ready", AsyncMock())
+    monkeypatch.setattr(runtime.bot, "is_closed", lambda: memory.get_due_duo_sessions.await_count > 0)
+    monkeypatch.setattr(runtime.bot, "get_channel", lambda _: None)
+    monkeypatch.setattr(runtime.asyncio, "sleep", AsyncMock())
+    run(runtime._duo_autoplay_loop())
+    memory.get_due_duo_sessions.assert_awaited_once()
+
+
+def test_restoration_malformed_record_does_not_kill_scan(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    memory = SimpleNamespace(get_due_temporary_channel_settings=AsyncMock(return_value=[None, {"channel_id": 9, "setting": "slowmode"}]))
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime.bot, "wait_until_ready", AsyncMock())
+    monkeypatch.setattr(runtime.bot, "is_closed", lambda: memory.get_due_temporary_channel_settings.await_count > 0)
+    monkeypatch.setattr(runtime.bot, "get_channel", lambda _: object())
+    monkeypatch.setattr(runtime.asyncio, "sleep", AsyncMock())
+    run(runtime._temporary_setting_restore_loop())
+    memory.get_due_temporary_channel_settings.assert_awaited_once()
+
+
+def test_one_reminder_failure_does_not_block_the_next(monkeypatch):
+    runtime = load_runtime(monkeypatch)
+    reminders = [
+        {"id": 1, "user_id": 7, "channel_id": 8, "reminder": "first"},
+        {"id": 2, "user_id": 7, "channel_id": 8, "reminder": "second"},
+    ]
+    channel = SimpleNamespace(send=AsyncMock())
+    user = SimpleNamespace(display_name="User", mention="<@7>")
+    memory = SimpleNamespace(
+        get_due_reminders=AsyncMock(return_value=reminders),
+        get_scene_state=AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime.HOME, "tick", AsyncMock())
+    monkeypatch.setattr(runtime.bot, "get_channel", lambda _: channel)
+    monkeypatch.setattr(runtime.bot, "fetch_user", AsyncMock(return_value=user))
+    monkeypatch.setattr(
+        runtime, "qai", AsyncMock(side_effect=[TimeoutError("provider timeout"), "Second reminder"]),
+    )
+    run(runtime.reminder_checker.coro())
+    channel.send.assert_awaited_once_with("<@7> Second reminder")
 
 
 def test_provider_rotation_attempts_each_key_once(monkeypatch):

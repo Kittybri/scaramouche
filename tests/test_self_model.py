@@ -168,7 +168,8 @@ def test_action_reservation_and_runtime_state_survive_restart(tmp_path):
     run(reopened.init())
     assert run(reopened.action_on_cooldown("SEND_PROACTIVE_MESSAGE", 86400, user_id=4)) is True
     assert run(reopened.get_runtime_float("provider_backoff_until")) > time.time()
-    assert run(reopened.finish_action(action_id, "completed", details={"initiated_contact": True})) is True
+    assert run(reopened.finish_action(action_id, "delivered", details={"initiated_contact": True})) is True
+    assert run(reopened.action_on_cooldown("SEND_PROACTIVE_MESSAGE", 86400, user_id=4)) is True
 
 
 def test_low_importance_event_growth_is_bounded(tmp_path):
