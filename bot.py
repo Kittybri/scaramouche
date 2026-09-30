@@ -25,6 +25,7 @@ from heartbeat import HeartbeatCoordinator
 from internal_state import perceive_message, willingness_context, willingness_prompt
 from provider_config import GROQ_TEXT_MODEL, GROQ_VISION_MODEL as CONFIGURED_GROQ_VISION_MODEL
 from self_model import SelfModelStore
+from self_model_policy import SelfModelEvent, SelfModelPolicy
 from task_supervisor import TaskSpec, TaskSupervisor
 from character_identity import IMPLEMENTATION_AWARENESS, attachment_guard, implementation_answer_hint
 from character_bits import (
@@ -432,8 +433,22 @@ class ManagedBot(commands.Bot):
 bot = ManagedBot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory("scaramouche")
 self_store = SelfModelStore(mem.db_path, CONFIG)
+SELF_MODEL_POLICY = SelfModelPolicy(self_store, CONFIG)
 environment_monitor = EnvironmentMonitor(config=CONFIG)
-heartbeat = HeartbeatCoordinator(self_store, environment_monitor, CONFIG)
+heartbeat = HeartbeatCoordinator(
+    self_store, environment_monitor, CONFIG,
+    self_model_policy=SELF_MODEL_POLICY,
+)
+
+
+def _self_model_policy() -> SelfModelPolicy:
+    """Keep test/runtime store substitution from writing through a stale policy."""
+    global SELF_MODEL_POLICY
+    if SELF_MODEL_POLICY.store is not self_store:
+        SELF_MODEL_POLICY = SelfModelPolicy(self_store, CONFIG)
+    return SELF_MODEL_POLICY
+
+
 BOT_NAME = "scaramouche"
 PARTNER_NAME = "wanderer"
 PARTNER_PAIR_KEY = "scaramouche::wanderer"
@@ -1885,12 +1900,12 @@ async def _apply_interaction_learning(context):
         await mem.update_drift(request.user_id, +1)
         _, threshold = await mem.increment_slow_burn(request.user_id)
         if threshold:
-            await self_store.record_event(
-                "relationship_change",
+            await _self_model_policy().observe(SelfModelEvent(
+                "sustained_kindness", request.user_id, 8,
                 "A user sustained meaningful kindness across multiple days.",
-                importance=8, related_user_id=request.user_id,
-                dedupe_key=f"slow_burn_threshold:{request.user_id}",
-            )
+                {"attachment": .8, "concern": .6, "defensiveness": .2},
+                _relationship_significance(user_data),
+            ))
         await mem.update_last_statement(
             request.user_id, request.user_message[:200],
         )
@@ -1977,6 +1992,12 @@ async def _claim_response_progression(context):
             "relationship",
             f"{BOT_NAME} user_progression user={context.request.user_id} stage={stage}",
         )
+        await _self_model_policy().observe(SelfModelEvent(
+            "relationship_change", context.request.user_id, 9,
+            f"The relationship reached a new established stage: {stage[:80]}.",
+            {"attachment": 1.0, "defensiveness": .5},
+            _relationship_significance(refreshed_user),
+        ))
     return refreshed_user
 
 
@@ -2063,11 +2084,11 @@ async def _record_generated_reply_state(user_id, reply, *, channel_id=None):
     remember_output(BOT_NAME, reply, user_id=user_id, channel_id=channel_id)
     if re.search(r"\b(i care|i noticed|i remembered|stay|don't leave|i was wrong|not fair of me)\b", reply, re.I):
         try:
-            await self_store.record_event(
-                "self_behavior", "His own reply exposed unusual concern, memory, or vulnerability.",
-                importance=8, related_user_id=user_id,
-                dedupe_key=f"self-behavior:{user_id}:{reply.lower()[:80]}",
-            )
+            await _self_model_policy().observe(SelfModelEvent(
+                "self_vulnerability", user_id, 8,
+                "His delivered reply exposed unusual concern, memory, or vulnerability.",
+                {"attachment": .35, "defensiveness": .2},
+            ))
         except Exception as exc:
             logger.warning("self behavior event failed", extra={"user_id": user_id, "error_category": type(exc).__name__})
 
@@ -2430,32 +2451,18 @@ async def _proactive_post_delivery(action, text: str) -> None:
     async def remember_cooldown():
         await mem.set_proactive_sent(action.channel_id)
 
-    async def remember_event():
-        await self_store.record_event(
-            "initiated_contact",
+    async def remember_self_model():
+        await _self_model_policy().observe(SelfModelEvent(
+            "initiated_contact", action.user_id, 8,
             "He initiated contact with an established user for a specific unfinished reason.",
-            importance=8,
-            related_user_id=action.user_id,
-        )
-
-    async def remember_contradiction():
-        denial = await self_store.add_belief(
-            "I do not care whether this user replies.",
-            confidence=.68,
-            scope_user_id=action.user_id,
-        )
-        await self_store.add_belief_evidence(
-            denial,
-            "contradict",
-            1.5,
-            "He chose to initiate contact after noticing this user's absence.",
-        )
+            {"attachment": .4, "concern": .4, "defensiveness": .2},
+            100,
+        ))
 
     for label, operation in (
         ("message_memory", remember_message),
         ("proactive_cooldown", remember_cooldown),
-        ("self_event", remember_event),
-        ("belief_evidence", remember_contradiction),
+        ("self_model", remember_self_model),
     ):
         try:
             await operation()
@@ -2991,46 +2998,30 @@ async def on_member_remove(member):
     except Exception as e: log_error("on_member_remove", e)
 
 
+def _relationship_significance(user: dict | None) -> int:
+    user = user or {}
+    return min(100, int(user.get("affection", 0)) + int(user.get("trust", 0)) // 2)
+
+
 async def _record_self_perception(user_id: int, content: str, *,
-                                  returned_after_absence: bool = False) -> None:
+                                  returned_after_absence: bool = False,
+                                  relationship_significance: int = 0) -> None:
     """Persist meaningful perception before it is used by generation."""
     event = perceive_message(content, returned_after_absence=returned_after_absence)
     try:
-        if event.importance >= 4:
-            await self_store.apply_mood_event(event.summary, event.mood_deltas)
-            await self_store.record_event(
-                event.event_type, event.summary, importance=event.importance,
-                related_user_id=user_id,
-                dedupe_key=f"{event.event_type}:{user_id}:{content.lower().strip()[:80]}" if event.importance >= 6 else None,
-            )
-        if event.event_type == "conflict":
-            await self_store.add_goal(
-                "Understand the named conflict without begging for absolution.",
-                category="relationship", priority=8, related_user_id=user_id,
-                expires_ts=time.time() + 86400 * 14,
-                completion_condition="The conflict reaches a stable repair or clear boundary.",
-                reason=event.summary, source="perception", dedupe_key=f"conflict:{user_id}",
-            )
-        elif event.event_type == "reconciliation":
-            completed = await self_store.complete_goals(
-                related_user_id=user_id, category="relationship", dedupe_key=f"conflict:{user_id}",
-            )
-            if completed:
-                await self_store.record_event(
-                    "goal_completed", "A relationship-conflict intention reached repair.",
-                    importance=8, related_user_id=user_id,
-                    dedupe_key=f"goal_completed:conflict:{user_id}",
-                )
-        elif event.event_type == "implementation_question":
-            await self_store.set_state_lists(interests=["the limits and machinery of this implementation"])
-        elif event.event_type == "attachment_signal":
-            belief_id = await self_store.add_belief(
-                "I do not become attached easily.", confidence=.72, scope_user_id=user_id
-            )
-            await self_store.add_belief_evidence(
-                belief_id, "contradict", .45,
-                "Direct care from this user affected attention and defensive posture.",
-            )
+        event_type = (
+            "implementation_interest"
+            if event.event_type == "implementation_question"
+            else event.event_type
+        )
+        await _self_model_policy().observe(SelfModelEvent(
+            event_type,
+            user_id,
+            event.importance,
+            event.summary,
+            event.mood_deltas,
+            relationship_significance,
+        ))
     except Exception as exc:
         logger.warning("self perception write failed", extra={
             "user_id": user_id, "action_type": "PERCEIVE", "error_category": type(exc).__name__,
@@ -3449,6 +3440,7 @@ async def _observe_prepared_message(message, interaction, prepared):
         await _record_self_perception(
             prepared.user_id, prepared.content,
             returned_after_absence=returned_after_absence,
+            relationship_significance=_relationship_significance(prepared.user),
         )
         prepared.message_count, prepared.milestone = await mem.increment_message_count(
             prepared.user_id
@@ -5993,6 +5985,20 @@ async def selfstate_cmd(ctx):
         embed.add_field(name="Internal dimensions", value=dimensions[:1024], inline=False)
         embed.add_field(name="Modeled cause", value=(summary["mood_cause"] or "none")[:1024], inline=False)
         embed.add_field(name="Active goals", value=goal_lines[:1024], inline=False)
+        category_text = ", ".join(
+            f"{category}={count}"
+            for category, count in summary["active_goal_categories"].items()
+        ) or "none"
+        embed.add_field(
+            name="Self-model lifecycle",
+            value=(
+                f"challenged beliefs={summary['challenged_beliefs']} | "
+                f"resolved contradictions={summary['resolved_contradictions']} | "
+                f"highest pressure={summary['highest_contradiction_pressure']:.2f}\n"
+                f"active goal categories: {category_text}"
+            )[:1024],
+            inline=False,
+        )
         embed.add_field(
             name="Continuity",
             value=(f"beliefs={summary['belief_count']} | open contradictions={summary['open_contradictions']} | "

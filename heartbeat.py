@@ -13,6 +13,7 @@ from agent_config import AgentConfig, CONFIG
 from environment_state import EnvironmentMonitor, EnvironmentSnapshot
 from reflection_engine import ReflectionEngine
 from self_model import SelfModelStore
+from self_model_policy import SelfModelPolicy
 
 
 log = logging.getLogger(__name__)
@@ -28,12 +29,14 @@ class HeartbeatResult:
 
 class HeartbeatCoordinator:
     def __init__(self, store: SelfModelStore, environment: EnvironmentMonitor,
-                 config: AgentConfig = CONFIG):
+                 config: AgentConfig = CONFIG,
+                 self_model_policy: SelfModelPolicy | None = None):
         self.store = store
         self.environment = environment
         self.config = config
         self.reflections = ReflectionEngine(config)
         self.policy = AgencyPolicy()
+        self.self_model_policy = self_model_policy or SelfModelPolicy(store, config)
         self._lock: asyncio.Lock | None = None
         self._last_environment: EnvironmentSnapshot | None = None
         self._last_tick = 0.0
@@ -91,7 +94,7 @@ class HeartbeatCoordinator:
             now = now or time.time()
             self._last_tick = now
             await self.store.decay_mood(now)
-            expired = await self.store.expire_goals(now)
+            expired = await self.self_model_policy.maintain(now)
             snapshot = await self.environment.collect(
                 discord_latency=discord_latency, db_probe=db_probe, active_conversations=active_conversations
             )
@@ -151,6 +154,8 @@ class HeartbeatCoordinator:
                             request.trigger, request.observation, interpretation,
                             importance=request.importance, confidence=.65,
                             related_user_id=request.related_user_id,
+                            related_goal_id=request.related_goal_id,
+                            related_belief_id=request.related_belief_id,
                         )
                         await self.store.record_action(
                             ActionType.WRITE_REFLECTION.value, "completed", request.trigger,
@@ -177,6 +182,20 @@ class HeartbeatCoordinator:
                         log.exception("reflection persistence failed", extra={
                             "action_type": "WRITE_REFLECTION", "error_category": type(exc).__name__,
                         })
+                    if reflected:
+                        try:
+                            await self.self_model_policy.reflection_completed(
+                                related_goal_id=request.related_goal_id,
+                                related_belief_id=request.related_belief_id,
+                                related_user_id=request.related_user_id,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            log.exception("reflection lifecycle update failed", extra={
+                                "action_type": "WRITE_REFLECTION",
+                                "error_category": type(exc).__name__,
+                            })
 
             action = await self._choose_proactive(proactive_candidates or [], now)
             if action.action is ActionType.NO_ACTION and not await self.store.action_on_cooldown(

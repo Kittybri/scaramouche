@@ -50,6 +50,25 @@ class SelfContext:
     contradictions: list[dict[str, Any]]
     reflections: list[dict[str, Any]]
 
+    def behavioral_stance(self) -> str:
+        """Interpret the strongest modeled tension without exposing mechanics."""
+        if not self.contradictions:
+            return ""
+        strongest = self.contradictions[0]
+        pressure = float(strongest.get("pressure", 0) or 0)
+        if pressure < 6:
+            return ""
+        summary = str(strongest.get("summary") or "").lower()
+        if any(word in summary for word in ("attach", "care", "reply", "need anyone")):
+            return (
+                "He is increasingly unable to square his repeated attention with claimed detachment. "
+                "Show that as defensive attention, inconvenient help, and sharp noticing—not open sweetness."
+            )
+        return (
+            "His recent behavior conflicts with something he insists about himself. "
+            "Let that make him more watchful and defensive; imply the tension and never explain the mechanism."
+        )
+
     def prompt_fragment(self) -> str:
         """Return a compact private prompt fragment without raw evidence."""
         active = {k: round(v, 1) for k, v in self.dimensions.items() if v >= 2.5}
@@ -59,9 +78,15 @@ class SelfContext:
         if self.concerns:
             lines.append("CURRENT_CONCERNS:" + "; ".join(self.concerns[:3]))
         if self.beliefs:
+            challenged_ids = {
+                int(item["belief_id"]) for item in self.contradictions
+                if item.get("belief_id") is not None
+            }
             lines.append(
                 "SELF_BELIEFS:" + "; ".join(
-                    f"{belief['belief'][:100]} (confidence {float(belief['confidence']):.2f})"
+                    f"{belief['belief'][:100]} "
+                    f"({'challenged; ' if int(belief['id']) in challenged_ids or float(belief['confidence']) < .55 else ''}"
+                    f"confidence {float(belief['confidence']):.2f})"
                     for belief in self.beliefs[:3]
                 )
             )
@@ -75,6 +100,9 @@ class SelfContext:
                     reflection["interpretation"][:180] for reflection in self.reflections[:2]
                 )
             )
+        stance = self.behavioral_stance()
+        if stance:
+            lines.append(f"SELF_MODEL_STANCE:{stance}")
         lines.append(
             "INTERPRETATION_RULE: these are private modeled tendencies, not facts to recite. "
             "Let them alter cadence, attention, reluctance, and priorities subtly."
@@ -86,6 +114,30 @@ class SelfModelStore:
     def __init__(self, db_path: str, config: AgentConfig = CONFIG):
         self.db_path = os.fspath(db_path)
         self.config = config
+
+    @staticmethod
+    async def _fetch_rows(
+        db: aiosqlite.Connection, query: str, params: Iterable[Any],
+    ) -> list[dict[str, Any]]:
+        async with db.execute(query, tuple(params)) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+    @staticmethod
+    def _balanced(
+        scoped: list[dict[str, Any]], global_rows: list[dict[str, Any]], limit: int,
+    ) -> list[dict[str, Any]]:
+        """Interleave relevant user state with global identity context."""
+        result: list[dict[str, Any]] = []
+        for index in range(max(len(scoped), len(global_rows))):
+            if index < len(scoped):
+                result.append(scoped[index])
+            if len(result) >= limit:
+                break
+            if index < len(global_rows):
+                result.append(global_rows[index])
+            if len(result) >= limit:
+                break
+        return result
 
     @asynccontextmanager
     async def _connect(self):
@@ -165,7 +217,8 @@ class SelfModelStore:
                     ts REAL NOT NULL,
                     kind TEXT NOT NULL CHECK(kind IN ('support','contradict')),
                     weight REAL NOT NULL,
-                    summary TEXT NOT NULL
+                    summary TEXT NOT NULL,
+                    evidence_key TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_belief_evidence_belief ON self_belief_evidence(belief_id, ts DESC);
 
@@ -197,6 +250,7 @@ class SelfModelStore:
                     status TEXT NOT NULL DEFAULT 'open',
                     first_seen_ts REAL NOT NULL,
                     last_seen_ts REAL NOT NULL,
+                    last_decay_ts REAL NOT NULL DEFAULT 0,
                     UNIQUE(belief_id, related_user_id, summary)
                 );
 
@@ -220,6 +274,8 @@ class SelfModelStore:
                     event_type TEXT NOT NULL,
                     importance INTEGER NOT NULL DEFAULT 1,
                     related_user_id INTEGER,
+                    related_goal_id INTEGER,
+                    related_belief_id INTEGER,
                     summary TEXT NOT NULL,
                     processed INTEGER NOT NULL DEFAULT 0,
                     dedupe_key TEXT
@@ -238,6 +294,29 @@ class SelfModelStore:
                     updated_ts REAL NOT NULL
                 );
                 """
+            )
+            # Additive compatibility for databases created before Repair Batch 8.
+            async with db.execute("PRAGMA table_info(self_belief_evidence)") as cur:
+                evidence_columns = {row[1] for row in await cur.fetchall()}
+            if "evidence_key" not in evidence_columns:
+                await db.execute("ALTER TABLE self_belief_evidence ADD COLUMN evidence_key TEXT")
+            async with db.execute("PRAGMA table_info(self_contradictions)") as cur:
+                contradiction_columns = {row[1] for row in await cur.fetchall()}
+            if "last_decay_ts" not in contradiction_columns:
+                await db.execute(
+                    "ALTER TABLE self_contradictions ADD COLUMN last_decay_ts REAL NOT NULL DEFAULT 0"
+                )
+            async with db.execute("PRAGMA table_info(self_events)") as cur:
+                event_columns = {row[1] for row in await cur.fetchall()}
+            for column in ("related_goal_id", "related_belief_id"):
+                if column not in event_columns:
+                    await db.execute(f"ALTER TABLE self_events ADD COLUMN {column} INTEGER")
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_belief_evidence_dedupe "
+                "ON self_belief_evidence(belief_id,kind,evidence_key,ts DESC)"
+            )
+            await db.execute(
+                "UPDATE self_contradictions SET last_decay_ts=last_seen_ts WHERE last_decay_ts<=0"
             )
             # SQLite UNIQUE constraints consider NULL values distinct. Merge
             # any legacy global-belief duplicates, then enforce uniqueness with
@@ -394,18 +473,27 @@ class SelfModelStore:
         return int(reflection_id)
 
     async def recent_reflections(self, limit: int = 10, *, user_id: int | None = None) -> list[dict[str, Any]]:
-        clause = ""
-        params: list[Any] = []
-        if user_id is not None:
-            clause = "WHERE related_user_id IS NULL OR related_user_id=?"
-            params.append(user_id)
-        params.append(max(1, min(limit, 50)))
+        limit = max(1, min(limit, 50))
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                f"SELECT * FROM self_reflections {clause} ORDER BY ts DESC LIMIT ?", params
-            ) as cur:
-                return [dict(row) for row in await cur.fetchall()]
+            if user_id is None:
+                async with db.execute(
+                    "SELECT * FROM self_reflections ORDER BY ts DESC LIMIT ?", (limit,),
+                ) as cur:
+                    return [dict(row) for row in await cur.fetchall()]
+            scoped = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_reflections WHERE related_user_id=? "
+                "ORDER BY importance DESC,ts DESC LIMIT ?",
+                (user_id, limit),
+            )
+            global_rows = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_reflections WHERE related_user_id IS NULL "
+                "ORDER BY importance DESC,ts DESC LIMIT ?",
+                (limit,),
+            )
+            return self._balanced(scoped, global_rows, limit)
 
     async def add_belief(self, belief: str, *, confidence: float = .55, scope_user_id: int | None = None) -> int:
         now = time.time()
@@ -434,11 +522,23 @@ class SelfModelStore:
             await db.commit()
         return int(row[0])
 
-    async def add_belief_evidence(self, belief_id: int, kind: str, weight: float, summary: str) -> dict[str, float]:
+    async def add_belief_evidence(
+        self,
+        belief_id: int,
+        kind: str,
+        weight: float,
+        summary: str,
+        *,
+        evidence_key: str | None = None,
+        dedupe_window_seconds: int = 21_600,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Apply gradual, optionally deduplicated evidence to one known belief."""
         if kind not in {"support", "contradict"}:
             raise ValueError("evidence kind must be support or contradict")
         weight = max(0.0, min(10.0, float(weight)))
-        now = time.time()
+        now = now or time.time()
+        evidence_key = (evidence_key or "").strip().lower()[:160] or None
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
@@ -450,6 +550,29 @@ class SelfModelStore:
                 await db.rollback()
                 raise KeyError(f"belief {belief_id} not found")
             confidence, supporting, contradicting, user_id, belief = row
+            if evidence_key:
+                async with db.execute(
+                    """SELECT 1 FROM self_belief_evidence
+                       WHERE belief_id=? AND kind=? AND evidence_key=? AND ts>? LIMIT 1""",
+                    (belief_id, kind, evidence_key, now - max(60, int(dedupe_window_seconds))),
+                ) as cur:
+                    if await cur.fetchone():
+                        async with db.execute(
+                            "SELECT id,pressure,status FROM self_contradictions WHERE belief_id=? AND related_user_id IS ? LIMIT 1",
+                            (belief_id, user_id),
+                        ) as contradiction_cur:
+                            contradiction = await contradiction_cur.fetchone()
+                        await db.rollback()
+                        return {
+                            "confidence": float(confidence),
+                            "supporting_weight": float(supporting),
+                            "contradicting_weight": float(contradicting),
+                            "applied_weight": 0.0,
+                            "deduplicated": True,
+                            "contradiction_id": int(contradiction[0]) if contradiction else None,
+                            "contradiction_pressure": float(contradiction[1]) if contradiction else 0.0,
+                            "contradiction_status": str(contradiction[2]) if contradiction else None,
+                        }
             if kind == "support":
                 supporting += weight
                 confidence = min(1.0, confidence + weight * .025)
@@ -457,8 +580,8 @@ class SelfModelStore:
                 contradicting += weight
                 confidence = max(0.05, confidence - weight * .02)
             await db.execute(
-                "INSERT INTO self_belief_evidence(belief_id,ts,kind,weight,summary) VALUES(?,?,?,?,?)",
-                (belief_id, now, kind, weight, summary[:500]),
+                "INSERT INTO self_belief_evidence(belief_id,ts,kind,weight,summary,evidence_key) VALUES(?,?,?,?,?,?)",
+                (belief_id, now, kind, weight, summary[:500], evidence_key),
             )
             await db.execute(
                 "DELETE FROM self_belief_evidence WHERE belief_id=? AND id NOT IN "
@@ -469,47 +592,72 @@ class SelfModelStore:
                 "UPDATE self_beliefs SET confidence=?,supporting_weight=?,contradicting_weight=?,last_reinforced_ts=? WHERE id=?",
                 (confidence, supporting, contradicting, now, belief_id),
             )
+            contradiction_id = None
+            contradiction_pressure = 0.0
+            contradiction_status = None
             if kind == "contradict":
                 contradiction_summary = f"Behavior conflicts with belief: {belief}"
                 await db.execute(
                     """INSERT INTO self_contradictions
-                       (belief_id,related_user_id,summary,pressure,status,first_seen_ts,last_seen_ts)
-                       VALUES(?,?,?,?, 'open',?,?)
+                       (belief_id,related_user_id,summary,pressure,status,first_seen_ts,last_seen_ts,last_decay_ts)
+                       VALUES(?,?,?,?, 'open',?,?,?)
                        ON CONFLICT DO UPDATE SET
-                         pressure=MIN(20,pressure+excluded.pressure),last_seen_ts=excluded.last_seen_ts,status='open'""",
-                    (belief_id, user_id, contradiction_summary[:500], weight, now, now),
+                         pressure=MIN(20,pressure+excluded.pressure),last_seen_ts=excluded.last_seen_ts,
+                         last_decay_ts=excluded.last_decay_ts,status='open'""",
+                    (belief_id, user_id, contradiction_summary[:500], weight, now, now, now),
                 )
-                async with db.execute(
-                    "SELECT pressure FROM self_contradictions WHERE belief_id=? AND related_user_id IS ? AND summary=?",
-                    (belief_id, user_id, contradiction_summary[:500]),
-                ) as cur:
-                    contradiction = await cur.fetchone()
-                if contradiction and float(contradiction[0]) >= self.config.contradiction_threshold:
-                    dedupe_key = f"belief_contradiction:{belief_id}"
-                    await db.execute(
-                        """INSERT INTO self_events(ts,event_type,importance,related_user_id,summary,processed,dedupe_key)
-                           SELECT ?, 'belief_contradiction', 8, ?, ?, 0, ?
-                           WHERE NOT EXISTS (
-                               SELECT 1 FROM self_events WHERE dedupe_key=? AND processed=0
-                           )""",
-                        (now, user_id, contradiction_summary[:500], dedupe_key, dedupe_key),
-                    )
-                    await self._prune_events(db)
+            else:
+                # Supporting behavior reduces pressure gradually; history remains.
+                await db.execute(
+                    """UPDATE self_contradictions SET
+                           pressure=MAX(0,pressure-?),last_decay_ts=?
+                       WHERE belief_id=? AND related_user_id IS ? AND status='open'""",
+                    (weight * .5, now, belief_id, user_id),
+                )
+            async with db.execute(
+                "SELECT id,pressure,status FROM self_contradictions WHERE belief_id=? AND related_user_id IS ? LIMIT 1",
+                (belief_id, user_id),
+            ) as cur:
+                contradiction = await cur.fetchone()
+            if contradiction:
+                contradiction_id = int(contradiction[0])
+                contradiction_pressure = float(contradiction[1])
+                contradiction_status = str(contradiction[2])
             await db.commit()
-        return {"confidence": float(confidence), "supporting_weight": float(supporting), "contradicting_weight": float(contradicting)}
+        return {
+            "confidence": float(confidence),
+            "supporting_weight": float(supporting),
+            "contradicting_weight": float(contradicting),
+            "applied_weight": float(weight),
+            "deduplicated": False,
+            "contradiction_id": contradiction_id,
+            "contradiction_pressure": contradiction_pressure,
+            "contradiction_status": contradiction_status,
+        }
 
     async def list_beliefs(self, limit: int = 10, *, user_id: int | None = None) -> list[dict[str, Any]]:
-        clause, params = "status='active'", []
-        if user_id is not None:
-            clause += " AND (scope_user_id IS NULL OR scope_user_id=?)"
-            params.append(user_id)
-        params.append(max(1, min(limit, 50)))
+        limit = max(1, min(limit, 50))
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                f"SELECT * FROM self_beliefs WHERE {clause} ORDER BY confidence DESC,last_reinforced_ts DESC LIMIT ?", params
-            ) as cur:
-                return [dict(row) for row in await cur.fetchall()]
+            if user_id is None:
+                async with db.execute(
+                    "SELECT * FROM self_beliefs WHERE status='active' "
+                    "ORDER BY confidence DESC,last_reinforced_ts DESC LIMIT ?", (limit,),
+                ) as cur:
+                    return [dict(row) for row in await cur.fetchall()]
+            scoped = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_beliefs WHERE status='active' AND scope_user_id=? "
+                "ORDER BY confidence DESC,last_reinforced_ts DESC LIMIT ?",
+                (user_id, limit),
+            )
+            global_rows = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_beliefs WHERE status='active' AND scope_user_id IS NULL "
+                "ORDER BY confidence DESC,last_reinforced_ts DESC LIMIT ?",
+                (limit,),
+            )
+            return self._balanced(scoped, global_rows, limit)
 
     async def add_goal(
         self, description: str, *, category: str = "conversation", priority: int = 5,
@@ -535,13 +683,22 @@ class SelfModelStore:
                 count = int((await cur.fetchone())[0])
             if count >= self.config.max_active_goals:
                 async with db.execute(
-                    "SELECT id,priority FROM self_goals WHERE status='active' ORDER BY priority ASC,updated_ts ASC LIMIT 1"
+                    """SELECT id,priority,related_user_id FROM self_goals
+                       WHERE status='active' ORDER BY priority ASC,updated_ts ASC LIMIT 1"""
                 ) as cur:
                     weakest = await cur.fetchone()
                 if not weakest or int(weakest[1]) >= priority:
                     await db.rollback()
                     return None
                 await db.execute("UPDATE self_goals SET status='abandoned',updated_ts=? WHERE id=?", (now, weakest[0]))
+                await db.execute(
+                    """INSERT INTO self_events(
+                           ts,event_type,importance,related_user_id,related_goal_id,summary,processed,dedupe_key
+                       ) VALUES(?,'goal_abandoned',4,?,?,?,0,?)""",
+                    (now, weakest[2], weakest[0],
+                     "A lower-priority modeled intention was displaced by a stronger one.",
+                     f"goal_abandoned:{weakest[0]}"),
+                )
             cur = await db.execute(
                 """INSERT INTO self_goals
                    (description,category,priority,status,related_user_id,progress,created_ts,updated_ts,expires_ts,
@@ -552,6 +709,7 @@ class SelfModelStore:
             )
             goal_id = cur.lastrowid
             await self._prune_goal_history(db)
+            await self._prune_events(db)
             await db.commit()
         return int(goal_id)
 
@@ -578,6 +736,32 @@ class SelfModelStore:
             await db.commit()
             return cur.rowcount > 0
 
+    async def advance_goal(self, goal_id: int, amount: float) -> bool:
+        """Advance an active goal without allowing progress to move backward."""
+        amount = max(0.0, min(1.0, float(amount)))
+        if not amount:
+            return False
+        now = time.time()
+        async with self._connect() as db:
+            cur = await db.execute(
+                """UPDATE self_goals SET
+                       progress=MIN(.95,progress+?),updated_ts=?
+                   WHERE id=? AND status='active'""",
+                (amount, now, goal_id),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+    async def active_goal_by_dedupe(self, dedupe_key: str) -> dict[str, Any] | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM self_goals WHERE status='active' AND dedupe_key=? LIMIT 1",
+                (dedupe_key[:240],),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def complete_goals(self, *, related_user_id: int, category: str | None = None,
                              dedupe_key: str | None = None) -> int:
         """Complete matching active goals after a verified lifecycle event."""
@@ -602,13 +786,37 @@ class SelfModelStore:
     async def expire_goals(self, now: float | None = None) -> int:
         now = now or time.time()
         async with self._connect() as db:
-            cur = await db.execute(
-                "UPDATE self_goals SET status='failed',updated_ts=? WHERE status='active' AND expires_ts IS NOT NULL AND expires_ts<=?",
-                (now, now),
-            )
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT id,description,priority,related_user_id,dedupe_key
+                   FROM self_goals WHERE status='active' AND expires_ts IS NOT NULL AND expires_ts<=?""",
+                (now,),
+            ) as pending_cur:
+                expired = [dict(row) for row in await pending_cur.fetchall()]
+            if expired:
+                ids = [int(item["id"]) for item in expired]
+                placeholders = ",".join("?" for _ in ids)
+                cur = await db.execute(
+                    f"UPDATE self_goals SET status='failed',updated_ts=? WHERE id IN ({placeholders})",
+                    [now, *ids],
+                )
+                for item in expired:
+                    if int(item["priority"]) < 5:
+                        continue
+                    dedupe = f"goal_failed:{item['id']}"
+                    await db.execute(
+                        """INSERT INTO self_events(
+                               ts,event_type,importance,related_user_id,related_goal_id,summary,processed,dedupe_key
+                           ) VALUES(?,'goal_failed',?,?,?,?,0,?)""",
+                        (now, min(8, int(item["priority"])), item["related_user_id"], item["id"],
+                         "An important modeled intention expired before it was resolved.", dedupe),
+                    )
+                await self._prune_events(db)
+            else:
+                cur = None
             await self._prune_goal_history(db)
             await db.commit()
-            return cur.rowcount
+            return int(cur.rowcount if cur else 0)
 
     async def _prune_goal_history(self, db: aiosqlite.Connection) -> None:
         await db.execute(
@@ -622,39 +830,121 @@ class SelfModelStore:
 
     async def list_goals(self, status: str = "active", limit: int = 10,
                          *, user_id: int | None = None) -> list[dict[str, Any]]:
-        clause = "status=?"
-        params: list[Any] = [status]
-        if user_id is not None:
-            clause += " AND (related_user_id IS NULL OR related_user_id=?)"
-            params.append(user_id)
-        params.append(max(1, min(limit, 50)))
+        limit = max(1, min(limit, 50))
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                f"SELECT * FROM self_goals WHERE {clause} ORDER BY priority DESC,updated_ts DESC LIMIT ?",
-                params,
-            ) as cur:
-                return [dict(row) for row in await cur.fetchall()]
+            if user_id is None:
+                async with db.execute(
+                    "SELECT * FROM self_goals WHERE status=? "
+                    "ORDER BY priority DESC,updated_ts DESC LIMIT ?", (status, limit),
+                ) as cur:
+                    return [dict(row) for row in await cur.fetchall()]
+            scoped = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_goals WHERE status=? AND related_user_id=? "
+                "ORDER BY priority DESC,updated_ts DESC LIMIT ?",
+                (status, user_id, limit),
+            )
+            global_rows = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_goals WHERE status=? AND related_user_id IS NULL "
+                "ORDER BY priority DESC,updated_ts DESC LIMIT ?",
+                (status, limit),
+            )
+            return self._balanced(scoped, global_rows, limit)
 
     async def list_contradictions(self, min_pressure: float = 0, limit: int = 10,
-                                  *, user_id: int | None = None) -> list[dict[str, Any]]:
-        clause = "status='open' AND pressure>=?"
-        params: list[Any] = [min_pressure]
-        if user_id is not None:
-            clause += " AND (related_user_id IS NULL OR related_user_id=?)"
-            params.append(user_id)
-        params.append(max(1, min(limit, 50)))
+                                  *, user_id: int | None = None,
+                                  status: str = "open") -> list[dict[str, Any]]:
+        if status not in {"open", "resolved"}:
+            raise ValueError("invalid contradiction status")
+        limit = max(1, min(limit, 50))
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
+            if user_id is None:
+                async with db.execute(
+                    "SELECT * FROM self_contradictions WHERE status=? AND pressure>=? "
+                    "ORDER BY pressure DESC,last_seen_ts DESC LIMIT ?",
+                    (status, min_pressure, limit),
+                ) as cur:
+                    return [dict(row) for row in await cur.fetchall()]
+            scoped = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_contradictions WHERE status=? AND pressure>=? "
+                "AND related_user_id=? ORDER BY pressure DESC,last_seen_ts DESC LIMIT ?",
+                (status, min_pressure, user_id, limit),
+            )
+            global_rows = await self._fetch_rows(
+                db,
+                "SELECT * FROM self_contradictions WHERE status=? AND pressure>=? "
+                "AND related_user_id IS NULL ORDER BY pressure DESC,last_seen_ts DESC LIMIT ?",
+                (status, min_pressure, limit),
+            )
+            return self._balanced(scoped, global_rows, limit)
+
+    async def resolve_contradiction(self, contradiction_id: int, *, now: float | None = None) -> bool:
+        now = now or time.time()
+        async with self._connect() as db:
+            cur = await db.execute(
+                """UPDATE self_contradictions SET status='resolved',last_decay_ts=?
+                   WHERE id=? AND status='open'""",
+                (now, contradiction_id),
+            )
+            await self._prune_contradictions(db)
+            await db.commit()
+            return cur.rowcount > 0
+
+    async def decay_contradictions(
+        self,
+        now: float | None = None,
+        *,
+        pressure_per_day: float = .25,
+        resolution_pressure: float = .75,
+    ) -> list[dict[str, Any]]:
+        """Decay open pressure by elapsed wall time and resolve quiet tensions."""
+        now = now or time.time()
+        changed: list[dict[str, Any]] = []
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                f"SELECT * FROM self_contradictions WHERE {clause} ORDER BY pressure DESC,last_seen_ts DESC LIMIT ?",
-                params,
+                """SELECT id,belief_id,related_user_id,pressure,last_decay_ts,last_seen_ts
+                   FROM self_contradictions WHERE status='open'"""
             ) as cur:
-                return [dict(row) for row in await cur.fetchall()]
+                rows = [dict(row) for row in await cur.fetchall()]
+            for item in rows:
+                baseline = float(item.get("last_decay_ts") or item.get("last_seen_ts") or now)
+                elapsed_days = max(0.0, now - baseline) / 86400.0
+                if elapsed_days < .25:
+                    continue
+                pressure = max(0.0, float(item["pressure"]) - pressure_per_day * elapsed_days)
+                status = "resolved" if pressure <= resolution_pressure else "open"
+                await db.execute(
+                    "UPDATE self_contradictions SET pressure=?,status=?,last_decay_ts=? WHERE id=?",
+                    (pressure, status, now, item["id"]),
+                )
+                item.update(previous_pressure=float(item["pressure"]), pressure=pressure, status=status)
+                changed.append(item)
+            await self._prune_contradictions(db)
+            await db.commit()
+        return changed
+
+    async def _prune_contradictions(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """DELETE FROM self_contradictions
+               WHERE status='resolved' AND id NOT IN (
+                   SELECT id FROM self_contradictions WHERE status='resolved'
+                   ORDER BY last_decay_ts DESC,last_seen_ts DESC LIMIT 250
+               )"""
+        )
 
     async def record_event(self, event_type: str, summary: str, *, importance: int = 1,
-                           related_user_id: int | None = None, dedupe_key: str | None = None) -> int:
-        now = time.time()
+                           related_user_id: int | None = None,
+                           related_goal_id: int | None = None,
+                           related_belief_id: int | None = None,
+                           dedupe_key: str | None = None,
+                           now: float | None = None) -> int:
+        now = now or time.time()
         async with self._connect() as db:
             if dedupe_key:
                 async with db.execute(
@@ -664,12 +954,37 @@ class SelfModelStore:
                 if duplicate:
                     return int(duplicate[0])
             cur = await db.execute(
-                "INSERT INTO self_events(ts,event_type,importance,related_user_id,summary,processed,dedupe_key) VALUES(?,?,?,?,?,0,?)",
-                (now, event_type[:60], max(1, min(10, int(importance))), related_user_id, summary[:800], dedupe_key[:200] if dedupe_key else None),
+                """INSERT INTO self_events(
+                       ts,event_type,importance,related_user_id,related_goal_id,related_belief_id,
+                       summary,processed,dedupe_key
+                   ) VALUES(?,?,?,?,?,?,?,0,?)""",
+                (now, event_type[:60], max(1, min(10, int(importance))), related_user_id,
+                 related_goal_id, related_belief_id, summary[:800],
+                 dedupe_key[:200] if dedupe_key else None),
             )
             await self._prune_events(db)
             await db.commit()
             return int(cur.lastrowid)
+
+    async def recent_event_count(
+        self, event_type: str, *, related_user_id: int | None = None,
+        since: float | None = None, exact_scope: bool = False,
+    ) -> int:
+        clauses = ["event_type=?"]
+        params: list[Any] = [event_type[:60]]
+        if related_user_id is not None:
+            clauses.append("related_user_id=?")
+            params.append(related_user_id)
+        elif exact_scope:
+            clauses.append("related_user_id IS NULL")
+        if since is not None:
+            clauses.append("ts>=?")
+            params.append(since)
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM self_events WHERE " + " AND ".join(clauses), params,
+            ) as cur:
+                return int((await cur.fetchone())[0])
 
     async def _prune_events(self, db: aiosqlite.Connection) -> None:
         await db.execute(
@@ -904,6 +1219,26 @@ class SelfModelStore:
             return {}
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """SELECT id FROM self_beliefs WHERE scope_user_id=? AND (
+                       INSTR(LOWER(belief),?)>0 OR EXISTS (
+                           SELECT 1 FROM self_belief_evidence evidence
+                           WHERE evidence.belief_id=self_beliefs.id
+                             AND INSTR(LOWER(evidence.summary),?)>0
+                       )
+                   )""",
+                (user_id, needle, needle),
+            ) as matched_cur:
+                matched_belief_ids = [int(row[0]) for row in await matched_cur.fetchall()]
+            linked_goal_ids: list[int] = []
+            if matched_belief_ids:
+                placeholders = ",".join("?" for _ in matched_belief_ids)
+                async with db.execute(
+                    f"SELECT DISTINCT related_goal_id FROM self_events "
+                    f"WHERE related_belief_id IN ({placeholders}) AND related_goal_id IS NOT NULL",
+                    matched_belief_ids,
+                ) as linked_goal_cur:
+                    linked_goal_ids = [int(row[0]) for row in await linked_goal_cur.fetchall()]
             reflection_cur = await db.execute(
                 """DELETE FROM self_reflections WHERE related_user_id=? AND (
                        INSTR(LOWER(trigger),?)>0 OR INSTR(LOWER(observation),?)>0 OR
@@ -932,6 +1267,29 @@ class SelfModelStore:
                 "DELETE FROM self_contradictions WHERE related_user_id=? AND INSTR(LOWER(summary),?)>0",
                 (user_id, needle),
             )
+            linked_reflections = linked_events = linked_goals = 0
+            if matched_belief_ids:
+                placeholders = ",".join("?" for _ in matched_belief_ids)
+                cur = await db.execute(
+                    f"DELETE FROM self_reflections WHERE related_belief_id IN ({placeholders})",
+                    matched_belief_ids,
+                )
+                linked_reflections = int(cur.rowcount or 0)
+                cur = await db.execute(
+                    f"DELETE FROM self_events WHERE related_belief_id IN ({placeholders})",
+                    matched_belief_ids,
+                )
+                linked_events = int(cur.rowcount or 0)
+                goal_clauses = ["dedupe_key LIKE ?" for _ in matched_belief_ids]
+                goal_params: list[Any] = [f"self_concept:{belief_id}:%" for belief_id in matched_belief_ids]
+                if linked_goal_ids:
+                    goal_clauses.append("id IN (" + ",".join("?" for _ in linked_goal_ids) + ")")
+                    goal_params.extend(linked_goal_ids)
+                cur = await db.execute(
+                    "DELETE FROM self_goals WHERE related_user_id=? AND (" + " OR ".join(goal_clauses) + ")",
+                    [user_id, *goal_params],
+                )
+                linked_goals = int(cur.rowcount or 0)
             # Evidence contributes to confidence and contradiction pressure. If
             # matched evidence must be forgotten, remove its user-scoped belief
             # as a unit rather than retaining scores derived from deleted text.
@@ -947,9 +1305,9 @@ class SelfModelStore:
             )
             await db.commit()
         return {
-            "self_reflections": int(reflection_cur.rowcount or 0),
-            "self_goals": int(goal_cur.rowcount or 0),
-            "self_events": int(event_cur.rowcount or 0),
+            "self_reflections": int(reflection_cur.rowcount or 0) + linked_reflections,
+            "self_goals": int(goal_cur.rowcount or 0) + linked_goals,
+            "self_events": int(event_cur.rowcount or 0) + linked_events,
             "autonomous_actions": int(action_cur.rowcount or 0),
             "self_contradictions": int(contradiction_cur.rowcount or 0),
             "self_beliefs": int(belief_cur.rowcount or 0),
@@ -958,12 +1316,30 @@ class SelfModelStore:
     async def diagnostic_summary(self) -> dict[str, Any]:
         state = await self.get_state()
         reflections = await self.recent_reflections(1)
+        beliefs = await self.list_beliefs(50)
+        open_contradictions = await self.list_contradictions(0, 50)
+        resolved_contradictions = await self.list_contradictions(0, 50, status="resolved")
+        active_goals = await self.list_goals(limit=self.config.max_active_goals)
+        categories: dict[str, int] = {}
+        for goal in active_goals:
+            category = str(goal.get("category") or "conversation")
+            categories[category] = categories.get(category, 0) + 1
+        challenged_ids = {int(item["belief_id"]) for item in open_contradictions if item.get("belief_id")}
         return {
             "dimensions": {k: round(v, 1) for k, v in state["dimensions"].items()},
             "mood_cause": state.get("mood_cause", ""),
-            "active_goals": await self.list_goals(limit=self.config.max_active_goals),
-            "belief_count": len(await self.list_beliefs(50)),
-            "open_contradictions": len(await self.list_contradictions(0, 50)),
+            "active_goals": active_goals,
+            "active_goal_categories": categories,
+            "belief_count": len(beliefs),
+            "challenged_beliefs": sum(
+                1 for belief in beliefs
+                if int(belief["id"]) in challenged_ids or float(belief["confidence"]) < .55
+            ),
+            "open_contradictions": len(open_contradictions),
+            "resolved_contradictions": len(resolved_contradictions),
+            "highest_contradiction_pressure": max(
+                (float(item["pressure"]) for item in open_contradictions), default=0.0,
+            ),
             "last_reflection_ts": reflections[0]["ts"] if reflections else 0,
             "budget": await self.budget_status(),
         }
