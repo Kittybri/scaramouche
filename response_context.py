@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from interaction_policy import InteractionContext, ResolvedCharacterState
 from memory_retrieval import MemoryRetrievalResult
 from anti_repeat import PatternScopeSamples
+from grounded_search import GroundingBundle
 from relationship_engine import (
     compute_emotional_arc,
     describe_relationship_progression,
@@ -149,6 +150,7 @@ class ResponseContext:
     channel_prompt: str = ""
     environment_prompt: str = ""
     search_sources: str = ""
+    grounding_bundle: GroundingBundle | None = None
     memory_retrieval: MemoryRetrievalResult | None = None
     system_prompt: str = ""
     user_prompt: str = ""
