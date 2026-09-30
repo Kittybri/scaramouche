@@ -124,6 +124,25 @@ async def test_structured_owner_consumes_before_routed_pipeline(runtime, monkeyp
     routed.assert_not_awaited()
 
 
+@async_test
+async def test_pending_privacy_deletion_blocks_new_memory(runtime, monkeypatch):
+    message = fake_message(runtime, content="hello again")
+    context = NS(command=None, prefix=None, invoked_with=None)
+    memory = NS(upsert_user=AsyncMock())
+    deletion = NS(is_pending=AsyncMock(return_value=True))
+    monkeypatch.setattr(runtime.bot, "get_context", AsyncMock(return_value=context))
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime, "PRIVACY_DELETION", deletion)
+    runtime._processed_msgs.discard(message.id)
+
+    await runtime._dispatch_message(message)
+
+    deletion.is_pending.assert_awaited_once_with(message.author.id)
+    memory.upsert_user.assert_not_awaited()
+    message.reply.assert_awaited_once()
+    assert "won't create new memory" in message.reply.await_args.args[0]
+
+
 async def run_coordinator(runtime, monkeypatch, *, media=False, optional=False):
     message = fake_message(runtime)
     item = prepared()

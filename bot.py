@@ -3276,6 +3276,18 @@ async def _dispatch_message(message):
             interaction.consume("privacy")
             await message.reply("Keep credentials out of chat. Remove that message and rotate any real credential you posted; I will not send it to the model.", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             return
+        deletion_pending = await PRIVACY_DELETION.is_pending(message.author.id)
+        if deletion_pending:
+            command_name = command_ctx.command.name if command_ctx.command else ""
+            if not (is_command and command_name in {"forget", "persistence"}):
+                interaction.consume("privacy_deletion_pending", suppressed=True)
+                await message.reply(
+                    "Your privacy deletion is still pending, so I won't create new memory. "
+                    "Use `!forget all` to retry it.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
         if interaction.command:
             name = command_ctx.command.name if command_ctx.command else ""
             argument = message.content.partition(" ")[2]
@@ -6628,6 +6640,10 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "voice_social": VOICE_CONVERSATION.features.forget_user,
     "runtime_ephemeral": _delete_runtime_stage,
     "companion": PC.require_forget,
+    # Feature revocation can intentionally write false preference rows. Finish
+    # by removing those idempotently so a COMPLETE job leaves no user record.
+    "memory_local_final": mem.reset_user_local,
+    "memory_shared_final": mem.reset_user_shared,
 })
 
 
