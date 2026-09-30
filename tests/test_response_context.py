@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import datetime
+import random
 import sqlite3
+import time
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
@@ -12,6 +14,7 @@ import pytest
 
 import response_context as response_state
 from interaction_policy import classify, resolve_character
+from memory_retrieval import MemoryRetriever
 from response_context import (
     GeneratedResponse,
     InteractionLearning,
@@ -159,6 +162,43 @@ def test_prompt_order_places_authoritative_state_before_final_user_message(runti
     assert prompt.endswith("User: answer this")
     assert prompt.count("RESOLVED_CHARACTER_STATE:") == 1
     assert context.system_prompt.startswith("You are Scaramouche")
+
+
+def test_memory_arbitration_enters_prompt_then_marks_only_selected(runtime, monkeypatch):
+    now = time.time()
+    user = {"callback_memory": "callback about the interview", "callback_ts": now}
+    context = make_context(runtime, message="My interview makes me nervous", user=user)
+    memory = NS(
+        get_memory_retrieval_snapshot=AsyncMock(return_value={
+            "memory_bank": [
+                {"id": 1, "kind": "vulnerability", "text": "They were nervous about the interview.", "weight": 7, "last_used": 0, "ts": now},
+                {"id": 2, "kind": "promise", "text": "They promised to report after the interview.", "weight": 6, "last_used": 0, "ts": now},
+                {"id": 3, "kind": "manual", "text": "They like ramen.", "weight": 10, "last_used": 0, "ts": now},
+            ],
+            "topics": [], "inside_jokes": [], "shared_jokes": [],
+            "milestones": [], "historical_messages": [],
+        }),
+        mark_memory_events_used=AsyncMock(),
+    )
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime, "MEMORY_RETRIEVER", MemoryRetriever(
+        rng=random.Random(2), wall_clock=lambda: now,
+    ))
+
+    result = run(runtime._retrieve_memory_context(context))
+    context.memory_retrieval = result
+    context.fragments = PromptFragments(memory=result.fragments)
+    runtime._assemble_response_prompt(context)
+    run(runtime._mark_retrieved_memory_used(context))
+
+    assert 1 <= len(result.fragments) <= 2
+    assert all(fragment in context.user_prompt for fragment in result.fragments)
+    selected_ids = [
+        item.record_id for item in result.selected
+        if item.source == "memory_bank" and item.record_id is not None
+    ]
+    memory.mark_memory_events_used.assert_awaited_once_with(7, selected_ids)
+    assert 3 not in selected_ids
 
 
 def test_provider_success_records_only_success_and_one_call(runtime, monkeypatch):
