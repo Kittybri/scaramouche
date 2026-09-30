@@ -670,22 +670,105 @@ class Memory:
     async def get_memory_bank_entries(self, user_id: int, limit: int = 8) -> list[dict]:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute(
-                "SELECT kind,memory,weight,last_used,ts FROM memory_bank WHERE user_id=? "
+                "SELECT id,kind,memory,weight,last_used,ts FROM memory_bank WHERE user_id=? "
                 "ORDER BY weight DESC, ts DESC LIMIT ?",
                 (user_id, limit),
             ) as cur:
                 rows = await cur.fetchall()
         return [
             {
-                "kind": row[0] or "",
-                "memory": row[1] or "",
-                "weight": row[2] or 1,
-                "last_used": row[3] or 0,
-                "ts": row[4] or 0,
+                "id": row[0],
+                "kind": row[1] or "",
+                "memory": row[2] or "",
+                "weight": row[3] or 1,
+                "last_used": row[4] or 0,
+                "ts": row[5] or 0,
             }
             for row in rows
-            if row and row[1]
+            if row and row[2]
         ]
+
+    async def get_memory_retrieval_snapshot(
+        self, user_id: int, channel_id: int, *, milestone_scope: str,
+    ) -> dict[str, list[dict]]:
+        """Fetch a bounded, user-scoped candidate set in two DB connections."""
+        cutoff = time.time() - 2 * 86400
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            memory_rows = await (await db.execute(
+                "SELECT id,kind,memory,weight,last_used,ts FROM memory_bank "
+                "WHERE user_id=? ORDER BY weight DESC,ts DESC LIMIT 16",
+                (user_id,),
+            )).fetchall()
+            topic_rows = await (await db.execute(
+                "SELECT topic,count,last_seen FROM user_topics WHERE user_id=? "
+                "ORDER BY count DESC,last_seen DESC LIMIT 5",
+                (user_id,),
+            )).fetchall()
+            joke_rows = await (await db.execute(
+                "SELECT id,joke,ts FROM inside_jokes WHERE user_id=? "
+                "ORDER BY ts DESC LIMIT 8",
+                (user_id,),
+            )).fetchall()
+            milestone_rows = await (await db.execute(
+                "SELECT marker,note,ts FROM relationship_milestones WHERE scope=? "
+                "ORDER BY ts DESC LIMIT 4",
+                (milestone_scope,),
+            )).fetchall()
+            historical_rows = await (await db.execute(
+                "SELECT id,content,ts FROM messages WHERE user_id=? AND channel_id=? "
+                "AND role='user' AND (bot_name=? OR bot_name IS NULL) AND ts<? "
+                "ORDER BY ts DESC LIMIT 12",
+                (user_id, channel_id, self.bot_name, cutoff),
+            )).fetchall()
+        async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            shared_joke_rows = await (await db.execute(
+                "SELECT id,joke,source,ts FROM shared_inside_jokes WHERE user_id=? "
+                "ORDER BY ts DESC LIMIT 8",
+                (user_id,),
+            )).fetchall()
+        return {
+            "memory_bank": [
+                {"id": row[0], "kind": row[1] or "", "text": row[2] or "",
+                 "weight": row[3] or 1, "last_used": row[4] or 0, "ts": row[5] or 0}
+                for row in memory_rows if row[2]
+            ],
+            "topics": [
+                {"text": row[0] or "", "weight": min(8, max(1, row[1] or 1)),
+                 "ts": row[2] or 0}
+                for row in topic_rows if row[0]
+            ],
+            "inside_jokes": [
+                {"id": row[0], "text": row[1] or "", "ts": row[2] or 0,
+                 "kind": "inside_joke"}
+                for row in joke_rows if row[1]
+            ],
+            "shared_jokes": [
+                {"id": row[0], "text": row[1] or "", "kind": row[2] or "inside_joke",
+                 "ts": row[3] or 0}
+                for row in shared_joke_rows if row[1]
+            ],
+            "milestones": [
+                {"marker": row[0] or "", "text": row[1] or "", "ts": row[2] or 0}
+                for row in milestone_rows if row[1]
+            ],
+            "historical_messages": [
+                {"id": row[0], "text": row[1] or "", "ts": row[2] or 0}
+                for row in historical_rows if row[1]
+            ],
+        }
+
+    async def mark_memory_events_used(self, user_id: int, memory_ids: list[int]) -> None:
+        ids = sorted({int(item) for item in memory_ids if item})[:16]
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            await db.execute(
+                f"UPDATE memory_bank SET last_used=? WHERE user_id=? "
+                f"AND id IN ({placeholders})",
+                (time.time(), user_id, *ids),
+            )
+            await db.commit()
 
     async def forget_memory_matches(self, user_id: int, query: str) -> dict:
         needle = (query or "").strip().lower()[:80]

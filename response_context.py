@@ -14,6 +14,8 @@ import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from interaction_policy import InteractionContext, ResolvedCharacterState
+from memory_retrieval import MemoryRetrievalResult
+from anti_repeat import PatternScopeSamples
 from relationship_engine import (
     compute_emotional_arc,
     describe_relationship_progression,
@@ -139,6 +141,7 @@ class ResponseContext:
     history: list[dict[str, str]]
     recent_replies: list[str]
     self_dimensions: dict[str, float]
+    repeat_patterns: PatternScopeSamples = field(default_factory=PatternScopeSamples)
     self_prompt: str = ""
     fragments: PromptFragments = field(default_factory=PromptFragments)
     partner_prompt: str = ""
@@ -146,6 +149,7 @@ class ResponseContext:
     channel_prompt: str = ""
     environment_prompt: str = ""
     search_sources: str = ""
+    memory_retrieval: MemoryRetrievalResult | None = None
     system_prompt: str = ""
     user_prompt: str = ""
 

@@ -40,6 +40,9 @@ from response_context import (
     ResponseRequest, derive_response_state,
 )
 from runtime_cache import BoundedTTLCache, BoundedTTLSet
+from memory_retrieval import (
+    MemoryCandidate, MemoryRetrievalResult, MemoryRetriever, candidate_fragment,
+)
 from awareness_features import (
     activity_snapshot, choose_duo_advice_mode,
     parse_id_set, playful_negative_target, protective_prompt,
@@ -51,10 +54,14 @@ from integrations import (
     SpotifyService, SteamService, load_integration_config,
 )
 from anti_repeat import (
+    PatternScopeSamples,
+    analyze_repetition,
+    build_pattern_scopes,
     build_prompt_guard,
     detect_opening_phrase,
     diversify_reply,
     fallback_reply,
+    forget_user_patterns,
     get_runtime_recent,
     looks_repetitive,
     merge_recent_messages,
@@ -66,12 +73,10 @@ from relationship_engine import (
     RARE_PHRASES,
     analyze_style_deltas,
     apply_style_deltas,
-    callback_relevant,
     compute_bot_stage,
     compute_emotional_arc,
     describe_bot_relationship,
     describe_conflict_aftermath,
-    describe_conflict_followup,
     describe_emotional_layers,
     describe_emotional_event,
     describe_emotional_arc,
@@ -83,7 +88,6 @@ from relationship_engine import (
     describe_scenario_context,
     describe_scene_state,
     describe_speech_drift,
-    describe_topic_profile,
     detect_banter_theme,
     detect_conflict_signal,
     detect_topics,
@@ -495,6 +499,7 @@ _typing_gag_inflight: set[tuple[int, int]] = set()
 _weather_cache = BoundedTTLCache(ttl_seconds=3600, max_entries=256)
 _presence_activity = BoundedTTLCache(ttl_seconds=6 * 3600, max_entries=4096)
 _voice_state_cache = BoundedTTLCache(ttl_seconds=30 * 86400, max_entries=2048)
+MEMORY_RETRIEVER = MemoryRetriever()
 
 SOUNDBOARD_GUILD_IDS = parse_id_set(os.getenv("SOUNDBOARD_GUILD_IDS", ""))
 NEW_MEMBER_INTERVIEW_GUILD_IDS = parse_id_set(os.getenv("NEW_MEMBER_INTERVIEW_GUILD_IDS", ""))
@@ -549,15 +554,34 @@ async def _vision_image_reply(
 
 
 async def _recent_reply_samples(channel_id: int | None = None, user_id: int | None = None) -> list[str]:
+    recent, _ = await _recent_reply_context(channel_id=channel_id, user_id=user_id)
+    return recent
+
+
+async def _recent_reply_context(
+    channel_id: int | None = None, user_id: int | None = None,
+) -> tuple[list[str], PatternScopeSamples]:
     try:
         channel_recent = await mem.get_recent_assistant_messages(limit=18, channel_id=channel_id) if channel_id is not None else []
         user_recent = await mem.get_recent_assistant_messages(limit=12, user_id=user_id) if user_id is not None else []
         global_recent = await mem.get_recent_assistant_messages(limit=20)
         runtime_recent = get_runtime_recent(BOT_NAME, limit=20)
-        return merge_recent_messages(channel_recent, user_recent, global_recent, runtime_recent, limit=40)
+        return (
+            merge_recent_messages(
+                channel_recent, user_recent, global_recent, runtime_recent, limit=40,
+            ),
+            build_pattern_scopes(
+                BOT_NAME, user_messages=user_recent, channel_messages=channel_recent,
+                global_messages=global_recent, user_id=user_id, channel_id=channel_id,
+            ),
+        )
     except Exception as e:
         log_error("recent_reply_samples", e)
-        return get_runtime_recent(BOT_NAME, limit=20)
+        runtime = get_runtime_recent(BOT_NAME, limit=20)
+        return runtime, build_pattern_scopes(
+            BOT_NAME, global_messages=runtime, user_id=user_id,
+            channel_id=channel_id,
+        )
 
 
 async def _pick_fresh_pool_line(options: list[str], channel_id: int | None = None, user_id: int | None = None) -> str:
@@ -1011,30 +1035,101 @@ async def _pin_memory(ctx, kind: str, text: str | None, weight: int, *, shared_j
     await safe_reply(ctx, f"Fine. I pinned that as a {kind}.")
 
 
-async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
-    parts: list[str] = []
+async def _retrieve_memory_context(context: ResponseContext) -> MemoryRetrievalResult:
+    """Arbitrate overlapping user memories into at most two prompt fragments."""
+    request, user, raw = context.request, context.user, context.raw
     try:
-        topics = await mem.get_top_topics(user_id, 3)
-        topic_desc = describe_topic_profile(topics)
-        if topic_desc:
-            parts.append(f"TOPICS:{topic_desc}")
-        milestones = await mem.get_recent_milestones(f"{BOT_NAME}:user:{user_id}", 1)
-        if milestones:
-            parts.append(f"MILESTONE:{milestones[0][:140]}")
-        shared_joke = await mem.get_random_shared_inside_joke(user_id)
-        if shared_joke and random.random() < 0.2:
-            parts.append(f'SHARED_JOKE:"{shared_joke[:100]}"')
-        memory_event = await mem.get_weighted_memory_event(user_id)
-        if memory_event and random.random() < 0.25:
-            parts.append(f"MEMORY_BANK:{memory_event.get('kind','memory')}|{memory_event.get('memory','')[:140]}")
-        old_line = await mem.get_random_old_message(user_id)
-        if old_line and random.random() < 0.12:
-            parts.append(f"RECALL:{old_line[:120]}")
-        if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < 0.35:
-            parts.append(f"FOLLOWUP:{describe_conflict_followup(user.get('conflict_summary'), user.get('emotional_arc'))}")
-    except Exception as e:
-        log_error("user_memory_context", e)
-    return parts
+        snapshot = await mem.get_memory_retrieval_snapshot(
+            request.user_id, request.channel_id,
+            milestone_scope=f"{BOT_NAME}:user:{request.user_id}",
+        )
+        candidates: list[MemoryCandidate] = []
+        for item in snapshot["memory_bank"]:
+            candidates.append(MemoryCandidate(
+                "memory_bank", item["kind"], item["text"], item["weight"],
+                item["ts"], item["last_used"], item["id"],
+            ))
+        for item in snapshot["topics"]:
+            candidates.append(MemoryCandidate(
+                "topic", "topic", item["text"], min(5, item["weight"]), item["ts"],
+            ))
+        # Stored jokes are user-scoped and compete normally in playful contexts;
+        # the scorer makes them ineligible for serious interactions.
+        for item in [*snapshot["inside_jokes"], *snapshot["shared_jokes"]]:
+            candidates.append(MemoryCandidate(
+                "inside_joke", item.get("kind") or "inside_joke",
+                item["text"], 2, item["ts"],
+            ))
+        for item in snapshot["milestones"]:
+            candidates.append(MemoryCandidate(
+                "milestone", "milestone", item["text"], 6, item["ts"],
+            ))
+        for item in snapshot["historical_messages"]:
+            candidates.append(MemoryCandidate(
+                "historical_message", "history", item["text"], 3, item["ts"],
+            ))
+        if raw.summary:
+            candidates.append(MemoryCandidate(
+                "summary", "summary", raw.summary, 5,
+                float(user.get("last_seen", 0) or 0),
+            ))
+        if context.interaction.allows("callback") and raw.callback_memory:
+            candidates.append(MemoryCandidate(
+                "callback", "callback", raw.callback_memory, 7,
+                float(user.get("callback_ts", 0) or 0),
+            ))
+        if raw.conflict_open and raw.conflict_summary:
+            candidates.append(MemoryCandidate(
+                "conflict", "conflict", raw.conflict_summary, 9,
+                float(user.get("last_conflict_ts", 0) or 0),
+            ))
+        for hook in extract_continuity_hooks(context.history, request.user_message)[:3]:
+            candidates.append(MemoryCandidate(
+                "continuity", "continuity", hook, 5, time.time(),
+            ))
+
+        result = MEMORY_RETRIEVER.retrieve(
+            candidates, request.user_message, user_id=request.user_id,
+            serious=context.interaction.serious, conflict_open=raw.conflict_open,
+        )
+        result.fragments = [candidate_fragment(item) for item in result.selected]
+        logger.debug("memory retrieval", extra={
+            "user_id": request.user_id,
+            "candidate_count": result.candidates_considered,
+            "selected_source": ",".join(item.source for item in result.selected) or "none",
+            "selected_kind": ",".join(item.kind for item in result.selected) or "none",
+            "top_score": round(max((item.final_score for item in candidates), default=0), 3),
+            "suppressed_recent_count": result.suppressed_recent_count,
+            "relevance_threshold": result.relevance_threshold,
+        })
+        return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _response_error("memory_retrieval", exc, request, subsystem="persistence")
+        return MemoryRetrievalResult(0)
+
+
+async def _mark_retrieved_memory_used(context: ResponseContext) -> None:
+    """Checkpoint usage only after selected fragments entered the final prompt."""
+    result = context.memory_retrieval
+    if not result or not result.selected:
+        return
+    MEMORY_RETRIEVER.mark_selected(context.request.user_id, result.selected)
+    try:
+        ids = [
+            int(item.record_id) for item in result.selected
+            if item.source == "memory_bank" and item.record_id is not None
+        ]
+        await mem.mark_memory_events_used(context.request.user_id, ids)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+        _response_error(
+            "memory_mark_used", exc, context.request, subsystem="persistence",
+        )
+    except Exception as exc:
+        _response_error("memory_mark_used", exc, context.request)
 
 
 async def _find_romance_target(channel) -> discord.Member | None:
@@ -1376,7 +1471,7 @@ async def _load_response_context(request, user, interaction):
         max_chars_per_message=CONFIG.history_message_chars,
         max_total_chars=CONFIG.history_total_chars,
     )
-    recent_replies = await _recent_reply_samples(
+    recent_replies, repeat_patterns = await _recent_reply_context(
         channel_id=request.channel_id, user_id=request.user_id,
     )
     self_prompt, self_dimensions = "", {}
@@ -1408,10 +1503,12 @@ async def _load_response_context(request, user, interaction):
         request=request, interaction=interaction, user=user or {}, raw=raw,
         derived=derived, resolved=resolve_character(interaction, user, self_dimensions),
         history=history, recent_replies=recent_replies,
+        repeat_patterns=repeat_patterns,
         self_dimensions=self_dimensions, self_prompt=self_prompt,
     )
     await _enrich_response_context(context, world_context)
     _assemble_response_prompt(context)
+    await _mark_retrieved_memory_used(context)
     return context
 
 
@@ -1462,8 +1559,6 @@ async def _enrich_response_context(context, world_context):
     drift_context = drift_phrase(raw.drift, raw.mood)
     if drift_context:
         fragments.derived_state.append(drift_context)
-    if raw.summary:
-        fragments.memory.append(f"SUMMARY:{raw.summary[:300]}")
     speech_drift = describe_speech_drift(BOT_NAME, raw.style_profile)
     if speech_drift:
         fragments.derived_state.append(f"SPEECH_DRIFT:{speech_drift}")
@@ -1495,21 +1590,14 @@ async def _enrich_response_context(context, world_context):
         fragments.behavioral.append(f"ARC_UNLOCKS:{arc_unlocks}")
     if derived.progression:
         fragments.derived_state.append(f"PROGRESSION:{derived.progression}")
-    if raw.conflict_open and raw.conflict_summary:
-        fragments.memory.append(f"CONFLICT_OPEN:{raw.conflict_summary[:140]}")
     aftermath = describe_conflict_aftermath(
         BOT_NAME, raw.conflict_summary, user.get("last_conflict_ts", 0),
         user.get("repair_progress", 0), conflict_open=raw.conflict_open,
     )
     if aftermath:
         fragments.behavioral.append(aftermath)
-    if (context.interaction.allows("callback") and raw.callback_memory
-            and (callback_relevant(raw.callback_memory, request.user_message)
-                 or random.random() < .18)):
-        fragments.memory.append(f"CALLBACK:{raw.callback_memory[:180]}")
-    fragments.memory.extend(extract_continuity_hooks(
-        context.history, request.user_message,
-    ))
+    context.memory_retrieval = await _retrieve_memory_context(context)
+    fragments.memory.extend(context.memory_retrieval.fragments)
     lore_hook = describe_lore_hook(BOT_NAME, request.user_message)
     if lore_hook:
         fragments.memory.append(lore_hook)
@@ -1554,7 +1642,6 @@ async def _enrich_response_context(context, world_context):
     )
     if extra_world:
         fragments.world.append(extra_world)
-    fragments.memory.extend(await _user_memory_context(request.user_id, user))
     if not user.get("utility_mode", True):
         fragments.behavioral.append(
             "UTILITY_PREF: utility mode is off; keep facts natural instead of list-like"
@@ -1613,7 +1700,12 @@ def _assemble_response_prompt(context):
     ))
     sections.append(f"{request.display_name}: {request.user_message}")
     base_context = "\n".join(sections)
-    repeat_guard = build_prompt_guard(BOT_NAME, context.recent_replies)
+    repeat_guard = build_prompt_guard(
+        BOT_NAME, context.recent_replies,
+        pattern_scopes=context.repeat_patterns,
+        factual_mode=bool(context.search_sources),
+        serious_mode=context.interaction.serious,
+    )
     context.user_prompt = (
         ((repeat_guard + "\n\n") if repeat_guard else "") + base_context
     )
@@ -1669,14 +1761,30 @@ async def _generate_character_reply(context):
         reply = diversify_reply(
             BOT_NAME, strip_narration(reply), context.recent_replies,
         )
-        if reply and not looks_repetitive(
-                reply, context.recent_replies,
-                include_shape=not bool(context.search_sources)):
+        repetition = analyze_repetition(
+            reply, context.recent_replies,
+            include_shape=not bool(context.search_sources),
+            pattern_scopes=context.repeat_patterns,
+            factual_mode=bool(context.search_sources),
+            serious_mode=context.interaction.serious,
+        )
+        logger.debug("anti-repeat draft", extra={
+            "detected_pattern": repetition.detected_pattern,
+            "pattern_frequency": repetition.pattern_frequency,
+            "rejected_for_text_similarity": repetition.rejected_for_text_similarity,
+            "rejected_for_pattern_repeat": repetition.rejected_for_pattern_repeat,
+            "retry_number": attempt,
+        })
+        if reply and not repetition.repetitive:
             break
+        pattern_hint = (
+            repetition.detected_pattern.replace("_", " ")
+            if repetition.rejected_for_pattern_repeat else "recent phrasing"
+        )
         retry_context = (
             context.user_prompt
-            + "\n\nRETRY: The last draft was too close to your recent phrasing. "
-            + "Use a different opening, different mockery template, and different sentence rhythm."
+            + f"\n\nRETRY: The last draft repeated {pattern_hint}. "
+            + "Use a different conversational strategy, opening, and sentence rhythm."
         )
     fallback_used = not bool(reply)
     if fallback_used:
@@ -1885,13 +1993,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         _response_error("finalize", exc, request)
         reply = fallback_reply(BOT_NAME, context.recent_replies)
     if not defer_delivery:
-        await _record_generated_reply_state(user_id, reply)
+        await _record_generated_reply_state(user_id, reply, channel_id=channel_id)
     return reply
 
 
-async def _record_generated_reply_state(user_id, reply):
+async def _record_generated_reply_state(user_id, reply, *, channel_id=None):
     """Update anti-repeat/self-behavior state; this is not conversation memory."""
-    remember_output(BOT_NAME, reply)
+    remember_output(BOT_NAME, reply, user_id=user_id, channel_id=channel_id)
     if re.search(r"\b(i care|i noticed|i remembered|stay|don't leave|i was wrong|not fair of me)\b", reply, re.I):
         try:
             await self_store.record_event(
@@ -3509,14 +3617,6 @@ async def _build_normal_response_context(message, interaction, prepared):
             message, prepared.user, prepared.content,
             is_dm=prepared.is_dm, interaction=interaction,
         ))
-        if random.random() < .12:
-            old = await mem.get_random_old_message(prepared.user_id)
-            if old:
-                parts.append(f'RECALL:"{old[:120]}"')
-        if random.random() < .15:
-            joke = await mem.get_random_inside_joke(prepared.user_id)
-            if joke:
-                parts.append(f'JOKE:"{joke[:80]}"')
         if prepared.user.get("rival_id") and message.guild:
             rival = message.guild.get_member(prepared.user["rival_id"])
             if rival:
@@ -5792,6 +5892,8 @@ async def _delete_runtime_stage(uid):
     _hostages.pop(uid, None)
     _tedtalk_cache.pop(uid, None)
     _voice_state_cache.pop(uid, None)
+    MEMORY_RETRIEVER.forget_user(uid)
+    forget_user_patterns(BOT_NAME, uid)
     for key in list(_presence_activity):
         if key[1] == uid:
             _presence_activity.pop(key, None)
