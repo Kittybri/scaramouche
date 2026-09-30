@@ -113,6 +113,61 @@ def test_reflection_failure_keeps_event_and_persists_provider_backoff(tmp_path):
     assert run(store.budget_status()) == before  # backoff rejects before consuming budget
 
 
+def test_reflection_database_failure_does_not_count_as_provider_failure(tmp_path, monkeypatch):
+    store, heartbeat = setup(
+        tmp_path, reflection_threshold=7, autonomous_calls_per_hour=2,
+        autonomous_calls_per_day=8,
+    )
+    run(store.record_event("conflict", "Persistence must not impersonate Groq.", importance=9))
+
+    async def generator(prompt):
+        return "The provider completed this reflection."
+
+    async def fail_write(*args, **kwargs):
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(store, "add_reflection", fail_write)
+    result = run(heartbeat.tick(reflection_generator=generator, proactive_candidates=[]))
+    assert result.reflected is False
+    assert heartbeat.environment._provider_failures == []
+    assert heartbeat.environment._last_response_latency_ms is not None
+    assert len(run(store.pending_events(7))) == 1
+
+
+def test_mark_event_failure_keeps_provider_healthy(tmp_path, monkeypatch):
+    store, heartbeat = setup(
+        tmp_path, reflection_threshold=7, autonomous_calls_per_hour=2,
+        autonomous_calls_per_day=8,
+    )
+    run(store.record_event("conflict", "The event receipt may fail.", importance=9))
+
+    async def generator(prompt):
+        return "The provider still succeeded."
+
+    async def fail_mark(*args, **kwargs):
+        raise sqlite3.OperationalError("mark failed")
+
+    monkeypatch.setattr(store, "mark_events_processed", fail_mark)
+    result = run(heartbeat.tick(reflection_generator=generator, proactive_candidates=[]))
+    assert result.reflected is False
+    assert heartbeat.environment._provider_failures == []
+
+
+def test_reflection_generation_cancellation_propagates_without_provider_failure(tmp_path):
+    store, heartbeat = setup(
+        tmp_path, reflection_threshold=7, autonomous_calls_per_hour=2,
+        autonomous_calls_per_day=8,
+    )
+    run(store.record_event("conflict", "Cancellation is shutdown, not failure.", importance=9))
+
+    async def cancelled(prompt):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        run(heartbeat.tick(reflection_generator=cancelled, proactive_candidates=[]))
+    assert heartbeat.environment._provider_failures == []
+
+
 def test_quiet_heartbeat_cycles_are_bounded_and_make_no_llm_calls(tmp_path):
     store, heartbeat = setup(tmp_path)
     # A quiet-cycle test must not depend on the machine's live CPU/disk load.

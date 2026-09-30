@@ -107,25 +107,76 @@ class HeartbeatCoordinator:
                     interpretation = (await reflection_generator(self.reflections.prompt(request))).strip()
                     if not interpretation:
                         raise ValueError("reflection provider returned empty content")
-                    await self.store.add_reflection(
-                        request.trigger, request.observation, interpretation,
-                        importance=request.importance, confidence=.65,
-                        related_user_id=request.related_user_id,
-                    )
-                    await self.store.record_action(
-                        ActionType.WRITE_REFLECTION.value, "completed", request.trigger,
-                        related_user_id=request.related_user_id,
-                    )
-                    await self.store.mark_events_processed(request.event_ids)
-                    reflected = True
-                    await self.provider_succeeded(int((time.monotonic() - started) * 1000))
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
-                    await self.provider_failed(now)
-                    await self.store.record_action(
-                        ActionType.WRITE_REFLECTION.value, "failed", request.trigger,
-                        related_user_id=request.related_user_id, error_category=type(exc).__name__,
-                    )
-                    log.warning("reflection failed", extra={"action_type": "WRITE_REFLECTION", "error_category": type(exc).__name__})
+                    try:
+                        await self.provider_failed(now)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as metric_exc:
+                        log.exception("provider failure metric persistence failed", extra={
+                            "action_type": "WRITE_REFLECTION",
+                            "error_category": type(metric_exc).__name__,
+                        })
+                    try:
+                        await self.store.record_action(
+                            ActionType.WRITE_REFLECTION.value, "failed", request.trigger,
+                            related_user_id=request.related_user_id, error_category=type(exc).__name__,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as persistence_exc:
+                        log.exception("reflection failure receipt persistence failed", extra={
+                            "action_type": "WRITE_REFLECTION",
+                            "error_category": type(persistence_exc).__name__,
+                        })
+                    log.warning("reflection provider failed", extra={
+                        "action_type": "WRITE_REFLECTION", "error_category": type(exc).__name__,
+                    })
+                else:
+                    # Provider health is decided at the provider boundary. A later
+                    # SQLite failure must never masquerade as a provider outage.
+                    try:
+                        await self.provider_succeeded(int((time.monotonic() - started) * 1000))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as metric_exc:
+                        log.exception("provider success metric persistence failed", extra={
+                            "action_type": "WRITE_REFLECTION",
+                            "error_category": type(metric_exc).__name__,
+                        })
+                    try:
+                        await self.store.add_reflection(
+                            request.trigger, request.observation, interpretation,
+                            importance=request.importance, confidence=.65,
+                            related_user_id=request.related_user_id,
+                        )
+                        await self.store.record_action(
+                            ActionType.WRITE_REFLECTION.value, "completed", request.trigger,
+                            related_user_id=request.related_user_id,
+                        )
+                        await self.store.mark_events_processed(request.event_ids)
+                        reflected = True
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        try:
+                            await self.store.record_action(
+                                ActionType.WRITE_REFLECTION.value, "failed", request.trigger,
+                                related_user_id=request.related_user_id,
+                                error_category=type(exc).__name__,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as receipt_exc:
+                            log.exception("reflection persistence receipt failed", extra={
+                                "action_type": "WRITE_REFLECTION",
+                                "error_category": type(receipt_exc).__name__,
+                            })
+                        log.exception("reflection persistence failed", extra={
+                            "action_type": "WRITE_REFLECTION", "error_category": type(exc).__name__,
+                        })
 
             action = await self._choose_proactive(proactive_candidates or [], now)
             if action.action is ActionType.NO_ACTION and not await self.store.action_on_cooldown(

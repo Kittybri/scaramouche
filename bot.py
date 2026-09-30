@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import discord
 from discord.ext import commands, tasks
+import aiohttp
 from groq import Groq, GroqError
 import os, re, random, asyncio, io, time, logging, json, sqlite3
 from urllib.parse import quote_plus
@@ -24,6 +25,7 @@ from heartbeat import HeartbeatCoordinator
 from internal_state import perceive_message, willingness_context, willingness_prompt
 from provider_config import GROQ_TEXT_MODEL, GROQ_VISION_MODEL as CONFIGURED_GROQ_VISION_MODEL
 from self_model import SelfModelStore
+from task_supervisor import TaskSpec, TaskSupervisor
 from character_identity import IMPLEMENTATION_AWARENESS, attachment_guard, implementation_answer_hint
 from character_bits import (
     autocorrect_line, bounded_glitch, eligible_for_joke, eligible_for_silent_judge,
@@ -490,7 +492,8 @@ GROQ_VISION_MODEL = CONFIGURED_GROQ_VISION_MODEL
 INTEGRATION_CONFIG = load_integration_config()
 GITHUB_ISSUES = GitHubIssueService(INTEGRATION_CONFIG.section("github"))
 
-_background_tasks: dict[str, asyncio.Task] = {}
+_task_supervisor = TaskSupervisor(logger=logger)
+_background_tasks = _task_supervisor.tasks  # compatibility for diagnostics/tests
 _transient_tasks: set[asyncio.Task] = set()
 _runtime_initialized = False
 _initialization_lock: asyncio.Lock | None = None
@@ -2295,37 +2298,31 @@ class ResetView(discord.ui.View):
 # Cross-bot: no command coordination needed — each bot responds independently
 
 
-def _start_background_once(name: str, coroutine_factory) -> None:
-    task = _background_tasks.get(name)
-    if task and not task.done():
-        return
-    task = asyncio.create_task(coroutine_factory(), name=name)
-    _background_tasks[name] = task
+def _start_background_once(name: str, coroutine_factory, *, critical: bool = False) -> None:
+    _task_supervisor.register(TaskSpec(
+        name=name,
+        factory=coroutine_factory,
+        critical=critical,
+        restart=True,
+    ))
+    _task_supervisor.ensure_started(name)
 
-    def _finished(completed: asyncio.Task) -> None:
-        if _background_tasks.get(name) is completed:
-            _background_tasks.pop(name, None)
-        if completed.cancelled():
-            return
-        try:
-            error = completed.exception()
-        except asyncio.CancelledError:
-            return
-        if error:
-            logger.error("background task stopped unexpectedly", extra={
-                "task_name": name, "error_category": type(error).__name__,
-            })
 
-    task.add_done_callback(_finished)
+def _task_progress(name: str, **progress: object) -> None:
+    _task_supervisor.mark_progress(name, **progress)
+
+
+def _task_iteration_failed(name: str, error: BaseException) -> None:
+    _task_supervisor.mark_iteration_failure(name, error)
 
 
 async def _stop_background_tasks() -> None:
-    tasks_to_stop = [task for task in [*_background_tasks.values(), *_transient_tasks] if not task.done()]
+    await _task_supervisor.stop()
+    tasks_to_stop = [task for task in _transient_tasks if not task.done()]
     for task in tasks_to_stop:
         task.cancel()
     if tasks_to_stop:
         await asyncio.gather(*tasks_to_stop, return_exceptions=True)
-    _background_tasks.clear()
     _transient_tasks.clear()
 
 
@@ -2409,6 +2406,178 @@ async def _heartbeat_candidates() -> list[dict]:
     return candidates
 
 
+async def _finish_autonomous_action(action_id: int, status: str, **kwargs) -> bool:
+    try:
+        return await self_store.finish_action(action_id, status, **kwargs)
+    except asyncio.CancelledError:
+        raise
+    except sqlite3.Error as exc:
+        logger.warning("autonomous action status persistence failed", extra={
+            "action_id": action_id, "status": status, "error_category": type(exc).__name__,
+        })
+    except Exception as exc:
+        logger.exception("unexpected autonomous action status failure", extra={
+            "action_id": action_id, "status": status, "error_category": type(exc).__name__,
+        })
+    return False
+
+
+async def _proactive_post_delivery(action, text: str) -> None:
+    """Best-effort bookkeeping after Discord has already accepted the message."""
+    async def remember_message():
+        await mem.add_message(action.user_id, action.channel_id, "assistant", text)
+
+    async def remember_cooldown():
+        await mem.set_proactive_sent(action.channel_id)
+
+    async def remember_event():
+        await self_store.record_event(
+            "initiated_contact",
+            "He initiated contact with an established user for a specific unfinished reason.",
+            importance=8,
+            related_user_id=action.user_id,
+        )
+
+    async def remember_contradiction():
+        denial = await self_store.add_belief(
+            "I do not care whether this user replies.",
+            confidence=.68,
+            scope_user_id=action.user_id,
+        )
+        await self_store.add_belief_evidence(
+            denial,
+            "contradict",
+            1.5,
+            "He chose to initiate contact after noticing this user's absence.",
+        )
+
+    for label, operation in (
+        ("message_memory", remember_message),
+        ("proactive_cooldown", remember_cooldown),
+        ("self_event", remember_event),
+        ("belief_evidence", remember_contradiction),
+    ):
+        try:
+            await operation()
+        except asyncio.CancelledError:
+            raise
+        except sqlite3.Error as exc:
+            logger.warning("proactive post-delivery persistence failed", extra={
+                "operation": label, "error_category": type(exc).__name__,
+            })
+        except Exception as exc:
+            logger.exception("unexpected proactive post-delivery failure", extra={
+                "operation": label, "error_category": type(exc).__name__,
+            })
+
+
+async def _execute_proactive_action(action) -> None:
+    reservation_id = await self_store.reserve_action(
+        action.action.value,
+        action.reason,
+        related_user_id=action.user_id,
+        channel_id=action.channel_id,
+        details={"initiated_contact": True},
+        stale_after_seconds=CONFIG.proactive_user_cooldown_seconds,
+    )
+    if reservation_id is None:
+        logger.debug("proactive action already reserved", extra={
+            "action_type": action.action.value, "user_id": action.user_id,
+        })
+        return
+    if not await heartbeat.reserve_autonomous_call():
+        await _finish_autonomous_action(
+            reservation_id, "skipped", details={"reason": "budget_or_backoff"},
+        )
+        return
+
+    channel = bot.get_channel(action.channel_id)
+    user_obj = (
+        channel.guild.get_member(action.user_id)
+        if channel and getattr(channel, "guild", None)
+        else None
+    )
+    if not channel or not user_obj:
+        await _finish_autonomous_action(
+            reservation_id, "skipped", details={"reason": "target_unavailable"},
+        )
+        return
+
+    user = await mem.get_user(action.user_id)
+    prompt = (
+        f"You chose to contact {action.payload.get('display_name') or user_obj.display_name} because: {action.reason} "
+        f"A relevant unfinished thread is: {action.payload.get('context') or 'none'}. "
+        "Write one natural proactive message. Do not announce a system, goal, cooldown, or absence counter. "
+        "Remain proud and defensive; show attention without generic sweetness. No narration."
+    )
+    started = time.monotonic()
+    try:
+        text = await _autonomous_character_generation(
+            prompt, system=build_system(user, user_obj.display_name), max_tokens=160,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        try:
+            await heartbeat.provider_failed()
+        except asyncio.CancelledError:
+            raise
+        except Exception as metric_exc:
+            logger.exception("proactive provider failure metric persistence failed", extra={
+                "error_category": type(metric_exc).__name__,
+            })
+        await _finish_autonomous_action(
+            reservation_id, "failed", error_category=type(exc).__name__,
+        )
+        logger.warning("proactive generation failed", extra={
+            "action_type": action.action.value,
+            "user_id": action.user_id,
+            "error_category": type(exc).__name__,
+        })
+        return
+
+    try:
+        await heartbeat.provider_succeeded(int((time.monotonic() - started) * 1000))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("proactive provider success metric persistence failed", extra={
+            "error_category": type(exc).__name__,
+        })
+
+    try:
+        await channel.send(f"{user_obj.mention} {text}")
+    except asyncio.CancelledError:
+        raise
+    except discord.Forbidden as exc:
+        await _finish_autonomous_action(reservation_id, "failed", error_category="DiscordForbidden")
+        logger.warning("proactive delivery forbidden", extra={"user_id": action.user_id})
+        return
+    except discord.NotFound as exc:
+        await _finish_autonomous_action(reservation_id, "failed", error_category="DiscordNotFound")
+        logger.warning("proactive delivery target missing", extra={"user_id": action.user_id})
+        return
+    except discord.HTTPException as exc:
+        await _finish_autonomous_action(
+            reservation_id, "failed", error_category=type(exc).__name__,
+        )
+        logger.warning("proactive Discord delivery failed", extra={
+            "user_id": action.user_id, "error_category": type(exc).__name__,
+        })
+        return
+
+    # This marker is attempted before nonessential writes. If it fails, the
+    # still-pending reservation remains a conservative duplicate barrier.
+    marked = await _finish_autonomous_action(
+        reservation_id, "delivered", details={"initiated_contact": True},
+    )
+    if not marked:
+        logger.warning("proactive delivery accepted but marker unconfirmed", extra={
+            "action_id": reservation_id, "user_id": action.user_id,
+        })
+    await _proactive_post_delivery(action, text)
+
+
 async def _self_heartbeat_loop() -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -2422,80 +2591,13 @@ async def _self_heartbeat_loop() -> None:
             )
             action = result.action
             if action.action is ActionType.SEND_PROACTIVE_MESSAGE:
-                reservation_id = await self_store.reserve_action(
-                    action.action.value, action.reason, related_user_id=action.user_id,
-                    channel_id=action.channel_id, details={"initiated_contact": True},
-                    stale_after_seconds=CONFIG.proactive_user_cooldown_seconds,
-                )
-                if reservation_id is None:
-                    logger.debug("proactive action already reserved", extra={
-                        "action_type": action.action.value, "user_id": action.user_id,
-                    })
-                elif not await heartbeat.reserve_autonomous_call():
-                    await self_store.finish_action(reservation_id, "skipped", details={"reason": "budget_or_backoff"})
-                else:
-                    channel = bot.get_channel(action.channel_id)
-                    user_obj = channel.guild.get_member(action.user_id) if channel and getattr(channel, "guild", None) else None
-                    if channel and user_obj:
-                        user = await mem.get_user(action.user_id)
-                        prompt = (
-                            f"You chose to contact {action.payload.get('display_name') or user_obj.display_name} because: {action.reason} "
-                            f"A relevant unfinished thread is: {action.payload.get('context') or 'none'}. "
-                            "Write one natural proactive message. Do not announce a system, goal, cooldown, or absence counter. "
-                            "Remain proud and defensive; show attention without generic sweetness. No narration."
-                        )
-                        try:
-                            started = time.monotonic()
-                            text = await _autonomous_character_generation(
-                                prompt, system=build_system(user, user_obj.display_name), max_tokens=160,
-                            )
-                            await heartbeat.provider_succeeded(int((time.monotonic() - started) * 1000))
-                        except Exception as exc:
-                            await heartbeat.provider_failed()
-                            await self_store.finish_action(
-                                reservation_id, "failed", error_category=type(exc).__name__,
-                            )
-                            logger.warning("proactive generation failed", extra={
-                                "action_type": action.action.value, "user_id": action.user_id,
-                                "error_category": type(exc).__name__,
-                            })
-                        else:
-                            delivered = False
-                            try:
-                                await channel.send(f"{user_obj.mention} {text}")
-                                delivered = True
-                                # Persist delivery before nonessential follow-up
-                                # writes so a restart cannot resend the same action.
-                                await self_store.finish_action(
-                                    reservation_id, "completed", details={"initiated_contact": True},
-                                )
-                                await mem.add_message(action.user_id, action.channel_id, "assistant", text)
-                                await mem.set_proactive_sent(action.channel_id)
-                                await self_store.record_event(
-                                    "initiated_contact", "He initiated contact with an established user for a specific unfinished reason.",
-                                    importance=8, related_user_id=action.user_id,
-                                )
-                                denial = await self_store.add_belief(
-                                    "I do not care whether this user replies.",
-                                    confidence=.68, scope_user_id=action.user_id,
-                                )
-                                await self_store.add_belief_evidence(
-                                    denial, "contradict", 1.5,
-                                    "He chose to initiate contact after noticing this user's absence.",
-                                )
-                            except Exception as exc:
-                                if not delivered:
-                                    await self_store.finish_action(
-                                        reservation_id, "failed", error_category=type(exc).__name__,
-                                    )
-                                logger.warning("proactive delivery failed", extra={
-                                    "action_type": action.action.value, "user_id": action.user_id,
-                                    "error_category": type(exc).__name__,
-                                })
-                    else:
-                        await self_store.finish_action(
-                            reservation_id, "skipped", details={"reason": "target_unavailable"},
-                        )
+                await _execute_proactive_action(action)
+            _task_progress(
+                "self-heartbeat",
+                last_tick=heartbeat.last_tick,
+                reflected=result.reflected,
+                action=action.action.value,
+            )
             log_method = logger.debug if (
                 result.action.action is ActionType.NO_ACTION and not result.reflected and not result.expired_goals
             ) else logger.info
@@ -2503,7 +2605,13 @@ async def _self_heartbeat_loop() -> None:
                 "action_type": result.action.action.value, "reflected": result.reflected,
                 "expired_goals": result.expired_goals,
             })
+        except asyncio.CancelledError:
+            raise
+        except (sqlite3.Error, discord.HTTPException, OSError, TimeoutError) as exc:
+            _task_iteration_failed("self-heartbeat", exc)
+            logger.warning("heartbeat iteration failed", extra={"error_category": type(exc).__name__})
         except Exception as exc:
+            _task_iteration_failed("self-heartbeat", exc)
             logger.exception("heartbeat failed", extra={"error_category": type(exc).__name__})
         await asyncio.sleep(CONFIG.heartbeat_interval_seconds)
 
@@ -2523,12 +2631,26 @@ async def on_ready():
         for t in [status_rotation, reminder_checker, daily_reset]:
             if not t.is_running():
                 t.start()
-        _start_background_once("self-heartbeat", _self_heartbeat_loop)
+        _start_background_once("self-heartbeat", _self_heartbeat_loop, critical=True)
         _start_background_once("duo-autoplay", _duo_autoplay_loop)
         _start_background_once("weather-proactive", _weather_proactive_loop)
-        _start_background_once("temporary-setting-restore", _temporary_setting_restore_loop)
-    except Exception as e:
-        log_error("on_ready", e)
+        _start_background_once(
+            "temporary-setting-restore", _temporary_setting_restore_loop, critical=True,
+        )
+        health = _task_supervisor.snapshot()
+        logger.info("background workers registered", extra={
+            "worker_count": len(health),
+            "critical_worker_count": sum(1 for item in health if item["critical"]),
+        })
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # _initialize_runtime_once sets its completion flag only after every
+        # dependency succeeds, so another ready event may retry safely.
+        logger.exception("runtime ready initialization failed", extra={
+            "runtime_initialized": _runtime_initialized,
+            "error_category": type(exc).__name__,
+        })
 
 # ── Background tasks ──────────────────────────────────────────────────────────
 @tasks.loop(minutes=47)
@@ -2539,30 +2661,96 @@ async def status_rotation():
         elif kind=="listening": act=discord.Activity(type=discord.ActivityType.listening,name=text)
         else: act=discord.Game(name=text)
         await bot.change_presence(activity=act)
-    except Exception as e: log_error("status_rotation", e)
+    except asyncio.CancelledError:
+        raise
+    except discord.HTTPException as exc:
+        logger.warning("status rotation Discord failure", extra={"error_category": type(exc).__name__})
 
 @tasks.loop(seconds=30)
 async def reminder_checker():
     try:
         await HOME.tick()
-        for r in await mem.get_due_reminders():
-            try:
-                ch=bot.get_channel(r["channel_id"]); u=await bot.fetch_user(r["user_id"])
-                if not ch or not u: continue
-                scene = describe_scene_state(await mem.get_scene_state(r["channel_id"]))
-                msg=await qai(
-                    f"Remind {u.display_name} about: '{r['reminder']}'. "
-                    f"Current channel scene: {scene or 'none'}. Make it feel like a pointed callback, not a sterile alarm. 1-2 sentences.",
-                    180,
-                )
-                await ch.send(f"{u.mention} {msg}")
-            except Exception as e: log_error("reminder_send", e)
-    except Exception as e: log_error("reminder_checker", e)
+    except asyncio.CancelledError:
+        raise
+    except (sqlite3.Error, OSError, TimeoutError) as exc:
+        logger.warning("home tick operational failure", extra={"error_category": type(exc).__name__})
+    except Exception as exc:
+        logger.exception("unexpected home tick failure", extra={"error_category": type(exc).__name__})
+    try:
+        reminders = await mem.get_due_reminders()
+    except asyncio.CancelledError:
+        raise
+    except sqlite3.Error as exc:
+        logger.warning("reminder query failed", extra={"error_category": type(exc).__name__})
+        return
+    for r in reminders:
+        try:
+            ch = bot.get_channel(r["channel_id"])
+            u = await bot.fetch_user(r["user_id"])
+            if not ch or not u:
+                logger.info("reminder target unavailable", extra={"reminder_id": r.get("id")})
+                continue
+            scene = describe_scene_state(await mem.get_scene_state(r["channel_id"]))
+            msg = await qai(
+                f"Remind {u.display_name} about: '{r['reminder']}'. "
+                f"Current channel scene: {scene or 'none'}. Make it feel like a pointed callback, not a sterile alarm. 1-2 sentences.",
+                180,
+            )
+            await ch.send(f"{u.mention} {msg}")
+        except asyncio.CancelledError:
+            raise
+        except (discord.Forbidden, discord.NotFound) as exc:
+            logger.warning("reminder delivery unavailable", extra={
+                "reminder_id": r.get("id"), "error_category": type(exc).__name__,
+            })
+        except discord.HTTPException as exc:
+            logger.warning("reminder Discord failure", extra={
+                "reminder_id": r.get("id"), "error_category": type(exc).__name__,
+            })
+        except (sqlite3.Error, OSError, TimeoutError, GroqError) as exc:
+            logger.warning("reminder operational failure", extra={
+                "reminder_id": r.get("id"), "error_category": type(exc).__name__,
+            })
+        except Exception as exc:
+            logger.exception("unexpected reminder failure", extra={
+                "reminder_id": r.get("id"), "error_category": type(exc).__name__,
+            })
 
 @tasks.loop(hours=24)
 async def daily_reset():
-    try: await mem.reset_daily_greetings()
-    except Exception as e: log_error("daily_reset", e)
+    try:
+        await mem.reset_daily_greetings()
+    except asyncio.CancelledError:
+        raise
+    except sqlite3.Error as exc:
+        logger.warning("daily reset database failure", extra={"error_category": type(exc).__name__})
+
+
+@status_rotation.error
+async def status_rotation_error(exc):
+    logger.error(
+        "status rotation loop stopped",
+        extra={"error_category": type(exc).__name__},
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+
+
+@reminder_checker.error
+async def reminder_checker_error(exc):
+    logger.error(
+        "reminder checker loop stopped",
+        extra={"error_category": type(exc).__name__},
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+
+
+@daily_reset.error
+async def daily_reset_error(exc):
+    logger.error(
+        "daily reset loop stopped",
+        extra={"error_category": type(exc).__name__},
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 async def _weather_proactive_loop():
@@ -2570,7 +2758,16 @@ async def _weather_proactive_loop():
     await asyncio.sleep(45)
     while not bot.is_closed():
         try:
-            for candidate in await mem.get_weather_candidates(limit=20):
+            candidates = await mem.get_weather_candidates(limit=20)
+        except asyncio.CancelledError:
+            raise
+        except sqlite3.Error as exc:
+            _task_iteration_failed("weather-proactive", exc)
+            logger.warning("weather candidate query failed", extra={"error_category": type(exc).__name__})
+            await asyncio.sleep(1800)
+            continue
+        for candidate in candidates:
+            try:
                 if _is_in_quiet_hours(candidate):
                     continue
                 scope = f"user:{candidate['user_id']}"
@@ -2601,8 +2798,33 @@ async def _weather_proactive_loop():
                             f"Try not to lose a fight with the {kind}.")
                 await channel.send(text)
                 break  # one unsolicited weather message per scan
-        except Exception as exc:
-            log_error("weather_proactive_loop", exc)
+            except asyncio.CancelledError:
+                raise
+            except (discord.Forbidden, discord.NotFound) as exc:
+                logger.warning("weather proactive target unavailable", extra={
+                    "user_id": candidate.get("user_id"), "error_category": type(exc).__name__,
+                })
+            except discord.HTTPException as exc:
+                logger.warning("weather proactive Discord failure", extra={
+                    "user_id": candidate.get("user_id"), "error_category": type(exc).__name__,
+                })
+            except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+                logger.warning("weather provider failure", extra={
+                    "user_id": candidate.get("user_id"), "error_category": type(exc).__name__,
+                })
+            except sqlite3.Error as exc:
+                logger.warning("weather proactive persistence failure", extra={
+                    "user_id": candidate.get("user_id"), "error_category": type(exc).__name__,
+                })
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("malformed weather candidate", extra={
+                    "user_id": candidate.get("user_id"), "error_category": type(exc).__name__,
+                })
+            except Exception as exc:
+                logger.exception("unexpected weather candidate failure", extra={
+                    "user_id": candidate.get("user_id"), "error_category": type(exc).__name__,
+                })
+        _task_progress("weather-proactive", candidate_count=len(candidates), last_scan=time.time())
         await asyncio.sleep(1800)
 
 
@@ -2610,7 +2832,16 @@ async def _temporary_setting_restore_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
         try:
-            for item in await mem.get_due_temporary_channel_settings():
+            pending = await mem.get_due_temporary_channel_settings()
+        except asyncio.CancelledError:
+            raise
+        except sqlite3.Error as exc:
+            _task_iteration_failed("temporary-setting-restore", exc)
+            logger.warning("temporary restoration scan failed", extra={"error_category": type(exc).__name__})
+            await asyncio.sleep(10)
+            continue
+        for item in pending:
+            try:
                 channel = bot.get_channel(item["channel_id"])
                 if not channel:
                     continue
@@ -2619,8 +2850,21 @@ async def _temporary_setting_restore_loop():
                 # explicit manual reconciliation; new writes use CHAOS below.
                 if item["setting"] == "slowmode":
                     continue
-        except Exception as exc:
-            log_error("temporary_setting_restore_loop", exc)
+            except asyncio.CancelledError:
+                raise
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("malformed temporary restoration receipt", extra={
+                    "error_category": type(exc).__name__,
+                })
+            except Exception as exc:
+                logger.exception("unexpected temporary restoration failure", extra={
+                    "error_category": type(exc).__name__,
+                })
+        _task_progress(
+            "temporary-setting-restore",
+            last_scan=time.time(),
+            pending_restorations=len(pending),
+        )
         await asyncio.sleep(10)
 
 # ── Server events ─────────────────────────────────────────────────────────────
@@ -3966,50 +4210,89 @@ async def _duo_autoplay_loop():
     await asyncio.sleep(20)
     while not bot.is_closed():
         try:
-            for session in await mem.get_due_duo_sessions(BOT_NAME):
+            sessions = await mem.get_due_duo_sessions(BOT_NAME)
+        except asyncio.CancelledError:
+            raise
+        except sqlite3.Error as exc:
+            _task_iteration_failed("duo-autoplay", exc)
+            logger.warning("duo session query failed", extra={"error_category": type(exc).__name__})
+            await asyncio.sleep(8)
+            continue
+        for session in sessions:
+            try:
                 if session.get("mode", "").startswith(("vc:", "server:")):
                     continue  # Structured VC turns belong to the existing voice controller.
-                try:
-                    channel = bot.get_channel(session["channel_id"])
-                    if not channel:
+                channel = bot.get_channel(session["channel_id"])
+                if not channel:
+                    continue
+                target_message = None
+                interview_mode = session.get("mode") in {"interview", "welcome_interview"}
+                participant_id = int(session.get("initiator_user_id") or 0)
+                async for candidate in channel.history(limit=8):
+                    if candidate.author.bot:
                         continue
-                    target_message = None
-                    interview_mode = session.get("mode") in {"interview", "welcome_interview"}
-                    participant_id = int(session.get("initiator_user_id") or 0)
-                    async for candidate in channel.history(limit=8):
-                        if candidate.author.bot:
-                            continue
-                        if interview_mode and candidate.author.id != participant_id:
-                            continue
-                        target_message = candidate
-                        break
-                    if not target_message:
+                    if interview_mode and candidate.author.id != participant_id:
                         continue
-                    await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
-                    user = await mem.get_user(target_message.author.id)
-                    autoplay_prompt = _duo_autoplay_prompt(session)
-                    if interview_mode:
-                        autoplay_prompt += f"\nPARTICIPANT_LATEST_ANSWER: {target_message.content[:500]}"
-                    reply = await get_response(
-                        target_message.author.id,
-                        channel.id,
-                        autoplay_prompt,
-                        user,
-                        target_message.author.display_name,
-                        target_message.author.mention,
-                        extra_context="DUO_AUTOPLAY: the other bot already spoke. Follow up naturally, keep it brief, and do not re-explain their point.",
-                        channel_obj=channel,
-                        is_dm=not bool(getattr(channel, "guild", None)),
-                    )
-                    await channel.send(reply)
-                    await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
-                    if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
-                        await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
-                    await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
-                except Exception as e:
-                    log_error("duo_autoplay_session", e)
-        except Exception as e:
-            log_error("duo_autoplay_loop", e)
+                    target_message = candidate
+                    break
+                if not target_message:
+                    continue
+                await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
+                user = await mem.get_user(target_message.author.id)
+                autoplay_prompt = _duo_autoplay_prompt(session)
+                if interview_mode:
+                    autoplay_prompt += f"\nPARTICIPANT_LATEST_ANSWER: {target_message.content[:500]}"
+                reply = await get_response(
+                    target_message.author.id,
+                    channel.id,
+                    autoplay_prompt,
+                    user,
+                    target_message.author.display_name,
+                    target_message.author.mention,
+                    extra_context="DUO_AUTOPLAY: the other bot already spoke. Follow up naturally, keep it brief, and do not re-explain their point.",
+                    channel_obj=channel,
+                    is_dm=not bool(getattr(channel, "guild", None)),
+                )
+                await channel.send(reply)
+                await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
+                if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
+                    await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
+                await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
+            except asyncio.CancelledError:
+                raise
+            except (discord.Forbidden, discord.NotFound) as exc:
+                logger.warning("duo autoplay target unavailable", extra={
+                    "channel_id": session.get("channel_id"), "error_category": type(exc).__name__,
+                })
+            except discord.HTTPException as exc:
+                logger.warning("duo autoplay Discord failure", extra={
+                    "channel_id": session.get("channel_id"), "error_category": type(exc).__name__,
+                })
+            except sqlite3.Error as exc:
+                logger.warning("duo autoplay persistence failure", extra={
+                    "channel_id": session.get("channel_id"), "error_category": type(exc).__name__,
+                })
+            except (KeyError, TypeError, ValueError) as exc:
+                channel_id = session.get("channel_id") if isinstance(session, dict) else None
+                logger.warning("malformed duo session skipped", extra={
+                    "channel_id": channel_id, "error_category": type(exc).__name__,
+                })
+                if isinstance(channel_id, int):
+                    try:
+                        await mem.clear_duo_session(channel_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except sqlite3.Error as cleanup_exc:
+                        logger.warning("malformed duo session cleanup failed", extra={
+                            "channel_id": channel_id,
+                            "error_category": type(cleanup_exc).__name__,
+                        })
+            except Exception as exc:
+                logger.exception("unexpected duo autoplay session failure", extra={
+                    "channel_id": session.get("channel_id") if isinstance(session, dict) else None,
+                    "error_category": type(exc).__name__,
+                })
+        _task_progress("duo-autoplay", session_count=len(sessions), last_scan=time.time())
         await asyncio.sleep(8)
 
 
@@ -5739,6 +6022,59 @@ async def selfgoals_cmd(ctx):
         for goal in goals
     ) or "No active goals. Silence can be a decision too."
     await safe_reply(ctx, text[:1900])
+
+
+def _task_age(timestamp: float | None, *, now: float | None = None) -> str:
+    if not timestamp:
+        return "never"
+    age = max(0, int((now or time.time()) - timestamp))
+    if age < 60:
+        return f"{age}s"
+    if age < 3600:
+        return f"{age // 60}m"
+    return f"{age // 3600}h"
+
+
+@bot.command(name="tasks", aliases=["taskhealth"])
+async def tasks_cmd(ctx):
+    """Owner-only sanitized worker health diagnostic."""
+    if not _owner_only(ctx):
+        await safe_reply(ctx, "That diagnostic isn't for you.")
+        return
+    try:
+        now = time.time()
+        pending_restorations = len(await mem.get_due_temporary_channel_settings())
+        lines = [f"Supervisor: `{_task_supervisor.state}`"]
+        for health in _task_supervisor.snapshot():
+            next_restart = health["next_restart_at"]
+            restart_text = "-"
+            if next_restart:
+                restart_text = f"{max(0, int(next_restart - now))}s"
+            lines.append(
+                f"• `{health['name']}` {health['state']} "
+                f"{'critical' if health['critical'] else 'optional'} "
+                f"restarts={health['restarts']} consecutive={health['consecutive_failures']} "
+                f"progress={_task_age(health['last_progress_at'], now=now)} "
+                f"error={health['last_error_category'] or '-'} next={restart_text}"
+            )
+        for name, loop in (
+            ("status-rotation", status_rotation),
+            ("reminder-checker", reminder_checker),
+            ("daily-reset", daily_reset),
+        ):
+            state = "RUNNING" if loop.is_running() else ("FAILED" if loop.failed() else "STOPPED")
+            lines.append(f"• `{name}` {state} discord-task-loop iteration={loop.current_loop}")
+        restoration = _task_supervisor.health("temporary-setting-restore")
+        if pending_restorations and (not restoration or restoration.state != "RUNNING"):
+            lines.append(
+                f"⚠ restoration worker unhealthy with {pending_restorations} pending legacy receipt(s)."
+            )
+        await safe_reply(ctx, "\n".join(lines)[:1900])
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("task health diagnostic failed", extra={"error_category": type(exc).__name__})
+        await safe_reply(ctx, "Task health is unavailable. Check the owner log.")
 
 
 @bot.command(name="forceheartbeat")

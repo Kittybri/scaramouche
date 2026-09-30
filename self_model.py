@@ -772,7 +772,7 @@ class SelfModelStore:
     async def finish_action(self, action_id: int, status: str, *,
                             details: dict[str, Any] | None = None,
                             error_category: str | None = None) -> bool:
-        if status not in {"completed", "failed", "skipped"}:
+        if status not in {"completed", "delivered", "failed", "skipped"}:
             raise ValueError(f"invalid terminal action status: {status}")
         updates = ["status=?", "error_category=?"]
         params: list[Any] = [status, error_category]
@@ -791,7 +791,7 @@ class SelfModelStore:
                                  channel_id: int | None = None) -> bool:
         # A pending reservation is intentionally conservative: after a process
         # crash we would rather skip one message than send it twice.
-        clauses = ["action_type=?", "status IN ('pending','completed')", "ts>?"]
+        clauses = ["action_type=?", "status IN ('pending','delivered','completed')", "ts>?"]
         params: list[Any] = [action_type, time.time() - seconds]
         if user_id is not None:
             clauses.append("related_user_id=?")
