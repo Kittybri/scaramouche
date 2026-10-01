@@ -182,7 +182,7 @@ Legend: `S` = Scaramouche, `W` = Wanderer, `B` = both.
 | Validation | Result | Final evidence |
 |---|---|---|
 | Scaramouche full suite | PASS | 664 passed, 1 skipped, 1 LibreSSL warning |
-| Wanderer full suite | PASS | 212 passed, 1 skipped |
+| Wanderer full suite | PASS | 212 passed, 1 skipped, 1 pytest import-rewrite warning from the reused validation environment |
 | Focused Scaramouche message pipeline | PASS | 28 passed |
 | Focused Wanderer release hardening | PASS | 12 passed before the privacy addition; new privacy regression also passed in the full suite |
 | Compile checks | PASS | `bot.py` and `memory.py` compiled in both repositories |
