@@ -492,6 +492,31 @@ async def test_deleted_attachment_stops_media_owner_cleanly(runtime, monkeypatch
 
 
 @async_test
+async def test_image_vision_uses_groq_when_primary_provider_is_unconfigured(runtime, monkeypatch):
+    monkeypatch.setattr(
+        runtime,
+        "ask_character_bot",
+        Mock(side_effect=RuntimeError("Missing XAI_API_KEY")),
+    )
+    groq_response = NS(choices=[NS(message=NS(content="Blue and gold. Predictable, but adequate."))])
+    groq_call = Mock(return_value=groq_response)
+    monkeypatch.setattr(runtime.ai, "call_with_retry", groq_call)
+
+    reply = await runtime._vision_image_reply(
+        prompt="Describe the image.",
+        system="Stay in character.",
+        image_bytes=b"synthetic-image",
+        mime_type="image/png",
+    )
+
+    assert reply == "Blue and gold. Predictable, but adequate."
+    assert groq_call.call_args.kwargs["model"] == runtime.GROQ_VISION_MODEL
+    user_content = groq_call.call_args.kwargs["messages"][1]["content"]
+    assert user_content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert user_content[1]["text"] == "Describe the image."
+
+
+@async_test
 async def test_voice_failure_falls_back_to_text_and_records_delivery(runtime, monkeypatch):
     message = fake_message(runtime, content="send me a voice")
     message.reply.return_value = NS(id=103, content="reply", author=NS(id=999))

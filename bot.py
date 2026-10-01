@@ -566,9 +566,11 @@ async def _vision_image_reply(
     mime_type: str,
     max_chars: int = 900,
 ) -> str:
+    import base64
+
     loop = asyncio.get_event_loop()
 
-    def _run():
+    def _run_primary():
         return ask_character_bot(
             BOT_NAME,
             prompt,
@@ -578,7 +580,35 @@ async def _vision_image_reply(
             temperature=0.35,
         )
 
-    reply = await loop.run_in_executor(None, _run)
+    try:
+        reply = await loop.run_in_executor(None, _run_primary)
+    except asyncio.CancelledError:
+        raise
+    except Exception as primary_exc:
+        logger.warning(
+            "primary vision provider unavailable; using Groq vision fallback",
+            extra={"subsystem": "image_vision", "error_category": type(primary_exc).__name__},
+        )
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        vision_content = [
+            {"type": "image_url", "image_url": {
+                "url": f"data:{mime_type};base64,{encoded}",
+            }},
+            {"type": "text", "text": prompt},
+        ]
+
+        def _run_fallback():
+            return ai.call_with_retry(
+                model=GROQ_VISION_MODEL,
+                max_completion_tokens=400,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": vision_content},
+                ],
+            )
+
+        response = await loop.run_in_executor(None, _run_fallback)
+        reply = response.choices[0].message.content if response.choices else ""
     return strip_narration((reply or "").strip())[:max_chars]
 
 
@@ -3778,12 +3808,19 @@ async def _handle_image_media(message, interaction, prepared, image):
         return
     except Exception as exc:
         _pipeline_error("image_vision_provider", exc, message, interaction, subsystem="provider")
-        if random.random() < 0.4:
+        try:
             comment = await qai(
                 f"{message.author.display_name} posted an image. "
                 "React — dismissive or reluctantly intrigued. 1 sentence.", 100,
             )
-            await message.reply(strip_narration(comment))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            comment = ""
+        comment = strip_narration(comment or "").strip() or (
+            "The image is refusing to cooperate. Describe the important part, and I'll judge it properly."
+        )
+        await message.reply(comment)
         return
     if not reply:
         return
