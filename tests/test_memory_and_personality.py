@@ -154,6 +154,10 @@ def test_forget_removes_matching_future_prompt_sources_and_full_reset(tmp_path):
             "INSERT INTO relationship_milestones(scope,marker,note,ts) VALUES(?,?,?,?)",
             ("test:user:80", "other", secret, time.time()),
         )
+        db.execute(
+            "INSERT INTO scene_state(channel_id,situation,present,updated_ts) VALUES(?,?,?,?)",
+            (80, secret, "Eight", time.time()),
+        )
         db.commit()
     with sqlite3.connect(memory.shared_db_path) as db:
         db.execute(
@@ -167,6 +171,7 @@ def test_forget_removes_matching_future_prompt_sources_and_full_reset(tmp_path):
         db.commit()
 
     removed = run(memory.forget_memory_matches(8, secret))
+    removed["scene"] = run(memory.forget_scene_state_matches(80, secret))
     assert sum(removed.values()) >= 5
     assert run(memory.get_history(8, 80)) == []
     user = run(memory.get_user(8))
@@ -175,6 +180,9 @@ def test_forget_removes_matching_future_prompt_sources_and_full_reset(tmp_path):
     assert user["last_statement"] is None
     assert user["conflict_summary"] is None
     assert user["conflict_open"] is False
+    scene = run(memory.get_scene_state(80))
+    assert scene["situation"] == ""
+    assert scene["present"] == "Eight"
     with sqlite3.connect(memory.db_path) as db:
         assert db.execute("SELECT COUNT(*) FROM relationship_milestones WHERE scope='test:user:8'").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM relationship_milestones WHERE scope='test:user:80'").fetchone()[0] == 1

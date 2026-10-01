@@ -635,6 +635,40 @@ class Memory:
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
             await db.commit()
 
+    async def forget_scene_state_matches(self, channel_id: int, query: str) -> int:
+        """Remove matching scene fields without discarding unrelated channel context."""
+        needle = (query or "").strip().lower()
+        if not needle:
+            return 0
+        columns = (
+            "location", "situation", "last_beat", "emotional_temp",
+            "objective", "present", "important_prop",
+        )
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                f"SELECT {','.join(columns)} FROM scene_state WHERE channel_id=?",
+                (channel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return 0
+            values = [value or "" for value in row]
+            matched = [needle in value.lower() for value in values]
+            removed = sum(matched)
+            if not removed:
+                return 0
+            scrubbed = ["" if is_match else value for value, is_match in zip(values, matched)]
+            if any(scrubbed):
+                assignments = ",".join(f"{column}=?" for column in columns)
+                await db.execute(
+                    f"UPDATE scene_state SET {assignments}, updated_ts=? WHERE channel_id=?",
+                    (*scrubbed, time.time(), channel_id),
+                )
+            else:
+                await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
+            await db.commit()
+        return removed
+
     async def add_memory_event(self, user_id: int, kind: str, memory: str, weight: int = 1):
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute(
