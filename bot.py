@@ -126,6 +126,8 @@ WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
 NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT","scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID","0") or "0")  # Wanderer bot ID
+BOT_RELEASE_SHA    = re.sub(r"[^0-9a-f]", "", os.getenv("BOT_RELEASE_SHA", "").lower())[:40] or "unknown"
+BOT_RELEASE_LABEL  = re.sub(r"[^A-Za-z0-9._/-]", "", os.getenv("BOT_RELEASE_LABEL", ""))[:80] or "unknown"
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -6668,6 +6670,21 @@ async def persistence_cmd(ctx):
         f"pending={shared['pending']} error={shared['error'] or 'none'} | "
         f"deletion_jobs_pending={pending} | caches="
         + ",".join(f"{key}:{value}" for key, value in caches.items())
+    ))
+
+
+@bot.command(name="build")
+async def build_cmd(ctx):
+    """Owner-only release identity without filesystem or secret disclosure."""
+    if not is_owner_user(ctx.author.id):
+        await safe_reply(ctx, "That diagnostic is owner-only.")
+        return
+    schema = await mem.schema_status()
+    local, shared = schema["local"], schema["shared"]
+    await safe_reply(ctx, (
+        f"Build: bot={BOT_NAME} release={BOT_RELEASE_LABEL} sha={BOT_RELEASE_SHA} | "
+        f"schema local={local['version']}/{local['current']} "
+        f"shared={shared['version']}/{shared['current']}"
     ))
 
 if __name__=="__main__":
