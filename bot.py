@@ -1175,10 +1175,63 @@ async def _find_romance_target(channel) -> discord.Member | None:
     return None
 
 
-async def _handle_partner_message(message) -> bool:
+async def _partner_message_target_info(message) -> dict:
+    """Describe who owns a partner-bot message before optional banter runs."""
+    addressed_me = any(
+        getattr(member, "id", 0) == getattr(getattr(bot, "user", None), "id", 0)
+        for member in (getattr(message, "mentions", None) or [])
+    )
+    human_targets: list[str] = []
+    ref_msg = getattr(getattr(message, "reference", None), "resolved", None)
+    if ref_msg is None and getattr(getattr(message, "reference", None), "message_id", None):
+        try:
+            ref_msg = await message.channel.fetch_message(message.reference.message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            ref_msg = None
+    ref_author = getattr(ref_msg, "author", None)
+    if getattr(ref_author, "id", 0) == getattr(getattr(bot, "user", None), "id", 0):
+        addressed_me = True
+    elif ref_author is not None and not getattr(ref_author, "bot", False):
+        human_targets.append(
+            getattr(ref_author, "display_name", None)
+            or getattr(ref_author, "name", "someone")
+        )
+    for member in (getattr(message, "mentions", None) or []):
+        if not getattr(member, "bot", False):
+            name = getattr(member, "display_name", None) or getattr(member, "name", "someone")
+            if name not in human_targets:
+                human_targets.append(name)
+    duo = await mem.get_duo_session(message.channel.id)
+    duo_expected = bool(
+        duo
+        and duo.get("awaiting_bot") == BOT_NAME
+        and int(duo.get("autoplay_remaining", 0) or 0) > 0
+    )
+    return {
+        "addressed_me": addressed_me,
+        "human_targets": human_targets,
+        "duo_expected": duo_expected,
+    }
+
+
+async def _handle_partner_message(message, target_info: dict | None = None) -> bool:
     if message.content.startswith("[Server game]"):
         return True  # Structured server events never trigger free-running bot replies.
     try:
+        target_info = target_info or {}
+        # Human-targeted replies and rich command/media output keep ownership of
+        # their interaction.  Optional rivalry is allowed only for an explicit
+        # address, an awaited duo turn, or genuinely unowned channel speech.
+        if not target_info.get("addressed_me") and not target_info.get("duo_expected"):
+            if target_info.get("human_targets"):
+                return True
+            if (
+                getattr(message, "embeds", None)
+                or getattr(message, "attachments", None)
+                or getattr(message, "components", None)
+                or getattr(message, "stickers", None)
+            ):
+                return True
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         duo = await mem.get_duo_session(message.channel.id)
         if duo and duo.get("mode") in {"intervention", "finish", "goodcop", "contradict", "protective", "interview", "welcome_interview", "trade"}:
@@ -3244,7 +3297,7 @@ async def _dispatch_message(message):
         return
     if message.author.bot:
         if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID and not message.content.startswith("[Server game]"):
-            await _handle_partner_message(message)
+            await _handle_partner_message(message, target_info=await _partner_message_target_info(message))
         return
     if message.id in _processed_msgs:
         return

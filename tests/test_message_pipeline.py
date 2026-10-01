@@ -143,6 +143,38 @@ async def test_pending_privacy_deletion_blocks_new_memory(runtime, monkeypatch):
     assert "won't create new memory" in message.reply.await_args.args[0]
 
 
+@async_test
+async def test_partner_rich_command_output_does_not_trigger_banter(runtime, monkeypatch):
+    message = NS(
+        content="command result", embeds=[object()], attachments=[], components=[],
+        stickers=[], channel=NS(id=20), guild=NS(id=30),
+    )
+    observe = AsyncMock()
+    monkeypatch.setattr(runtime, "_observe_partner_message", observe)
+
+    await runtime._handle_partner_message(message, target_info={
+        "addressed_me": False, "duo_expected": False, "human_targets": [],
+    })
+
+    observe.assert_not_awaited()
+
+
+@async_test
+async def test_partner_human_targeted_reply_does_not_trigger_banter(runtime, monkeypatch):
+    message = NS(
+        content="answer for the user", embeds=[], attachments=[], components=[],
+        stickers=[], channel=NS(id=20), guild=NS(id=30),
+    )
+    observe = AsyncMock()
+    monkeypatch.setattr(runtime, "_observe_partner_message", observe)
+
+    await runtime._handle_partner_message(message, target_info={
+        "addressed_me": False, "duo_expected": False, "human_targets": ["Kittybri"],
+    })
+
+    observe.assert_not_awaited()
+
+
 async def run_coordinator(runtime, monkeypatch, *, media=False, optional=False):
     message = fake_message(runtime)
     item = prepared()
