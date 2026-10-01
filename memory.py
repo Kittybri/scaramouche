@@ -19,8 +19,20 @@ from db_migrations import (
     LOCAL_MIGRATIONS, SHARED_MIGRATIONS, migration_status, run_migrations,
 )
 
-# Use Railway volume if available, otherwise current directory
-_data_dir = "/data" if os.path.isdir("/data") else "."
+# Prefer an explicitly configured deployment directory. Falling back to /data
+# preserves Railway compatibility; local development still uses the cwd.
+def _resolve_data_dir() -> str:
+    configured = (os.getenv("MEMORY_DATA_DIR") or os.getenv("BOT_DATA_DIR") or "").strip()
+    if configured:
+        configured = os.path.abspath(os.path.expanduser(configured))
+        os.makedirs(configured, exist_ok=True)
+        return configured
+    if os.path.isdir("/data"):
+        return "/data"
+    return "."
+
+
+_data_dir = _resolve_data_dir()
 DB_PATH = os.path.join(_data_dir, "scaramouche.db")
 SHARED_DB_PATH = os.path.join(_data_dir, "shared_state.db")
 log = logging.getLogger(__name__)
