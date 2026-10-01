@@ -1,8 +1,10 @@
 # Live Staging Gate A Validation Record
 
-Status: **STAGING_GATE_A_BLOCKED**
+Status: **STAGING_GATE_A_PASS**
 
-Block reason: **BLOCKED_BY_APPROVAL_AND_TEST_IDENTITY** — all safe, pre-approved live checks are complete. Temporary Discord permission removal and server-chaos mutations still require action-time approval, and no second disposable Discord user was available for destructive cross-user/full-reset tests.
+Gate decision: all authorized Gate A permission, second-user, privacy-deletion,
+reversible-chaos, cross-bot recovery, and cleanup checks are complete. No unresolved
+BLOCKER or HIGH code defect remains. Voice Gate B was not started.
 
 Record window: **2026-09-30 through 2026-10-01 (America/Los_Angeles)**
 
@@ -28,10 +30,10 @@ integrations, paid resources, and PR merges were not started.
 | Local databases | `data-gate-a-6eab863-0d36a90/scaramouche.db` and `wanderer.db` |
 | Shared database | Both services resolve the same local `shared_state.db` |
 | Services | `scaramouche-staging.service`, `wanderer-staging.service` |
-| Final live PIDs | Scaramouche `467186`; Wanderer `467187` |
-| Final service state | Both active, `NRestarts=0`; about 68 MiB and 78 MiB respectively at final inspection |
+| Final live PIDs | Scaramouche `494903`; Wanderer `494904` |
+| Final service state | Both active, `NRestarts=0`; about 68 MiB and 77 MiB respectively at final inspection |
 | Final database state | All three databases: `PRAGMA quick_check = ok` |
-| Risk controls | Voice, home, companion, real integrations, proactive generic traffic, and chaos stayed disabled |
+| Risk controls | Voice, home, companion, real integrations, and proactive generic traffic stayed disabled. Chaos was enabled only for the authorized allowlisted tests and was then removed from both effective configs. |
 
 The unrelated failed Cloudflare `Workers Builds` check remains an external
 repository/account integration issue. Neither Python Discord repository defines
@@ -75,6 +77,24 @@ a Cloudflare deployment, so it is not a bot-runtime failure.
 - **E12 — Final health:** sanitized final-candidate logs contain clean gateway
   connections, migrations, ready events, and no traceback or lock storm. All three
   databases passed final integrity checks.
+- **E13 — Permission matrix:** both bot roles were temporarily reduced from their
+  recorded Administrator value and tested against role-specific channel denies for
+  View Channel, Send Messages, Read Message History, Embed Links, Attach Files, and
+  Add Reactions. Each overwrite was removed before the next test. Final role values
+  are both `8`; every inspected channel has zero overwrites.
+- **E14 — Second-user isolation and deletion:** disposable user `kittybi`
+  (`kittybri_57868`, ID `1223350178883571846`) created and retrieved synthetic
+  memories in both bots. The primary user had zero marker hits and was rejected from
+  the disposable user's confirmation button. Both authorized resets completed; the
+  disposable user then had zero scoped rows and zero marker hits while every recorded
+  primary-user row count remained unchanged. The account remains in the guild.
+- **E15 — Chaos and recovery:** Scaramouche created an allowlisted topic receipt;
+  Wanderer observed the shared pending receipt and shared cooldown state. A forced
+  cross-bot restoration returned the topic to its original value. A later receipt
+  remained applied while Scaramouche was stopped, then restored on startup. A newer
+  administrator nickname was preserved with result `manual_change_preserved` and was
+  explicitly returned to the recorded original. Temporary configs and synthetic
+  chaos rows were removed; zero restoration receipts remain pending.
 
 ## Findings and repairs
 
@@ -82,8 +102,8 @@ a Cloudflare deployment, so it is not a bot-runtime failure.
 |---|---|---|---|
 | ENV-001 | ENVIRONMENT (resolved) | Original services were unversioned legacy flat bundles. | Exact immutable candidates were deployed. |
 | ENV-002 | ENVIRONMENT (resolved) | Original bots used different local `shared_state.db` files. | Candidates were co-located on one local shared file. |
-| ENV-003 | ENVIRONMENT (open) | No second disposable Discord user is available. | Cross-user and destructive full-reset live tests remain blocked. |
-| ENV-004 | APPROVAL (open) | Permission-removal and chaos mutations require fresh action-time approval. | Keep disabled until the owner explicitly approves the exact reversible mutations. |
+| ENV-003 | ENVIRONMENT (resolved) | A second disposable Discord user was initially unavailable. | `kittybi` was used only for the authorized isolation/deletion checks and remains in the guild. |
+| ENV-004 | APPROVAL (resolved) | Permission-removal and chaos mutations initially lacked action-time approval. | Owner authorized the exact reversible matrix and cosmetic checks; all changes were restored and verified. |
 | ENV-005 | MEDIUM (external) | Both PRs show an unrelated failed Cloudflare Workers account check. | Correct or disconnect that external repository integration. |
 | ENV-006 | ENVIRONMENT (resolved) | The first micro host became unreachable under the co-located runtime. | Moved to the prepared existing fallback host; final services remained stable. |
 | SCARA-001 | HIGH (fixed) | `MEMORY_DATA_DIR` was ignored, risking split state. | Data-directory resolution fixed and regressed. |
@@ -114,28 +134,28 @@ Legend: `S` = Scaramouche, `W` = Wanderer, `B` = both.
 | 7 | Both candidates online | LIVE PASS | B | Both online simultaneously; no message loop |
 | 8 | Scaramouche DM | LIVE PASS | S | One brief in-character acknowledgement |
 | 9 | Wanderer DM | LIVE PASS | W | One brief in-character acknowledgement |
-| 10 | Cross-user isolation | BLOCKED | B | Second disposable user unavailable; owner data was not repurposed |
+| 10 | Cross-user isolation | LIVE PASS | B | `kittybi` markers were scoped only to user B; primary-user output and database rows contained no marker |
 | 11 | Mention Scaramouche | LIVE PASS | S | Only Scaramouche answered |
 | 12 | Mention Wanderer | LIVE PASS | W | Only Wanderer answered |
 | 13 | Reply attribution | LIVE PASS | B | Reply to Wanderer produced no Scaramouche response |
 | 14 | Plain conversation eligibility | LIVE PASS | B | Unaddressed control text produced no unintended duplicate response |
 | 15 | Harmless command per bot | LIVE PASS | B | Help and build commands returned correct owner output |
 | 16 | Command plus reply | LIVE PASS | B | Owned command and reply routes did not trigger partner continuation |
-| 17 | Command plus attachment | BLOCKED | B | Browser uploaded attachment separately; combined command case not observed |
+| 17 | Command plus attachment | LIVE NOT RUN (non-gating) | B | Browser uploaded the attachment separately; this combination was not required by the authorized remainder |
 | 18 | Image attachment | LIVE PASS | B | Both bots accurately described the synthetic image after fixes |
 | 19 | Text attachment | LIVE PASS | B | Preview/reaction completed; no crash or error |
-| 20 | Unsupported/oversized attachment | BLOCKED | B | Browser chooser would not select custom unsupported extension |
+| 20 | Unsupported/oversized attachment | TOOLING BLOCKED (non-gating) | B | Browser chooser would not select the custom unsupported extension; ordinary image/text attachment paths passed |
 | 21 | Scaramouche serious arbitration | LIVE PASS | S | Calm actionable response; no joke interception |
 | 22 | Wanderer serious arbitration | LIVE PASS | W | Patched retest gave supportive user-facing response |
 | 23 | Disposable credential guard | LIVE PASS | B | Warning responses only; retest marker absent from all databases |
-| 24 | View Channel removed | BLOCKED | B | Requires fresh action-time permission-change approval |
-| 25 | Send Messages removed | BLOCKED | B | Requires fresh action-time permission-change approval |
-| 26 | Read Message History removed | BLOCKED | B | Requires fresh action-time permission-change approval |
-| 27 | Embed Links removed | BLOCKED | B | Requires fresh action-time permission-change approval |
-| 28 | Attach Files removed | BLOCKED | B | Requires fresh action-time permission-change approval |
-| 29 | Add Reactions removed | BLOCKED | B | Requires fresh action-time permission-change approval |
-| 30 | Gateway/network reconnect | BLOCKED | B | Explicit host-network interruption was not induced |
-| 31 | Repeated ready event | BLOCKED | B | Process restarts passed; same-process repeated-ready not induced |
+| 24 | View Channel removed | LIVE PASS | B | Target bot could not fetch/see the channel; overwrite removed and help command recovered before continuation |
+| 25 | Send Messages removed | LIVE PASS | B | Discord returned missing-permission behavior without a service crash; overwrite removed and help command recovered |
+| 26 | Read Message History removed | LIVE PASS | B | Discord returned HTTP 200 with an empty message list under deny; history returned after restore |
+| 27 | Embed Links removed | LIVE PASS | B | Embed send returned HTTP 403 for both targets; each overwrite was removed immediately |
+| 28 | Attach Files removed | LIVE PASS | B | Multipart attachment send returned HTTP 403 for both targets; each overwrite was removed immediately |
+| 29 | Add Reactions removed | LIVE PASS | B | Reaction add returned HTTP 403 for both targets; one rate-limited setup retry was cleaned up before the passing retry |
+| 30 | Gateway/network reconnect | LIVE NOT RUN (non-gating) | B | Host-network interruption was outside the authorized scope; controlled service reconnects passed |
+| 31 | Repeated ready event | AUTOMATED PASS / LIVE NOT INDUCED | B | Lifecycle regressions passed; same-process duplicate-ready injection was not necessary for Gate A closure |
 | 32 | Restart Scaramouche only | LIVE PASS | S | Only Scaramouche PID changed and reconnected |
 | 33 | Restart Wanderer only | LIVE PASS | W | Only Wanderer PID changed and reconnected |
 | 34 | Restart both | LIVE PASS | B | Both PIDs changed and both reconnected cleanly |
@@ -143,17 +163,17 @@ Legend: `S` = Scaramouche, `W` = Wanderer, `B` = both.
 | 36 | Bot relationship write | LIVE PASS | B | Expected local/shared rows observed from the duo interaction |
 | 37 | Concurrent ordinary activity | LIVE PASS | B | Both processed live activity together; no persistent lock |
 | 38 | Seed disposable privacy state | LIVE PASS | B | Unique synthetic memories created and visible |
-| 39 | Normal full deletion | BLOCKED | B | Destructive full reset not run against owner's real profile; no disposable user |
-| 40 | Partial deletion failure | AUTOMATED PASS / LIVE BLOCKED | B | Retryable coordinator test passed; live fault injection not performed |
-| 41 | Resume deletion | AUTOMATED PASS / LIVE BLOCKED | B | Resume-only-unfinished-stage test passed; no live pending job created |
-| 42 | Enable chaos explicitly | BLOCKED | B | Requires fresh action-time mutation approval |
-| 43 | Reversible cosmetic mutation | BLOCKED | B | Requires fresh action-time mutation approval |
-| 44 | Restart restoration | BLOCKED | B | No chaos receipt created without approval |
-| 45 | Newer admin edit protection | BLOCKED | B | No cosmetic target mutated without approval |
-| 46 | Interrupted restoration | BLOCKED | B | No chaos receipt created without approval |
-| 47 | Two-bot chaos ownership | BLOCKED | B | Chaos intentionally remained disabled |
-| 48 | Disable chaos and verify clean state | LIVE PASS | B | Chaos stayed disabled; no pending mutation receipt |
-| 49 | Task health after tests | LIVE PASS | B | Both active, bounded memory/tasks, `NRestarts=0` |
+| 39 | Normal full deletion | LIVE PASS | B | Both user-B reset confirmations completed; primary wrong-user click was rejected; all user-B rows/markers reached zero |
+| 40 | Partial deletion failure | AUTOMATED PASS / LIVE NOT INDUCED | B | Retryable coordinator test passed; destructive live fault injection was unnecessary for Gate A closure |
+| 41 | Resume deletion | AUTOMATED PASS / LIVE NOT INDUCED | B | Resume-only-unfinished-stage test passed; no live pending job was created |
+| 42 | Enable chaos explicitly | LIVE PASS | B | Temporary config enabled only the private guild, `#commands`, and one cosmetic mutation at a time |
+| 43 | Reversible cosmetic mutation | LIVE PASS | S | Allowlisted topic/nickname mutations created write-ahead receipts; original values were restored |
+| 44 | Restart restoration | LIVE PASS | S | Applied topic remained while Scaramouche was stopped and restored after startup recovery |
+| 45 | Newer admin edit protection | LIVE PASS | S | Newer nickname stayed unchanged; receipt ended `superseded/manual_change_preserved` |
+| 46 | Interrupted restoration | LIVE PASS | S | Service was inactive with an applied due receipt; restart finalized it as `restored` |
+| 47 | Two-bot chaos ownership | LIVE PASS | B | Wanderer reported Scaramouche's shared pending receipt/budget and safely requested cross-bot restoration |
+| 48 | Disable chaos and verify clean state | LIVE PASS | B | Original env files restored byte-for-byte; effective configs contain no chaos section, zero chaos rows/pending receipts |
+| 49 | Task health after tests | LIVE PASS | B | Both active at final PIDs `494903`/`494904`, bounded memory, `NRestarts=0` |
 | 50 | Persistence health after tests | LIVE PASS | B | All three final databases returned `quick_check=ok` |
 | 51 | Sanitized log review | LIVE PASS | B | Final logs clean; no final-candidate traceback or lock storm |
 
@@ -174,17 +194,38 @@ Legend: `S` = Scaramouche, `W` = Wanderer, `B` = both.
 
 - Synthetic fake-credential, disposable-memory, and duo markers were removed from
   the staging databases after verification.
+- The second disposable user's two synthetic memory markers have zero hits in every
+  relevant table across all three databases. User-B scoped rows are zero; the
+  primary user's recorded counts remain exactly `1/13/3/2/1` in Scaramouche and
+  `1/17/4/3/1` in Wanderer for users/messages/topics/memory/preferences.
 - All three databases passed integrity checks after cleanup.
 - No real password, token, or private credential was placed in Discord test text.
-- No Discord permissions or guild cosmetics were changed.
+- Both bot roles are restored to permission value `8`. The four inspected channels
+  have `topic=None`, slowmode `0`, and zero overwrites. Scaramouche's nickname is
+  restored to `None`.
+- The temporary server-chaos configs were restored to their original byte hashes,
+  all nine synthetic chaos state/audit rows were removed, and the final shared
+  database contains zero `chaos:%` rows and zero pending restoration receipts.
 - No paid cloud resource was created, and no PR was merged.
 - Voice Gate B and real integrations remain out of scope.
 
+## Service restart accounting
+
+- Final unexpected/automatic systemd restart count: Scaramouche `NRestarts=0`,
+  Wanderer `NRestarts=0`.
+- The earlier restart matrix exercised Scaramouche-only, Wanderer-only, and dual
+  restarts.
+- This authorized permission/chaos continuation added five controlled Scaramouche
+  restarts and three controlled Wanderer restarts: temporary config activation,
+  duration/config refresh, Scaramouche interruption/startup recovery, nickname-test
+  config refresh, and final original-config restoration as applicable.
+
 ## Release decision
 
-The exercised Gate A code is **READY_FOR_THE_REMAINING_STAGING_CHECKS**. It is not
-yet a full `STAGING_GATE_A_PASS` because tests 10, 17, 20, 24–31, 39–47 still lack
-applicable live evidence. The permission and chaos rows may proceed only after the
-owner explicitly approves those exact reversible Discord mutations at action time.
+The exercised candidates satisfy **Live Staging Gate A**. The only unperformed
+items are non-gating environment/tooling combinations (combined command+attachment,
+unsupported-extension selection, deliberate host-network interruption, and a
+same-process duplicate-ready injection). They did not expose or leave an unresolved
+BLOCKER/HIGH defect, and their covered automated/runtime equivalents passed.
 
-**Final state: `STAGING_GATE_A_BLOCKED` (`BLOCKED_BY_APPROVAL_AND_TEST_IDENTITY`)**
+**Final state: `STAGING_GATE_A_PASS`**
