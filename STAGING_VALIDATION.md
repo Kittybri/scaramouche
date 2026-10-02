@@ -384,5 +384,39 @@ Offline imports registered 132 / 141 commands and shut down successfully with
 dotenv disabled, an empty environment, temporary working directories, and network
 connections blocked. Compile and diff checks pass. Scoped added-code secret-pattern
 scans found no matches; this is not a comprehensive external secret audit.
-Deployment results follow once verified. No live prank or cosmetic guild mutation
-is needed for this patch, and none has been executed.
+No live prank or cosmetic guild mutation is needed for this patch, and none has
+been executed.
+
+### Verified deployment and exact resume point
+
+Deployed 2026-10-02 09:25:12 UTC using new immutable release trees and backed-up
+systemd drop-ins. Both candidates remain on `release/full-system-hardening`;
+existing PRs #22 / #9 remain open and unmerged.
+
+| Bot | Exact live code SHA | Release directory |
+| --- | --- | --- |
+| Scaramouche | `2ae3c70aba3319c472d6d3f8e7c0735e29b4ebe7` | `/opt/scara-wanderer-staging-fallback/releases/scaramouche-2ae3c70` |
+| Wanderer | `eb9f45e827581338f97da38b4a709c81d9f472f0` | `/opt/scara-wanderer-staging-fallback/releases/wanderer-eb9f45e` |
+
+Both logged online at 09:25:18 UTC. Scaramouche PID 798214; Wanderer PID 798222.
+Both services active/running, `NRestarts=0`. This continuation intentionally
+restarted each service once; that is distinct from systemd automatic restarts.
+No ERROR/Traceback/initialization-failed entries appeared in the scoped startup
+log check. Both release trees passed pinned receive dependency/import checks.
+Read-only SQLite `quick_check` returned `ok` for scaramouche.db, wanderer.db and
+shared_state.db both before and after deployment. Available RAM 363 MiB; swap
+157 MiB. Neither environment overrides `VOICE_AUTO_LISTEN`, so default 0 applies.
+Guild chaos/trolling configuration remains disabled, unchanged from the approved
+staging state. No account, cloud integration, device, moderation or cosmetic
+server operation was performed.
+
+Next live action: in approved General VC, send `!voice start scaramouche`.
+Anyone other than the session starter must send `!voice listen on`.
+Ask “Scaramouche, can you hear me?”, wait for playback to finish, then ask
+“Do you like ice cream?” within 90 seconds. The second question deliberately
+tests conversation focus without requiring another exact name match. The owner
+then sends `!voice diagnostics` before stopping/restarting. Check response
+scheduling/playback counters and speaker attribution. Test a newly consenting
+arrival greeting separately. Do not mark B-02 or Gate B passed until this live
+retest succeeds. All other previously pending Gate B checks remain pending;
+Gate A has not been rerun and Gate C has not begun.
