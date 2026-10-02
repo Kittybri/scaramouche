@@ -1,5 +1,8 @@
 # Live Staging Gate A Validation Record
 
+The Gate A record below is historical. See the appended **Gate B — Live Voice**
+section for the current voice validation state and newer deployed candidates.
+
 Status: **STAGING_GATE_A_PASS**
 
 Gate decision: all authorized Gate A permission, second-user, privacy-deletion,
@@ -229,3 +232,98 @@ same-process duplicate-ready injection). They did not expose or leave an unresol
 BLOCKER/HIGH defect, and their covered automated/runtime equivalents passed.
 
 **Final state: `STAGING_GATE_A_PASS`**
+
+## Gate B — Live Voice
+
+Checkpoint: **NOT_READY**, 2026-10-02 04:00 UTC (October 1 Pacific).
+Gate A remains passed. Gate B is incomplete and the reported missing second
+spoken reply has not yet been diagnosed or passed on a live retest.
+
+### Candidates and deployment
+
+| Bot | Live SHA | Release path |
+|---|---|---|
+| Scaramouche | `fb90d45b874e8a667e5a0be287139063fc4ef76c` | `/opt/scara-wanderer-staging-fallback/releases/scaramouche-fb90d45` |
+| Wanderer | `0652e0110cf52e9f6ab10ed561da61fc685fc3af` | `/opt/scara-wanderer-staging-fallback/releases/wanderer-0652e01` |
+
+Both remain on `release/full-system-hardening`, with unmerged PRs #22 and #9.
+Deployment at 03:59 UTC used new immutable release directories and scoped systemd
+drop-ins. Previous release trees/configuration remain available for rollback.
+Both bots logged ready at 03:59:31 UTC. PIDs: 699000 / 699009; both active,
+both `NRestarts=0`. This continuation added one controlled restart per service.
+SQLite read-only `quick_check` returned `ok` for both bot databases and shared
+state. Available RAM was 374 MiB; swap used 168 MiB after startup.
+
+### Preflight and existing live evidence
+
+Approved guild `1486228108070617108`, General VC `1486228109027180598` only.
+Primary user `563157483196121109`; disposable Kittybi `1223350178883571846`.
+Raw audio and transcript debug logging remain disabled; optional VC gimmicks
+remain off. Consent is per user and must be renewed after restart/rejoin.
+
+The earlier session used Scaramouche `edd4cd8d07e661532a709dd7002ba4ae41cb1064`
+and Wanderer `96a9f3197961704c46393a6a9cc6e6c939b1888d`.
+
+- **LIVE PASS — dependency preflight:** discord.py 2.7.1, davey 0.1.6,
+  discord-ext-voice-recv 0.5.3a181 from audited commit
+  `bec048127f4148fd147afa3182c3771b6955dc08`, webrtcvad-wheels 2.0.14,
+  PyNaCl 1.5.0, real Opus and FFmpeg. Groq and Fish configuration present.
+  The receiver dependency guard/imports passed again in both new release trees.
+- **LIVE PASS — initial Scaramouche receive/playback:** successful consenting
+  primary-user speech, DAVE/PCM counters, STT completion events, Fish HTTP 200,
+  successful ffmpeg completion and audible reply reported by the user.
+  At 22:25:26 UTC: 3,042 packets, 2,263 DAVE frames, 2,130 PCM frames,
+  25 STT successes, five spoken chunks, queue zero.
+- **BLOCKED — quiet-speech outcome:** cumulative STT increased by the 22:31
+  diagnostic, but spoken chunks did not. No per-turn transcript or routing
+  evidence established that the intended quiet phrase was successfully
+  recognized. This is not a quiet-speech pass.
+- **LIVE PASS — second-user consent command:** Kittybi sent `!voice listen on`
+  in general at 22:56:00 UTC and received the consent acknowledgement.
+  The user reported hearing a reply to “Scaramouche can you hear me”. Fish
+  returned HTTP 200 at 22:56:33; ffmpeg completed at 22:56:38.
+  Per-speaker attribution for that reply still requires a fresh diagnostic;
+  the latest saved owner report predates Kittybi's consent.
+- **LIVE FAIL — follow-up reply (B-02, HIGH triage pending):** user reported no
+  answer to “Scaramouche, do you like ice cream?” after the initial reply.
+  There is insufficient evidence to distinguish receive/VAD, transcription,
+  addressing, or response-generation suppression. Do not claim this fixed.
+- **LIVE PASS — leave observed:** primary sent `!leave` at 22:59:08 UTC;
+  Discord logged voice handshake termination at 22:59:19. Full worker/buffer
+  cleanup proof and rejoin remain to be tested on the new candidates.
+
+### Scoped repairs and regression results
+
+- **B-01 — shared start/stop controls:** unqualified `!voice start` joined both
+  bots during initial testing. Added optional character targets to start/join
+  and stop/leave. `!voice start scaramouche` is consumed silently by Wanderer;
+  the existing unqualified command remains compatible. Regression tests pass;
+  targeted live retest remains pending.
+- **B-02 diagnostic gap:** added bounded category counters/events for empty
+  transcription, not-addressed rejection, echo/stale drops, response scheduling,
+  empty response, and playback delivery. Owner diagnostics expose both worker
+  liveness states and up to 16 recent events. No audio or transcript text is
+  included. These diagnostics do not change addressing or response behavior.
+- Complete suites: **Scaramouche 669 passed, 1 skipped** (existing LibreSSL
+  warning); **Wanderer 217 passed, 1 skipped**. Focused receive/integration
+  suites: **48 passed, 1 skipped each**. Compile/import and diff checks pass.
+  Targeted added-code scans found no Groq/API/private-key patterns; this was
+  a scoped pattern scan, not a comprehensive external secret scanner.
+
+### Remaining live checks / exact resume point
+
+Start only Scaramouche using `!voice start scaramouche` while in General.
+If Kittybi did not start the session, Kittybi must send `!voice listen on`.
+Repeat the two short questions, waiting for playback completion between them.
+The primary owner then sends the correctly spelled `!voice diagnostics` before
+any stop/restart. Inspect the new decision events, worker health and speaker IDs.
+
+Still pending: B-02 reproduction/fix/retest; targeted command live retest;
+two-user attribution and consent revocation; quiet/fast/pause/noise checks with
+correlated evidence; keyword/natural/off interruption; stale-output suppression;
+five-turn conversation; essential Wanderer voice tests; both-bot filtering,
+handoff and ten-minute coexistence; clean reconnect/process restart; controlled
+provider failures where safely possible; delivered-memory verification; five
+correlated latency samples including interruption. Earlier latency counters
+measure internal stages, not end-to-end speech-end timing, and must not be
+presented as such. Gate C has not begun.
