@@ -420,3 +420,51 @@ scheduling/playback counters and speaker attribution. Test a newly consenting
 arrival greeting separately. Do not mark B-02 or Gate B passed until this live
 retest succeeds. All other previously pending Gate B checks remain pending;
 Gate A has not been rerun and Gate C has not begun.
+
+## 2026-10-02 — light personality independent of heavy-server controls
+
+Explicit subsequent user authorization removes deployment flags, channel allowlists
+and runtime chaos-switch requirements only for typing teases, Silent Judge and
+self-message edits. Public text/access, personal preferences, quiet hours, muted
+users, serious-context arbitration, active-session exclusion and existing shared
+budgets/cooldowns remain enforced. Delayed light edits track personal preference
+changes, not heavy-control revisions. Heavy/manual features still require configured
+guild/channel approval and their existing personal consent rules.
+
+Validation: targeted trolling/chaos/arbitration **129 passed**; complete Scaramouche
+suite **681 passed, 1 skipped** in 138.88s (existing LibreSSL warning; local Opus
+skip). Offline startup registered 132 commands and shut down with network blocked.
+Compile/diff and scoped added-code secret-pattern checks passed. Wanderer code did
+not change in this continuation; its prior 224-pass result is not a fresh rerun.
+
+Deployed Scaramouche `809cea5cef470fcfc4a0698884f44e0bab1abe38` at
+2026-10-02 14:31:32 UTC. Wanderer remains
+`eb9f45e827581338f97da38b4a709c81d9f472f0`. Each service intentionally restarted once
+to load configuration (PIDs 891186 / 891193; NRestarts 0). Release imports/pinned
+voice dependencies passed, and all three database quick checks returned `ok`.
+
+The user also explicitly authorized enabling staging heavy features. This
+**supersedes the previous intentionally disabled configuration**:
+
+- Guild: `1486228108070617108` only.
+- Heavy text/game channels: general `1486228109027180597`, off-topic
+  `1486241505021526026`, commands `1497291858643259523`; verified via Discord API.
+- Advanced voice/game configuration: General `1486228109027180598` only for VC;
+  the same three approved text channels for game invitations.
+- Both bots' effective configuration and shared runtime control are enabled.
+  Scaramouche parody/muzzle/gossip/ping/court and owner performances are enabled;
+  Wanderer retains its fair-wager/court-defense/interference role.
+- Parody and sovereign scheduling stay MANUAL. No sovereign mutation template was
+  invented; sovereign remains disabled. Personal consent, microphone opt-in,
+  permissions, invitation acceptance and all cooldowns are unchanged.
+- No prank, cosmetic mutation, voice-game execution, user movement, or personal
+  consent write was performed. Enabling configuration is not a live gameplay pass.
+
+Original effective heavy/advanced configuration was empty and shared control was
+absent. There were zero active intent/applied/pending/claimed chaos records before
+enablement. Original-state evidence and the previous Scaramouche release drop-in
+are retained in `/opt/scara-wanderer-staging-fallback/config-backups/light-trolling-heavy-staging`.
+New non-secret integration JSON lives under
+`/opt/scara-wanderer-staging-fallback/config/light-trolling-heavy-staging`, selected
+by each service's `50-staging-chaos.conf`. No secret environment file or unrelated
+integration was changed. The voice follow-up live retest above remains pending.
