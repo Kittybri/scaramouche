@@ -6,6 +6,7 @@ from .errors import ChaosError
 import asyncio
 import contextlib
 import hashlib
+import json
 import secrets
 import time
 from datetime import datetime, timezone
@@ -545,7 +546,7 @@ class ServerChaos:
             )
             return
         if action in {"off", "forget"}:
-            await self.forget(uid)
+            await self.forget(uid, keep_troll_off=action == "off", guild_id=gid)
             await self.send(
                 ctx,
                 "Your chaos consent is off. Pending personal games/deliveries are cancelled; technical restoration/audit receipts remain.",
@@ -651,7 +652,11 @@ class ServerChaos:
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    async def phantom(self, channel, target):
+    async def phantom(self, channel, target, *, owner_actor=None):
+        if owner_actor is not None and (not self.owner_id or owner_actor != self.owner_id):
+            raise ChaosError("Only the configured owner may bypass ping consent.")
+        if target.bot or channel.guild.get_member(target.id) is None:
+            raise ChaosError("Mention one human guild member.")
         if not public_channel(channel, target) or quiet(
             await self.mem.get_user(target.id) or {}
         ):
@@ -671,12 +676,14 @@ class ServerChaos:
             ),
             ttl=5,
         )
-        if not (await self.store.prefs(target.id))[
-            "chaos_ping"
-        ] or not await self.store.transition(r["id"], {"created"}, {"state": "intent"}):
+        if (
+            owner_actor is None
+            and not (await self.store.prefs(target.id))["chaos_ping"]
+        ) or not await self.store.transition(r["id"], {"created"}, {"state": "intent"}):
             raise ChaosError("Consent changed.")
+        label = "owner-triggered" if owner_actor is not None else "opted-in"
         msg = await channel.send(
-            f"[Server game] <@{target.id}> A brief opted-in prank. [prank {r['id']}]",
+            f"[Server game] <@{target.id}> A brief {label} prank. [prank {r['id']}]",
             allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=[target], replied_user=False
             ),
@@ -716,14 +723,37 @@ class ServerChaos:
             {"state": "deleted", "deleted_at": time.time()},
         )
 
-    async def forget(self, uid, disable=True):
+    async def forget(self, uid, disable=True, *, keep_troll_off=False, guild_id=None):
         await self.store.init()
         if disable:
             async with self.store.connect() as db:
-                await db.execute(
-                    "DELETE FROM persistent_world_events WHERE kind='chaos_trollprefs' AND json_extract(payload,'$.user_id')=?",
-                    (uid,),
-                )
+                if keep_troll_off:
+                    rows = await (
+                        await db.execute(
+                            "SELECT key,payload FROM persistent_world_events WHERE kind='chaos_trollprefs' AND json_extract(payload,'$.user_id')=?",
+                            (uid,),
+                        )
+                    ).fetchall()
+                    records = {key: json.loads(payload) for key, payload in rows}
+                    if guild_id is not None:
+                        records.setdefault(
+                            f"chaos:trollprefs:{guild_id}:{uid}",
+                            dict(user_id=uid, guild_id=guild_id),
+                        )
+                    for key, record in records.items():
+                        record.update(
+                            flags=dict.fromkeys(
+                                ("typing", "judge", "edits", "nicknames", "parody"), False
+                            ),
+                            expires=0,
+                            state="consent",
+                        )
+                        await self.store.write(db, key, "chaos_trollprefs", record)
+                else:
+                    await db.execute(
+                        "DELETE FROM persistent_world_events WHERE kind='chaos_trollprefs' AND json_extract(payload,'$.user_id')=?",
+                        (uid,),
+                    )
                 await db.commit()
             for key in PREFS:
                 await self.store.preference(uid, key, False)
@@ -928,7 +958,10 @@ class ServerChaos:
             )
             return
         if command == "pranks" and action in {"off", "forget"}:
-            await self.forget(ctx.author.id)
+            await self.forget(
+                ctx.author.id, keep_troll_off=action == "off",
+                guild_id=getattr(ctx.guild, "id", None),
+            )
             await self.send(
                 ctx,
                 "Your chaos consent is off; pending personal games and deliveries cancelled.",

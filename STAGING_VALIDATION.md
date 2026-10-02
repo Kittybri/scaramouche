@@ -327,3 +327,62 @@ provider failures where safely possible; delivered-memory verification; five
 correlated latency samples including interruption. Earlier latency counters
 measure internal stages, not end-to-end speech-end timing, and must not be
 presented as such. Gate C has not begun.
+
+## 2026-10-02 continuation — voice follow-up routing and trolling defaults
+
+This section supersedes the preceding B-02 investigation status without repeating
+Gate A checks. Gate B remains open; Gate C has not begun.
+
+### Recovered live evidence and previous deployment
+
+The owner's correctly spelled `!voice diagnostics` report at
+2026-10-02 04:08:13.885 UTC showed `DIRECT_ONLY`, both receive/transcription workers
+running and neither failed, four STT successes, one response scheduled, three
+`discarded_not_addressed`, and one completed playback. This identifies addressing
+rejection after recognition, not a dead receiver, in that session. No raw
+transcript was retained, so the precise recognized spelling is unknown.
+Targeted Scaramouche-only startup was observed at 04:02:26 UTC.
+
+At 04:18:58–59 UTC, the preceding continuation deployed:
+
+- Scaramouche `a2e066a1f534fe3a4703cdd01de71ff72c004efd`.
+- Wanderer `4b6139b26504c0250ac7bfb4be6ad1aa4bddefab`.
+
+These candidates default to CONVERSATION, retaining focused replies for 90 seconds
+after playback; explicit addressing of the partner releases focus. They also add
+bounded arrival greetings and diagnostic spelling aliases. Services logged ready
+at 04:19:04 / 04:19:06 UTC; PIDs 705004 / 705012; NRestarts 0 for both. All three
+database quick checks were OK. Suites then: Scaramouche 674 passed, 1 skipped;
+Wanderer 222 passed, 1 skipped. Human follow-up/arrival retest is still pending.
+
+### Requested consent correction
+
+The latest attachment explicitly supersedes the previous automatic-listening
+request: both bots now default `VOICE_AUTO_LISTEN=0`. Session starters opt in by
+starting; other participants use `!voice listen on`. A newly consenting participant
+gets a bounded greeting; repeated listen-on commands do not queue extra greetings.
+The conversation/follow-up routing fix remains intact.
+
+Scaramouche's light typing/judge/edit preferences default ON only within the
+existing configured guild/channel framework. Explicit OFF survives old expiry,
+restart and 30-day record pruning. Both bots' shared-record pruners preserve these
+preferences. `!pranks off` persists OFF rather than erasing it; explicit privacy
+forget still erases the preference. Parody remains explicit, expiring opt-in;
+light preference updates do not renew it. Owner-only phantom ping skips target
+consent but retains authority, guild/channel, quiet-hour, budget and durable
+own-message cleanup checks. Other heavy-feature consent and existing rates are
+unchanged. No proactive/DM default changes, model calls, nickname mutator, or
+relationship/anti-repeat changes were added. The new nickname preference is
+reserved because this build has no user-nickname prank.
+
+Final automated results: Scaramouche **679 passed, 1 skipped** (114.33s, existing
+LibreSSL warning); Wanderer **224 passed, 1 skipped** (53.17s). The skipped test is
+local real-Opus codec roundtrip without VOICE_OPUS_LIBRARY, not a live voice pass.
+The focused trolling/chaos/voice run passed 147 tests with 1 skipped before the
+additional pruning regression, which passed separately and in both final suites.
+Offline imports registered 132 / 141 commands and shut down successfully with
+dotenv disabled, an empty environment, temporary working directories, and network
+connections blocked. Compile and diff checks pass. Scoped added-code secret-pattern
+scans found no matches; this is not a comprehensive external secret audit.
+Deployment results follow once verified. No live prank or cosmetic guild mutation
+is needed for this patch, and none has been executed.

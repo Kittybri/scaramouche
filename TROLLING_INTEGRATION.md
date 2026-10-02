@@ -1,25 +1,25 @@
-# Opt-in trolling integration
+# Tiered trolling integration
 
-Built on `feature/server-chaos-games`, not the older default branch. Scaramouche only; Wanderer is unchanged. The supplied module was adapted, not copied verbatim. No new LLM/API generation, dependency, memory schema or relationship-engine changes.
+Built on `feature/server-chaos-games`, not the older default branch. Trolling behavior is Scaramouche-only; Wanderer's shared-record pruner also preserves permanent preferences. The supplied module was adapted, not copied verbatim. No new LLM/API generation, dependency, memory schema or relationship-engine changes.
 
 ## Feature mapping
 
 | Supplied idea | Integrated behavior |
 | --- | --- |
 | Gaslight edit | Rare visible amendment to the bot's own reply. Original words remain, so saved conversation history is not contradicted. Fresh-read ownership/content and consent checks before edit. |
-| Typing interruption | One existing typing hook, now opt-in, quiet-hours aware and shared-budget limited. Requires recent harmless public context. Never claims to read a draft, typing speed or backspaces. |
-| Silent Judge | One existing reply hook, now opt-in. Harmless statements only; commands, questions, media, active trivia/duo and sensitive content continue normally. Reaction failure falls through. |
-| Phantom Ping | `!phantomping @user` delegates to the existing durable, consent-based phantom ping. Invocation stays visible. |
+| Typing interruption | One existing typing hook, default ON per user with persistent opt-out, quiet-hours aware and shared-budget limited. Requires recent harmless public context. Never claims to read a draft, typing speed or backspaces. |
+| Silent Judge | One existing reply hook, default ON per user with persistent opt-out. Harmless statements only; commands, questions, media, active trivia/duo and sensitive content continue normally. Reaction failure falls through. |
+| Phantom Ping | Owner-only `!phantomping @user` uses the durable ping path without target consent. Ordinary `!pranks phantom` still requires consent. Invocation stays visible. |
 | VC kidnapping | `!kidnap @user` delegates to the existing voluntary `!vcgame interrogate` flow. Existing voice consent, invitation/acceptance, channel permissions and recovery still apply. No forced hidden-room code is added. |
 | Muzzle | `!muzzle @user [seconds]` enables a 10–300 second, channel-scoped labeled-parody session. Originals are never deleted or impersonated. `!unmuzzle @user` ends it. |
 | Slowmode trap | `!slowtrap` requests 10-second slowmode for 90 seconds using durable before/after receipts. Existing manual changes are preserved on restoration. |
 | Webhook identity theft | Replaced by `!parodyas @user` while replying to that consenting user's harmless public message. Normal bot identity and clear PARODY label; no copied avatar/name/webhook. Existing `!impersonate` is untouched. |
 | Fake server wipe | `!serverwipe` and existing `!fakewipe` share one owner-only path. Every countdown frame says PRETEND/no deletions. No destructive API or claims about a user's panic/perception. |
-| Owner preference | Flavor in preference responses only. Reuses configured owner ID. Never bypasses consent, permissions, guild settings or cooldowns. |
+| Owner preference | Flavor in preference responses. Owner-only ping authority is separately checked; never bypasses Discord permissions, guild settings or cooldowns. Heavy parody and VC consent remain required. |
 
 All manual performance commands are owner-only; `!trollprefs` controls only the caller's participation. The existing unrelated `!impersonate` command retains its previous behavior and permissions.
 
-## Configure explicitly (OFF by default)
+## Guild configuration (still OFF by default)
 
 Merge this into the existing guild entry under `server_chaos.guilds.<guild ID>` in the integrations JSON. Keep existing fields, allowlisted channels and other feature settings:
 
@@ -59,7 +59,21 @@ The parent guild must already be enabled, with explicit `allowed_channels`, and 
 !trollprefs off
 ```
 
-Each choice defaults OFF and expires 30 days after a preference update. `off` ends the caller's active parody session; individual `... off` controls are supported. Parody also requires `!pranks parody on`, and phantom ping still requires `!pranks ping on`. The existing `!pranks off` / forget pipeline clears new preferences and cancels active parody sessions. Owners cannot opt another person in. Daytime/quiet-hour, proactive and mute checks apply, including to the owner when starting a performance.
+Light choices (`typing`, `judge`, `edits`, `nicknames`) default ON and never expire.
+Explicit OFF values, including legacy expired OFF records, stay off until changed.
+`!trollprefs off` disables all choices and ends the caller's active parody session.
+Individual `... off` controls remain available. The nickname preference is reserved:
+this build has no prank that edits a user's nickname; its cosmetic nickname feature
+only changes the bot's own nickname.
+
+Parody remains OFF by default, needs both `!trollprefs parody on` and
+`!pranks parody on`, and expires after 30 days. Editing a light choice does not
+extend parody consent. Ordinary `!pranks phantom` still needs `!pranks ping on`;
+owner-only `!phantomping` does not. Muzzle, gossip, court, and VC consent are unchanged.
+`!pranks off` stores permanent OFF choices; privacy forget erases those choices
+and cancels pending personal activities. A returning forgotten user gets the
+normal defaults. Daytime/quiet-hour, proactive and mute checks still apply.
+Proactive/DM defaults are unchanged by this patch.
 
 ## Limits, recovery and privacy
 
@@ -68,7 +82,7 @@ Each choice defaults OFF and expires 30 days after a preference update. `off` en
 - No messages or command invocations are deleted by this module. Only the existing phantom implementation deletes its own tracked prank.
 - Delayed edits are optional presentation: bounded task count, cancelled/awaited on shutdown, not replayed after restart. Original text remains in Discord and memory. Any consent/control change after scheduling cancels the pending edit even if subsequently re-enabled. Other messages/edited sources are not overwritten.
 - Cosmetic slowmode uses the existing durable restoration manager. Parody sessions use existing WorldStore receipts with expiry; the chaos maintenance/forget/restore-all paths now include them. Both bots' shared emergency control still disables these activities.
-- No new tables or user-profile columns. New `chaos_trollprefs`/`chaos_trollsession` records contain IDs, flags and expiry, not private message content. Existing terminal-receipt retention applies. Preference expiry fails closed.
+- No new tables or user-profile columns. `chaos_trollprefs`/`chaos_trollsession` records contain IDs, flags and expiry, not private message content. Existing terminal-receipt retention applies. Only heavy opt-in consent expires; light choices persist.
 - The conservative game-text filter excludes many otherwise harmless everyday sentences intentionally. Disabled/unavailable gags never block normal answers.
 - The existing rare memory quiz, fake typing and bounded glitch are unrelated prior features and were not rewritten. The old duplicate delayed-edit task and random Silent Judge/typing implementations were replaced, not stacked.
 - Discord has no atomic conditional message/channel edit. Fresh-read checks reduce, but cannot eliminate, a precisely simultaneous external edit race. Existing recovery needs a running bot and appropriate permissions.
@@ -77,9 +91,11 @@ Each choice defaults OFF and expires 30 days after a preference update. `off` en
 
 `trolling_features.py` owns adapted policy, routing, bounded tasks and command registration. `bot.py` has narrow existing-hook replacements and initialization/help wiring. `server_chaos/service.py` extends existing opt-out/expiry/emergency cleanup to the new records. `tests/test_trolling_features.py` adds behavioral coverage; existing character-hook tests now point to the adapted path. `memory.py`, `relationship_engine.py`, voice foundation and dependencies are unchanged.
 
-Tests exercise default-off/consent/configuration/quiet-hour/mute gates, sensitive and utility exclusion, concurrent budget limits, visible edit ownership/source/consent rechecks, shutdown and restore/re-enable cancellation, owner restrictions, labeled-parody opt-out, expiry/forget/emergency cleanup, slowmode manual-edit preservation, existing feature adapters, countdown labeling, command-name collision prevention and absence of destructive/webhook/new-generation code. Discord operations are mocked; SQLite transactions are real. Offline startup uses an empty environment and disabled dotenv, with no network login.
+Tests exercise light defaults/persistent opt-out, heavy consent/configuration/quiet-hour/mute gates, sensitive and utility exclusion, concurrent budget limits, visible edit ownership/source/preference rechecks, shutdown and restore/re-enable cancellation, owner restrictions and ping bypass, labeled-parody opt-out, expiry/forget/emergency cleanup, slowmode manual-edit preservation, existing feature adapters, countdown labeling, command-name collision prevention and absence of destructive/webhook/new-generation code. Discord operations are mocked; SQLite transactions are real. Offline startup uses an empty environment and disabled dotenv, with no network login.
 
-No live Discord commands, server changes, deployment or merge are performed during implementation. Stage-test permissions and voice invitations after an explicit deployment decision.
+The initial integration below was validated offline. Current staging deployment
+and voice evidence are tracked in `STAGING_VALIDATION.md`; no live prank or server
+cosmetic change is required to validate the consent-default correction.
 
 ### Final results (2026-09-28)
 
