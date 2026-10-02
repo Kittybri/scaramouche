@@ -19,7 +19,15 @@ Built on `feature/server-chaos-games`, not the older default branch. Trolling be
 
 All manual performance commands are owner-only; `!trollprefs` controls only the caller's participation. The existing unrelated `!impersonate` command retains its previous behavior and permissions.
 
-## Guild configuration (still OFF by default)
+## Heavy-feature guild configuration (OFF by default)
+
+Typing teases, Silent Judge reactions and self-message edits do not consult guild
+configuration, per-feature server flags, allowed-channel lists, or the runtime
+chaos switch. They operate in eligible public text channels in any joined guild.
+Personal opt-outs, safety/arbitration pauses, quiet hours, mute/proactive choices,
+Discord access, shared rate budgets and cooldowns still apply. No DMs, restricted
+channels or private-content redistribution are introduced. Heavy features and
+owner-triggered performances retain the configured guild/channel gates below.
 
 Merge this into the existing guild entry under `server_chaos.guilds.<guild ID>` in the integrations JSON. Keep existing fields, allowlisted channels and other feature settings:
 
@@ -80,7 +88,7 @@ Proactive/DM defaults are unchanged by this patch.
 - Shared chaos budget covers actual gags, not just local timers. Typing: at least three days per user; reaction-only: one day; edits: two days; phantom and parody retain their existing seven-/three-day rules. Countdown: 90 days. Failed attempts may consume a reservation.
 - Muzzle activation is a configuration receipt with its own daily cooldown; actual parody consumes the shared budget. Because parody is deliberately rare, this is usually at most one labeled response, not rewriting every message.
 - No messages or command invocations are deleted by this module. Only the existing phantom implementation deletes its own tracked prank.
-- Delayed edits are optional presentation: bounded task count, cancelled/awaited on shutdown, not replayed after restart. Original text remains in Discord and memory. Any consent/control change after scheduling cancels the pending edit even if subsequently re-enabled. Other messages/edited sources are not overwritten.
+- Delayed edits are optional presentation: bounded task count, cancelled/awaited on shutdown, not replayed after restart. Original text remains in Discord and memory. Personal preference changes after scheduling cancel the pending edit even if subsequently re-enabled. Heavy-feature server controls do not cancel light edits. Other messages/edited sources are not overwritten.
 - Cosmetic slowmode uses the existing durable restoration manager. Parody sessions use existing WorldStore receipts with expiry; the chaos maintenance/forget/restore-all paths now include them. Both bots' shared emergency control still disables these activities.
 - No new tables or user-profile columns. `chaos_trollprefs`/`chaos_trollsession` records contain IDs, flags and expiry, not private message content. Existing terminal-receipt retention applies. Only heavy opt-in consent expires; light choices persist.
 - The conservative game-text filter excludes many otherwise harmless everyday sentences intentionally. Disabled/unavailable gags never block normal answers.

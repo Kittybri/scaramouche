@@ -76,9 +76,6 @@ async def fixture(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "block",
     [
-        "guild",
-        "feature",
-        "channel",
         "consent",
         "quiet",
         "muted",
@@ -90,12 +87,6 @@ async def fixture(tmp_path, monkeypatch):
 def test_typing_gates(tmp_path, monkeypatch, block):
     async def check():
         e, o, c, s = await fixture(tmp_path, monkeypatch)
-        if block == "guild":
-            o.cfg(5)["enabled"] = False
-        if block == "feature":
-            o.cfg(5)["trolling"]["typing"] = False
-        if block == "channel":
-            o.cfg(5)["allowed_channels"] = []
         if block == "consent":
             await o.store.put(
                 e.key(5, 2), "chaos_trollprefs", dict(expires=0, flags={"typing": False})
@@ -124,6 +115,42 @@ def test_typing_once_uses_shared_budget_no_ping(tmp_path, monkeypatch):
         assert not c.send.call_args.kwargs["allowed_mentions"].everyone
         assert not c.send.call_args.kwargs["allowed_mentions"].users
 
+    run(check())
+
+
+@pytest.mark.parametrize("configuration", ["missing", "disabled", "channel", "feature", "runtime"])
+def test_light_behaviors_ignore_server_configuration_but_heavy_does_not(tmp_path, monkeypatch, configuration):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        if configuration == "missing":
+            o.config["guilds"].clear()
+        elif configuration == "disabled":
+            o.cfg(5)["enabled"] = False
+        elif configuration == "channel":
+            o.cfg(5)["allowed_channels"] = []
+        elif configuration == "feature":
+            o.cfg(5)["features"]["trolling"] = False
+            o.cfg(5)["trolling"] = {}
+        else:
+            await o.store.put("chaos:control:5", "chaos_control", {"enabled": False})
+        assert all([await e.gate(c.channel, s.author, f) for f in e.PERSONALITY_FEATURES])
+        assert not await e.gate(c.channel, s.author, "parody")
+        assert not await e.gate(c.channel, c.author, "phantomping", personal=False)
+        await e.typing(c.channel, s.author)
+        c.send.assert_awaited_once()
+        o.reserve = AsyncMock()  # Isolate each behavior from the shared guild budget.
+        assert await e.before_reply(s)
+        s.add_reaction.assert_awaited_once()
+        sent = NS(id=102, author=o.bot.user, content="This is a good game.", edit=AsyncMock())
+        c.channel.fetch_message.side_effect = lambda mid: s if mid == s.id else sent
+        revision = await e.revision(5, 2)
+        await o.store.put("chaos:control:5", "chaos_control", {"enabled": False})
+        monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
+        await e.edit_later(s, sent, revision)
+        sent.edit.assert_awaited_once()
+        c.author = s.author
+        await e.preferences(c, "off")
+        assert not any([await e.gate(c.channel, s.author, f) for f in e.PERSONALITY_FEATURES])
     run(check())
 
 
@@ -303,8 +330,8 @@ def test_visible_edit_preserves_original_and_rechecks(tmp_path, monkeypatch, cha
             o.cfg(5)["enabled"] = False
         monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
         await e.edit_later(s, sent)
-        assert current.edit.await_count == int(change == "none")
-        if change == "none":
+        assert current.edit.await_count == int(change in {"none", "disabled"})
+        if change in {"none", "disabled"}:
             text = current.edit.call_args.kwargs["content"]
             assert text.startswith(sent.content) and "Visible character gag" in text
 
@@ -340,12 +367,13 @@ def test_delayed_edit_cancellation_propagates_and_cleans_state(tmp_path, monkeyp
     run(check())
 
 
-def test_restore_and_reenable_does_not_revive_pending_edit(tmp_path, monkeypatch):
+def test_personal_off_and_reenable_does_not_revive_pending_edit(tmp_path, monkeypatch):
     async def check():
         e, o, c, s = await fixture(tmp_path, monkeypatch)
         revision = await e.revision(5, 2)
-        await o.dispatch(c, "chaos", "restore-all", "")
-        await o.dispatch(c, "chaos", "enable", "")
+        c.author = s.author
+        await e.preferences(c, "edits", "off")
+        await e.preferences(c, "edits", "on")
         sent = NS(id=102, author=o.bot.user, content="This is a good game.")
         monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
         await e.edit_later(s, sent, revision)

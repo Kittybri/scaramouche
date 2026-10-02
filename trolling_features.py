@@ -37,6 +37,7 @@ class OwnerPrivilege:
 
 
 class TrollingEngine:
+    PERSONALITY_FEATURES = {"typing", "judge", "edits"}
     LIGHT_FLAGS = {"typing", "judge", "edits", "nicknames"}
     FLAGS = LIGHT_FLAGS | {"parody"}
     TYPING_LINES = (
@@ -88,14 +89,16 @@ class TrollingEngine:
         gid = channel.guild.id
         if channel.guild.get_member(user.id) is None:
             return False
-        cfg = self.chaos.cfg(gid)
-        if (
-            channel.id not in cfg.get("allowed_channels", [])
-            or not cfg.get("trolling", {}).get(feature, False)
-            or not await self.chaos.enabled(gid, "trolling")
-            or not public_channel(channel, user)
-        ):
+        if not public_channel(channel, user):
             return False
+        if feature not in self.PERSONALITY_FEATURES:
+            cfg = self.chaos.cfg(gid)
+            if (
+                channel.id not in cfg.get("allowed_channels", [])
+                or not cfg.get("trolling", {}).get(feature, False)
+                or not await self.chaos.enabled(gid, "trolling")
+            ):
+                return False
         if personal and not (await self.prefs(gid, user.id)).get(feature):
             return False
         profile = await self.chaos.mem.get_user(user.id) or {}
@@ -227,8 +230,8 @@ class TrollingEngine:
         async with self.store.connect() as db:
             rows = await (
                 await db.execute(
-                    "SELECT key,updated_at FROM persistent_world_events WHERE key IN (?,?) ORDER BY key",
-                    (f"chaos:control:{gid}", self.key(gid, uid)),
+                    "SELECT key,updated_at FROM persistent_world_events WHERE key=?",
+                    (self.key(gid, uid),),
                 )
             ).fetchall()
         return tuple(tuple(row) for row in rows)
