@@ -46,10 +46,35 @@ class PrivacyDeletionCoordinator:
     async def pending_count(self) -> int:
         db = await self._connect()
         try:
+            exists = await (await db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='privacy_deletion_jobs'"
+            )).fetchone()
+            if not exists:
+                return False
             row = await (await db.execute(
                 "SELECT COUNT(*) FROM privacy_deletion_jobs WHERE status IN ('PENDING','IN_PROGRESS','RETRYABLE')"
             )).fetchone()
             return int(row[0] or 0)
+        finally:
+            await db.close()
+
+    async def is_pending(self, user_id: int) -> bool:
+        """Return whether this user has an unfinished deletion saga."""
+        db = await self._connect()
+        try:
+            exists = await (await db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='privacy_deletion_jobs'"
+            )).fetchone()
+            if not exists:
+                return False
+            row = await (await db.execute(
+                "SELECT 1 FROM privacy_deletion_jobs WHERE user_id=? "
+                "AND status IN ('PENDING','IN_PROGRESS','RETRYABLE') LIMIT 1",
+                (user_id,),
+            )).fetchone()
+            return bool(row)
         finally:
             await db.close()
 

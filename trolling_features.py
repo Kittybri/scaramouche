@@ -1,4 +1,4 @@
-"""Opt-in adapters for character pranks; no censorship, webhooks or new LLM calls."""
+"""Tiered character pranks; no censorship, webhooks or new LLM calls."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class TrollingConfig:
 
 
 class OwnerPrivilege:
-    """Flavor only: never substitutes for consent, permissions or budget."""
+    """Flavor only; owner prank authority is checked by the command handler."""
 
     @staticmethod
     def greeting(is_owner):
@@ -37,7 +37,9 @@ class OwnerPrivilege:
 
 
 class TrollingEngine:
-    FLAGS = {"typing", "judge", "edits", "parody"}
+    PERSONALITY_FEATURES = {"typing", "judge", "edits"}
+    LIGHT_FLAGS = {"typing", "judge", "edits", "nicknames"}
+    FLAGS = LIGHT_FLAGS | {"parody"}
     TYPING_LINES = (
         "Whatever masterpiece you're composing, make it worth the wait.",
         "The typing indicator promises a grand entrance. We shall see.",
@@ -67,10 +69,16 @@ class TrollingEngine:
         return f"chaos:trollprefs:{gid}:{uid}"
 
     async def prefs(self, gid, uid):
-        record = await self.store.get(self.key(gid, uid)) or {}
-        if record.get("expires", 0) <= time.time():
-            return {}
-        return record.get("flags", {})
+        record = await self.store.get(self.key(gid, uid))
+        if record is None:
+            return dict.fromkeys(self.LIGHT_FLAGS, True) | {"parody": False}
+        flags = record.get("flags", {})
+        # Legacy master OFF was stored as an empty flags object. Preserve that
+        # explicit choice permanently, including records whose old TTL elapsed.
+        light_default = bool(flags)
+        result = {key: bool(flags.get(key, light_default)) for key in self.LIGHT_FLAGS}
+        result["parody"] = bool(flags.get("parody")) and record.get("expires", 0) > time.time()
+        return result
 
     async def gate(self, channel, user, feature, *, personal=True):
         if (self.closed or not self.bot.user or not getattr(channel, "guild", None)
@@ -81,14 +89,16 @@ class TrollingEngine:
         gid = channel.guild.id
         if channel.guild.get_member(user.id) is None:
             return False
-        cfg = self.chaos.cfg(gid)
-        if (
-            channel.id not in cfg.get("allowed_channels", [])
-            or not cfg.get("trolling", {}).get(feature, False)
-            or not await self.chaos.enabled(gid, "trolling")
-            or not public_channel(channel, user)
-        ):
+        if not public_channel(channel, user):
             return False
+        if feature not in self.PERSONALITY_FEATURES:
+            cfg = self.chaos.cfg(gid)
+            if (
+                channel.id not in cfg.get("allowed_channels", [])
+                or not cfg.get("trolling", {}).get(feature, False)
+                or not await self.chaos.enabled(gid, "trolling")
+            ):
+                return False
         if personal and not (await self.prefs(gid, user.id)).get(feature):
             return False
         profile = await self.chaos.mem.get_user(user.id) or {}
@@ -220,8 +230,8 @@ class TrollingEngine:
         async with self.store.connect() as db:
             rows = await (
                 await db.execute(
-                    "SELECT key,updated_at FROM persistent_world_events WHERE key IN (?,?) ORDER BY key",
-                    (f"chaos:control:{gid}", self.key(gid, uid)),
+                    "SELECT key,updated_at FROM persistent_world_events WHERE key=?",
+                    (self.key(gid, uid),),
                 )
             ).fetchall()
         return tuple(tuple(row) for row in rows)
@@ -303,7 +313,8 @@ class TrollingEngine:
         if flag == "help":
             await self.chaos.send(
                 ctx,
-                "Personal opt-in: !trollprefs typing|judge|edits|parody on/off; status; off. "
+                "Light trolling is ON by default: !trollprefs typing|judge|edits|nicknames on/off; status; off. "
+                "Light choices never expire. Parody remains opt-in: !trollprefs parody on. "
                 "Owner performances: !phantomping @user, !kidnap @user (voluntary VC invitation), "
                 "!muzzle @user [10–300 seconds], !unmuzzle @user, !parodyas @user (reply to their message), "
                 "!slowtrap, !serverwipe. All require guild configuration. No censorship or webhook impersonation.",
@@ -314,13 +325,18 @@ class TrollingEngine:
         async with self.lock:
             await self.store.init()
             flags = await self.prefs(ctx.guild.id, ctx.author.id)
+            record = await self.store.get(self.key(ctx.guild.id, ctx.author.id)) or {}
+            expires = record.get("expires", 0)
             if flag == "off":
-                flags = {}
+                flags = dict.fromkeys(self.FLAGS, False)
+                expires = 0
             elif flag in self.FLAGS and value in {"on", "off"}:
                 flags[flag] = value == "on"
+                if flag == "parody":
+                    expires = time.time() + TrollingConfig.CONSENT_SECONDS if value == "on" else 0
             elif flag != "status":
                 raise ChaosError(
-                    "!trollprefs typing|judge|edits|parody on/off; status; off"
+                    "!trollprefs typing|judge|edits|nicknames|parody on/off; status; off"
                 )
             if flag != "status":
                 await self.store.put(
@@ -330,7 +346,7 @@ class TrollingEngine:
                         user_id=ctx.author.id,
                         guild_id=ctx.guild.id,
                         flags=flags,
-                        expires=time.time() + TrollingConfig.CONSENT_SECONDS,
+                        expires=expires,
                         state="consent",
                     ),
                 )
@@ -341,8 +357,9 @@ class TrollingEngine:
             await self.chaos.send(
                 ctx,
                 OwnerPrivilege.greeting(ctx.author.id == self.chaos.owner_id)
-                + f" Your opt-ins: {flags or 'all off'}. They expire after 30 days."
-                + " Parody also requires !pranks parody on. !trollprefs off stops these gags.",
+                + f" Your settings: {flags}. Light trolling defaults ON; light choices never expire."
+                + " Parody defaults OFF, expires after 30 days, and also requires !pranks parody on."
+                + " !trollprefs off stops these gags. Nicknames is reserved; this build has no user-nickname prank.",
             )
 
     async def manual(self, ctx, feature, target=None, duration=300):
@@ -369,7 +386,9 @@ class TrollingEngine:
             ):
                 raise ChaosError("Mention one human participant.")
             if feature == "phantomping":
-                await self.chaos.dispatch(ctx, "pranks", "phantom", "")
+                if not await self.chaos.enabled(ctx.guild.id, "ping"):
+                    raise ChaosError("This prank is disabled here.")
+                await self.chaos.phantom(ctx.channel, target, owner_actor=ctx.author.id)
             elif feature in {"muzzle", "parodyas"}:
                 if (
                     not await self.gate(ctx.channel, target, "parody")

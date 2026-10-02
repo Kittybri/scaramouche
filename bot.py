@@ -126,6 +126,8 @@ WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY","")
 NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT","scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID","0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID","0") or "0")  # Wanderer bot ID
+BOT_RELEASE_SHA    = re.sub(r"[^0-9a-f]", "", os.getenv("BOT_RELEASE_SHA", "").lower())[:40] or "unknown"
+BOT_RELEASE_LABEL  = re.sub(r"[^A-Za-z0-9._/-]", "", os.getenv("BOT_RELEASE_LABEL", ""))[:80] or "unknown"
 
 # Patch memory module with random so its mood_swing can use it
 import random as _rmod, memory as _mmod
@@ -564,9 +566,11 @@ async def _vision_image_reply(
     mime_type: str,
     max_chars: int = 900,
 ) -> str:
+    import base64
+
     loop = asyncio.get_event_loop()
 
-    def _run():
+    def _run_primary():
         return ask_character_bot(
             BOT_NAME,
             prompt,
@@ -576,7 +580,35 @@ async def _vision_image_reply(
             temperature=0.35,
         )
 
-    reply = await loop.run_in_executor(None, _run)
+    try:
+        reply = await loop.run_in_executor(None, _run_primary)
+    except asyncio.CancelledError:
+        raise
+    except Exception as primary_exc:
+        logger.warning(
+            "primary vision provider unavailable; using Groq vision fallback",
+            extra={"subsystem": "image_vision", "error_category": type(primary_exc).__name__},
+        )
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        vision_content = [
+            {"type": "image_url", "image_url": {
+                "url": f"data:{mime_type};base64,{encoded}",
+            }},
+            {"type": "text", "text": prompt},
+        ]
+
+        def _run_fallback():
+            return ai.call_with_retry(
+                model=GROQ_VISION_MODEL,
+                max_completion_tokens=400,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": vision_content},
+                ],
+            )
+
+        response = await loop.run_in_executor(None, _run_fallback)
+        reply = response.choices[0].message.content if response.choices else ""
     return strip_narration((reply or "").strip())[:max_chars]
 
 
@@ -1173,10 +1205,63 @@ async def _find_romance_target(channel) -> discord.Member | None:
     return None
 
 
-async def _handle_partner_message(message) -> bool:
+async def _partner_message_target_info(message) -> dict:
+    """Describe who owns a partner-bot message before optional banter runs."""
+    addressed_me = any(
+        getattr(member, "id", 0) == getattr(getattr(bot, "user", None), "id", 0)
+        for member in (getattr(message, "mentions", None) or [])
+    )
+    human_targets: list[str] = []
+    ref_msg = getattr(getattr(message, "reference", None), "resolved", None)
+    if ref_msg is None and getattr(getattr(message, "reference", None), "message_id", None):
+        try:
+            ref_msg = await message.channel.fetch_message(message.reference.message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            ref_msg = None
+    ref_author = getattr(ref_msg, "author", None)
+    if getattr(ref_author, "id", 0) == getattr(getattr(bot, "user", None), "id", 0):
+        addressed_me = True
+    elif ref_author is not None and not getattr(ref_author, "bot", False):
+        human_targets.append(
+            getattr(ref_author, "display_name", None)
+            or getattr(ref_author, "name", "someone")
+        )
+    for member in (getattr(message, "mentions", None) or []):
+        if not getattr(member, "bot", False):
+            name = getattr(member, "display_name", None) or getattr(member, "name", "someone")
+            if name not in human_targets:
+                human_targets.append(name)
+    duo = await mem.get_duo_session(message.channel.id)
+    duo_expected = bool(
+        duo
+        and duo.get("awaiting_bot") == BOT_NAME
+        and int(duo.get("autoplay_remaining", 0) or 0) > 0
+    )
+    return {
+        "addressed_me": addressed_me,
+        "human_targets": human_targets,
+        "duo_expected": duo_expected,
+    }
+
+
+async def _handle_partner_message(message, target_info: dict | None = None) -> bool:
     if message.content.startswith("[Server game]"):
         return True  # Structured server events never trigger free-running bot replies.
     try:
+        target_info = target_info or {}
+        # Human-targeted replies and rich command/media output keep ownership of
+        # their interaction.  Optional rivalry is allowed only for an explicit
+        # address, an awaited duo turn, or genuinely unowned channel speech.
+        if not target_info.get("addressed_me") and not target_info.get("duo_expected"):
+            if target_info.get("human_targets"):
+                return True
+            if (
+                getattr(message, "embeds", None)
+                or getattr(message, "attachments", None)
+                or getattr(message, "components", None)
+                or getattr(message, "stickers", None)
+            ):
+                return True
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         duo = await mem.get_duo_session(message.channel.id)
         if duo and duo.get("mode") in {"intervention", "finish", "goodcop", "contradict", "protective", "interview", "welcome_interview", "trade"}:
@@ -3242,7 +3327,7 @@ async def _dispatch_message(message):
         return
     if message.author.bot:
         if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID and not message.content.startswith("[Server game]"):
-            await _handle_partner_message(message)
+            await _handle_partner_message(message, target_info=await _partner_message_target_info(message))
         return
     if message.id in _processed_msgs:
         return
@@ -3276,6 +3361,18 @@ async def _dispatch_message(message):
             interaction.consume("privacy")
             await message.reply("Keep credentials out of chat. Remove that message and rotate any real credential you posted; I will not send it to the model.", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             return
+        deletion_pending = await PRIVACY_DELETION.is_pending(message.author.id)
+        if deletion_pending:
+            command_name = command_ctx.command.name if command_ctx.command else ""
+            if not (is_command and command_name in {"forget", "persistence"}):
+                interaction.consume("privacy_deletion_pending", suppressed=True)
+                await message.reply(
+                    "Your privacy deletion is still pending, so I won't create new memory. "
+                    "Use `!forget all` to retry it.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
         if interaction.command:
             name = command_ctx.command.name if command_ctx.command else ""
             argument = message.content.partition(" ")[2]
@@ -3711,12 +3808,19 @@ async def _handle_image_media(message, interaction, prepared, image):
         return
     except Exception as exc:
         _pipeline_error("image_vision_provider", exc, message, interaction, subsystem="provider")
-        if random.random() < 0.4:
+        try:
             comment = await qai(
                 f"{message.author.display_name} posted an image. "
                 "React — dismissive or reluctantly intrigued. 1 sentence.", 100,
             )
-            await message.reply(strip_narration(comment))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            comment = ""
+        comment = strip_narration(comment or "").strip() or (
+            "The image is refusing to cooperate. Describe the important part, and I'll judge it properly."
+        )
+        await message.reply(comment)
         return
     if not reply:
         return
@@ -5370,6 +5474,7 @@ async def forget_cmd(ctx,*,topic:str=None):
             return
         await _setup(ctx)
         result=await mem.forget_memory_matches(ctx.author.id, topic)
+        result["scene"] = await mem.forget_scene_state_matches(ctx.channel.id, topic)
         await CHAOS.forget(ctx.author.id)
         await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
@@ -6628,6 +6733,10 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "voice_social": VOICE_CONVERSATION.features.forget_user,
     "runtime_ephemeral": _delete_runtime_stage,
     "companion": PC.require_forget,
+    # Feature revocation can intentionally write false preference rows. Finish
+    # by removing those idempotently so a COMPLETE job leaves no user record.
+    "memory_local_final": mem.reset_user_local,
+    "memory_shared_final": mem.reset_user_shared,
 })
 
 
@@ -6652,6 +6761,21 @@ async def persistence_cmd(ctx):
         f"pending={shared['pending']} error={shared['error'] or 'none'} | "
         f"deletion_jobs_pending={pending} | caches="
         + ",".join(f"{key}:{value}" for key, value in caches.items())
+    ))
+
+
+@bot.command(name="build")
+async def build_cmd(ctx):
+    """Owner-only release identity without filesystem or secret disclosure."""
+    if not is_owner_user(ctx.author.id):
+        await safe_reply(ctx, "That diagnostic is owner-only.")
+        return
+    schema = await mem.schema_status()
+    local, shared = schema["local"], schema["shared"]
+    await safe_reply(ctx, (
+        f"Build: bot={BOT_NAME} release={BOT_RELEASE_LABEL} sha={BOT_RELEASE_SHA} | "
+        f"schema local={local['version']}/{local['current']} "
+        f"shared={shared['version']}/{shared['current']}"
     ))
 
 if __name__=="__main__":

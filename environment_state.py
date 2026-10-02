@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import asyncio
+import math
 import os
 import shutil
 import time
@@ -77,7 +78,7 @@ class EnvironmentMonitor:
         provider = "degraded" if failures >= 2 else "recovering" if failures else "healthy"
         return EnvironmentSnapshot(
             observed_ts=time.time(), uptime_seconds=max(0, int(time.time() - self.started_at)),
-            discord_latency_ms=int(discord_latency * 1000) if discord_latency is not None else None,
+            discord_latency_ms=_latency_ms(discord_latency),
             response_latency_ms=self._last_response_latency_ms, database_health=database_health,
             provider_status=provider, provider_failures_recent=failures,
             cpu_pressure=cpu, memory_pressure=memory, disk_pressure=disk,
@@ -101,6 +102,19 @@ class EnvironmentMonitor:
         except OSError:
             disk = "unknown"
         return cpu, memory, disk
+
+
+def _latency_ms(value: float | None) -> int | None:
+    """Normalize gateway latency without failing during disconnect transitions."""
+    if value is None:
+        return None
+    try:
+        latency = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(latency):
+        return None
+    return max(0, int(latency * 1000))
 
 
 def _level(value: float, warning: float) -> str:

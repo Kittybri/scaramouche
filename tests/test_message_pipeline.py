@@ -124,6 +124,57 @@ async def test_structured_owner_consumes_before_routed_pipeline(runtime, monkeyp
     routed.assert_not_awaited()
 
 
+@async_test
+async def test_pending_privacy_deletion_blocks_new_memory(runtime, monkeypatch):
+    message = fake_message(runtime, content="hello again")
+    context = NS(command=None, prefix=None, invoked_with=None)
+    memory = NS(upsert_user=AsyncMock())
+    deletion = NS(is_pending=AsyncMock(return_value=True))
+    monkeypatch.setattr(runtime.bot, "get_context", AsyncMock(return_value=context))
+    monkeypatch.setattr(runtime, "mem", memory)
+    monkeypatch.setattr(runtime, "PRIVACY_DELETION", deletion)
+    runtime._processed_msgs.discard(message.id)
+
+    await runtime._dispatch_message(message)
+
+    deletion.is_pending.assert_awaited_once_with(message.author.id)
+    memory.upsert_user.assert_not_awaited()
+    message.reply.assert_awaited_once()
+    assert "won't create new memory" in message.reply.await_args.args[0]
+
+
+@async_test
+async def test_partner_rich_command_output_does_not_trigger_banter(runtime, monkeypatch):
+    message = NS(
+        content="command result", embeds=[object()], attachments=[], components=[],
+        stickers=[], channel=NS(id=20), guild=NS(id=30),
+    )
+    observe = AsyncMock()
+    monkeypatch.setattr(runtime, "_observe_partner_message", observe)
+
+    await runtime._handle_partner_message(message, target_info={
+        "addressed_me": False, "duo_expected": False, "human_targets": [],
+    })
+
+    observe.assert_not_awaited()
+
+
+@async_test
+async def test_partner_human_targeted_reply_does_not_trigger_banter(runtime, monkeypatch):
+    message = NS(
+        content="answer for the user", embeds=[], attachments=[], components=[],
+        stickers=[], channel=NS(id=20), guild=NS(id=30),
+    )
+    observe = AsyncMock()
+    monkeypatch.setattr(runtime, "_observe_partner_message", observe)
+
+    await runtime._handle_partner_message(message, target_info={
+        "addressed_me": False, "duo_expected": False, "human_targets": ["Kittybri"],
+    })
+
+    observe.assert_not_awaited()
+
+
 async def run_coordinator(runtime, monkeypatch, *, media=False, optional=False):
     message = fake_message(runtime)
     item = prepared()
@@ -438,6 +489,31 @@ async def test_deleted_attachment_stops_media_owner_cleanly(runtime, monkeypatch
     message.reply.assert_not_awaited()
     memory.add_message.assert_not_awaited()
     assert errors.call_args.kwargs["operation"] == "image_download"
+
+
+@async_test
+async def test_image_vision_uses_groq_when_primary_provider_is_unconfigured(runtime, monkeypatch):
+    monkeypatch.setattr(
+        runtime,
+        "ask_character_bot",
+        Mock(side_effect=RuntimeError("Missing XAI_API_KEY")),
+    )
+    groq_response = NS(choices=[NS(message=NS(content="Blue and gold. Predictable, but adequate."))])
+    groq_call = Mock(return_value=groq_response)
+    monkeypatch.setattr(runtime.ai, "call_with_retry", groq_call)
+
+    reply = await runtime._vision_image_reply(
+        prompt="Describe the image.",
+        system="Stay in character.",
+        image_bytes=b"synthetic-image",
+        mime_type="image/png",
+    )
+
+    assert reply == "Blue and gold. Predictable, but adequate."
+    assert groq_call.call_args.kwargs["model"] == runtime.GROQ_VISION_MODEL
+    user_content = groq_call.call_args.kwargs["messages"][1]["content"]
+    assert user_content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert user_content[1]["text"] == "Describe the image."
 
 
 @async_test

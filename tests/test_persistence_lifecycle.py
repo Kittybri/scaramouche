@@ -199,6 +199,8 @@ def test_privacy_deletion_retries_only_incomplete_stage_after_restart(tmp_path):
     assert first.pending_stage == "companion"
     assert first.completed_stages == ("local",)
     assert run(coordinator.pending_count()) == 1
+    assert run(coordinator.is_pending(22)) is True
+    assert run(coordinator.is_pending(23)) is False
 
     resumed_companion = AsyncMock()
     restarted = PrivacyDeletionCoordinator(
@@ -210,6 +212,7 @@ def test_privacy_deletion_retries_only_incomplete_stage_after_restart(tmp_path):
     restarted.stages["local"].assert_not_awaited()
     resumed_companion.assert_awaited_once_with(22)
     assert run(restarted.pending_count()) == 0
+    assert run(restarted.is_pending(22)) is False
 
 
 def test_privacy_deletion_full_run_is_idempotent(tmp_path):
@@ -226,46 +229,82 @@ def test_privacy_deletion_full_run_is_idempotent(tmp_path):
 def test_reset_user_preserves_other_users_global_pair_and_guild_scene(tmp_path):
     memory = Memory("scaramouche", str(tmp_path / "local.db"), str(tmp_path / "shared.db"))
     run(memory.init())
-    for uid in (10, 20):
+    for uid in (1, 10):
         run(memory.upsert_user(uid, f"user{uid}", f"User {uid}"))
         run(memory.add_message(uid, uid, "user", f"message {uid}"))
     with sqlite3.connect(memory.db_path) as db:
-        db.execute("INSERT INTO memory_bank(user_id,kind,memory,ts) VALUES(10,'manual','A',1)")
-        db.execute("INSERT INTO memory_bank(user_id,kind,memory,ts) VALUES(20,'manual','B',1)")
-        db.execute("INSERT INTO relationship_milestones VALUES('scaramouche:user:10','a','A',1)")
-        db.execute("INSERT INTO relationship_milestones VALUES('scaramouche:user:20','b','B',1)")
-        db.execute("INSERT INTO scene_state(channel_id,situation) VALUES(10,'A DM')")
-        db.execute("INSERT INTO scene_state(channel_id,situation) VALUES(20,'B DM')")
+        db.execute("INSERT INTO memory_bank(user_id,kind,memory,ts) VALUES(1,'manual','A',1)")
+        db.execute("INSERT INTO memory_bank(user_id,kind,memory,ts) VALUES(10,'manual','B',1)")
+        db.execute("INSERT INTO relationship_milestones VALUES('scaramouche:user:1','a','A',1)")
+        db.execute("INSERT INTO relationship_milestones VALUES('scaramouche:user:10','b','B',1)")
+        db.execute("INSERT INTO scene_state(channel_id,situation) VALUES(1,'A DM')")
+        db.execute("INSERT INTO scene_state(channel_id,situation) VALUES(10,'B DM')")
         db.execute("INSERT INTO scene_state(channel_id,situation) VALUES(999,'guild scene')")
     with sqlite3.connect(memory.shared_db_path) as db:
         db.execute(
             "INSERT OR REPLACE INTO bot_relationships(pair_key,shared_history) "
             "VALUES('scaramouche:wanderer','global pair history')"
         )
-        db.execute("INSERT INTO relationship_milestones VALUES('shared:user:10','a','A',1)")
-        db.execute("INSERT INTO relationship_milestones VALUES('shared:user:20','b','B',1)")
+        db.execute("INSERT INTO relationship_milestones VALUES('shared:user:1','a','A',1)")
+        db.execute("INSERT INTO relationship_milestones VALUES('shared:user:10','b','B',1)")
+        db.execute(
+            "INSERT INTO duo_sessions(channel_id,mode,initiator_user_id) VALUES(101,'argue',1)"
+        )
         db.execute(
             "INSERT INTO duo_sessions(channel_id,mode,initiator_user_id) VALUES(110,'argue',10)"
         )
-        db.execute(
-            "INSERT INTO duo_sessions(channel_id,mode,initiator_user_id) VALUES(120,'argue',20)"
-        )
 
-    run(memory.reset_user(10))
-    assert run(memory.get_user(10)) is None
-    assert run(memory.get_user(20))["display_name"] == "User 20"
+    run(memory.reset_user(1))
+    assert run(memory.get_user(1)) is None
+    assert run(memory.get_user(10))["display_name"] == "User 10"
     with sqlite3.connect(memory.db_path) as db:
-        assert db.execute("SELECT COUNT(*) FROM memory_bank WHERE user_id=10").fetchone()[0] == 0
-        assert db.execute("SELECT memory FROM memory_bank WHERE user_id=20").fetchone()[0] == "B"
-        assert db.execute("SELECT situation FROM scene_state WHERE channel_id=10").fetchone() is None
-        assert db.execute("SELECT situation FROM scene_state WHERE channel_id=20").fetchone()[0] == "B DM"
+        assert db.execute("SELECT COUNT(*) FROM memory_bank WHERE user_id=1").fetchone()[0] == 0
+        assert db.execute("SELECT memory FROM memory_bank WHERE user_id=10").fetchone()[0] == "B"
+        assert db.execute("SELECT situation FROM scene_state WHERE channel_id=1").fetchone() is None
+        assert db.execute("SELECT situation FROM scene_state WHERE channel_id=10").fetchone()[0] == "B DM"
+        assert db.execute("SELECT COUNT(*) FROM relationship_milestones WHERE scope='scaramouche:user:10'").fetchone()[0] == 1
         assert db.execute("SELECT situation FROM scene_state WHERE channel_id=999").fetchone()[0] == "guild scene"
     with sqlite3.connect(memory.shared_db_path) as db:
-        assert db.execute("SELECT COUNT(*) FROM duo_sessions WHERE channel_id=110").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM duo_sessions WHERE channel_id=120").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM duo_sessions WHERE channel_id=101").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM duo_sessions WHERE channel_id=110").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM relationship_milestones WHERE scope='shared:user:10'").fetchone()[0] == 1
         assert db.execute(
             "SELECT shared_history FROM bot_relationships WHERE pair_key='scaramouche:wanderer'"
         ).fetchone()[0] == "global pair history"
+
+
+def test_reset_user_shared_removes_compatible_wanderer_user_scopes(tmp_path):
+    memory = Memory("scaramouche", str(tmp_path / "local.db"), str(tmp_path / "shared.db"))
+    run(memory.init())
+    with sqlite3.connect(memory.shared_db_path) as db:
+        db.executescript("""
+            CREATE TABLE user_bot_attention(user_id INTEGER,bot_name TEXT);
+            CREATE TABLE hidden_achievements(scope TEXT,achievement_key TEXT);
+            CREATE TABLE shared_world_entities(entity_key TEXT,owner_user_id INTEGER,channel_id INTEGER);
+            CREATE TABLE shared_world_cases(case_key TEXT,channel_id INTEGER);
+            CREATE TABLE face_profiles(profile_key TEXT,owner_user_id INTEGER);
+            CREATE TABLE shared_event_memories(event_key TEXT,channel_id INTEGER);
+            CREATE TABLE shared_evidence_locker(evidence_key TEXT,owner_user_id INTEGER,channel_id INTEGER);
+            CREATE TABLE interbot_private_opinions(scope TEXT,subject_key TEXT);
+        """)
+        for uid in (1, 10):
+            db.execute("INSERT INTO user_bot_attention VALUES(?, 'wanderer')", (uid,))
+            db.execute("INSERT INTO hidden_achievements VALUES(?, 'a')", (f'user:{uid}',))
+            db.execute("INSERT INTO shared_world_entities VALUES(?,?,?)", (f'e{uid}', uid, uid))
+            db.execute("INSERT INTO shared_world_cases VALUES(?,?)", (f'c{uid}', uid))
+            db.execute("INSERT INTO face_profiles VALUES(?,?)", (f'f{uid}', uid))
+            db.execute("INSERT INTO shared_event_memories VALUES(?,?)", (f'm{uid}', uid))
+            db.execute("INSERT INTO shared_evidence_locker VALUES(?,?,?)", (f'v{uid}', uid, uid))
+            db.execute("INSERT INTO interbot_private_opinions VALUES(?,?)", (f'user:{uid}', str(uid)))
+
+    run(memory.reset_user_shared(1))
+    with sqlite3.connect(memory.shared_db_path) as db:
+        for table in (
+            "user_bot_attention", "hidden_achievements", "shared_world_entities",
+            "shared_world_cases", "face_profiles", "shared_event_memories",
+            "shared_evidence_locker", "interbot_private_opinions",
+        ):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
 
 
 def test_completed_deletion_ledger_prunes_on_startup_after_bounded_retention(tmp_path):

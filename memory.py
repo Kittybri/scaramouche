@@ -19,8 +19,20 @@ from db_migrations import (
     LOCAL_MIGRATIONS, SHARED_MIGRATIONS, migration_status, run_migrations,
 )
 
-# Use Railway volume if available, otherwise current directory
-_data_dir = "/data" if os.path.isdir("/data") else "."
+# Prefer an explicitly configured deployment directory. Falling back to /data
+# preserves Railway compatibility; local development still uses the cwd.
+def _resolve_data_dir() -> str:
+    configured = (os.getenv("MEMORY_DATA_DIR") or os.getenv("BOT_DATA_DIR") or "").strip()
+    if configured:
+        configured = os.path.abspath(os.path.expanduser(configured))
+        os.makedirs(configured, exist_ok=True)
+        return configured
+    if os.path.isdir("/data"):
+        return "/data"
+    return "."
+
+
+_data_dir = _resolve_data_dir()
 DB_PATH = os.path.join(_data_dir, "scaramouche.db")
 SHARED_DB_PATH = os.path.join(_data_dir, "shared_state.db")
 log = logging.getLogger(__name__)
@@ -623,6 +635,40 @@ class Memory:
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
             await db.commit()
 
+    async def forget_scene_state_matches(self, channel_id: int, query: str) -> int:
+        """Remove matching scene fields without discarding unrelated channel context."""
+        needle = (query or "").strip().lower()
+        if not needle:
+            return 0
+        columns = (
+            "location", "situation", "last_beat", "emotional_temp",
+            "objective", "present", "important_prop",
+        )
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                f"SELECT {','.join(columns)} FROM scene_state WHERE channel_id=?",
+                (channel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return 0
+            values = [value or "" for value in row]
+            matched = [needle in value.lower() for value in values]
+            removed = sum(matched)
+            if not removed:
+                return 0
+            scrubbed = ["" if is_match else value for value, is_match in zip(values, matched)]
+            if any(scrubbed):
+                assignments = ",".join(f"{column}=?" for column in columns)
+                await db.execute(
+                    f"UPDATE scene_state SET {assignments}, updated_ts=? WHERE channel_id=?",
+                    (*scrubbed, time.time(), channel_id),
+                )
+            else:
+                await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
+            await db.commit()
+        return removed
+
     async def add_memory_event(self, user_id: int, kind: str, memory: str, weight: int = 1):
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute(
@@ -804,8 +850,10 @@ class Memory:
                 (user_id, needle, needle, needle),
             )
             milestone_cur = await db.execute(
-                "DELETE FROM relationship_milestones WHERE scope LIKE ? AND INSTR(LOWER(note),?)>0",
-                (f"{self.bot_name}:user:{user_id}%", needle),
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
             )
             user_cur = await db.execute(
                 """UPDATE users SET
@@ -833,8 +881,10 @@ class Memory:
                 (user_id, needle),
             )
             shared_milestone_cur = await db.execute(
-                "DELETE FROM relationship_milestones WHERE scope LIKE ? AND INSTR(LOWER(note),?)>0",
-                (f"%user:{user_id}", needle),
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
             )
             await db.commit()
         return {
@@ -1743,7 +1793,11 @@ class Memory:
             await db.execute("DELETE FROM user_preferences WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM dm_cooldown WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM bot_mutes WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
             await db.execute("DELETE FROM users WHERE user_id=?", (user_id,))
             await db.commit()
@@ -1753,10 +1807,59 @@ class Memory:
         """Delete user-scoped shared records without touching bot-pair state."""
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
+            tables = {
+                row[0]
+                for row in await (await db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )).fetchall()
+            }
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.execute("DELETE FROM duo_sessions WHERE initiator_user_id=?", (user_id,))
             await db.execute("DELETE FROM shared_users WHERE user_id=?", (user_id,))
+            # These tables are created by optional shared features and by the
+            # Wanderer process. Keep the statements static and only run them
+            # when that compatible table is present.
+            if "user_bot_attention" in tables:
+                await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
+            if "hidden_achievements" in tables:
+                await db.execute(
+                    "DELETE FROM hidden_achievements "
+                    "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                    (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+                )
+            if "shared_world_entities" in tables:
+                await db.execute(
+                    "DELETE FROM shared_world_entities WHERE owner_user_id=? OR channel_id=?",
+                    (user_id, user_id),
+                )
+            if "shared_world_cases" in tables:
+                await db.execute(
+                    "DELETE FROM shared_world_cases WHERE channel_id=?", (user_id,)
+                )
+            if "face_profiles" in tables:
+                await db.execute(
+                    "DELETE FROM face_profiles WHERE owner_user_id=?", (user_id,)
+                )
+            if "shared_event_memories" in tables:
+                await db.execute(
+                    "DELETE FROM shared_event_memories WHERE channel_id=?", (user_id,)
+                )
+            if "shared_evidence_locker" in tables:
+                await db.execute(
+                    "DELETE FROM shared_evidence_locker WHERE owner_user_id=? OR channel_id=?",
+                    (user_id, user_id),
+                )
+            if "interbot_private_opinions" in tables:
+                await db.execute(
+                    "DELETE FROM interbot_private_opinions "
+                    "WHERE scope=? OR scope LIKE ? OR scope LIKE ? OR subject_key=?",
+                    (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", str(user_id)),
+                )
             await db.commit()
 
     async def reset_user(self, user_id: int):
