@@ -682,3 +682,49 @@ the guild and no unrelated state was changed. Gate B remains in progress; the
 next unfinished block is the restarted keyword, natural and interruption-off
 sequence on Scaramouche, followed by the still-pending Wanderer and two-bot
 voice checks.
+
+### Keyword interruption defect and repaired candidates — LIVE RETEST PENDING
+
+The first keyword-interruption attempt on Scaramouche failed: while a long reply
+was playing, the disposable staging speaker repeatedly said a form of
+“Scaramouche, stop,” but playback continued. The immediate sanitized diagnostic
+showed connected/listening/receive-proven, `KEYWORD` mode, two participants, one
+focused speaker, healthy receive/transcribe workers, seven successful STT
+results and multiple STT completions interleaved with completed playback. It
+contained zero `voice_interrupted` events and zero cancelled responses. This
+isolated the failure before playback cancellation: the exact, start-anchored
+keyword matcher did not tolerate realistic leading words, split names or minor
+Groq spelling variation. No transcript or raw audio was logged.
+
+Both bots now use a bounded spoken-command matcher. It accepts stop/wait/no/
+listen and the two-word hold-on/shut-up commands within a short opening window,
+preserves direct character-name barge-in, and tolerates split or slightly
+misspelled character names. It does not use substring matching (for example,
+“stopping” is not “stop”). Sanitized counters now distinguish a detected
+keyword, an attempted cancellation, a missed keyword while busy and a command
+that arrived only after playback ended.
+
+Focused voice suites passed Scaramouche **90 passed, 1 skipped** and Wanderer
+**93 passed, 1 skipped**. Complete suites passed Scaramouche **695 passed,
+1 skipped** in 137.63 seconds and Wanderer **239 passed, 1 skipped** in 56.58
+seconds. The skip remains the optional local real-Opus roundtrip; the only
+warning remains the existing local LibreSSL warning.
+
+The exact repaired candidates were deployed at 2026-10-06 17:08 UTC:
+
+| Bot | Exact live code SHA | Release directory |
+| --- | --- | --- |
+| Scaramouche | `25d4a5af78de5714ad7a851d224a025c731b8ad2` | `/opt/scara-wanderer-staging-fallback/releases/scaramouche-25d4a5a` |
+| Wanderer | `5fa2025ed5c30ed0e5ed3ec1a5ed4a429eb0051e` | `/opt/scara-wanderer-staging-fallback/releases/wanderer-5fa2025` |
+
+Compilation and release-import checks passed before activation. Pre-restart
+SQLite and voice drop-in backups are under
+`/opt/scara-wanderer-staging-fallback/config-backups/voice-interruption-20261006`.
+Both services are active/running with `NRestarts=0`; startup reported both bots
+online and zero ERROR/Traceback/initialization-failed matches. `PRAGMA
+quick_check` returned `ok` for Scaramouche, Wanderer and shared state. Host memory
+was 951 MiB total with 335 MiB available; swap remained 148 MiB of 3062 MiB.
+
+The failed keyword scenario must now be repeated once on Scaramouche. Do not
+mark keyword interruption passed until audible stop behavior and the new
+sanitized cancellation counters both confirm it. Gate B remains in progress.
