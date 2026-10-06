@@ -630,3 +630,15 @@ Wanderer **229 passed, 1 skipped** in 62.67 seconds. The warning is the existing
 local LibreSSL warning; the skip remains the optional local real-Opus roundtrip.
 Compilation and diff checks passed. Live redeployment and the interrupted Gate B
 scenario remain pending at this checkpoint.
+
+The next user-directed refinement makes every automatic arrival greeting include
+the human's sanitized display name. A later leave/rejoin during the same live bot
+session uses a separate return pool (for example, “Look who came back”) rather
+than the first-arrival pool. Leaving cancels any still-pending greeting task, so a
+real rejoin can receive its return line while duplicate Discord events remain
+suppressed. Initial humans present when the bot starts are marked as already seen,
+so their next arrival is correctly treated as a return. Both focused voice suites
+again passed **99 tests with 1 skipped**. Complete suites passed Scaramouche
+**685 passed, 1 skipped** in 123.58 seconds and Wanderer **229 passed, 1 skipped**
+in 54.28 seconds. Compilation and diff checks passed; live deployment evidence
+for this refinement follows after completion.
