@@ -518,3 +518,51 @@ Each service was intentionally restarted once. Heavy staging configuration from
 the preceding section remains active and unchanged. No Discord message, preference,
 prank, voice game, server cosmetic, moderation action, or cloud/device action was
 performed for this rename. The voice follow-up live retest remains pending.
+
+### 2026-10-05 — Non-destructive migration hardening
+
+A follow-up aligned the compatibility migration with the final safety requirement:
+future legacy databases now gain `unrestricted_mode`, copy the existing boolean
+exactly once, and retain the retired column as unused compatibility data. No SQLite
+table rebuild or column deletion is performed. Scaramouche uses its transactional
+version-4 migration marker; Wanderer now has a dedicated transactional preference-
+name marker so a later `!unrestricted` change cannot be overwritten on restart.
+Fresh databases contain only `unrestricted_mode`.
+
+The earlier live migration had already safely removed the retired columns after
+verified backups, so the active databases did not need another data conversion.
+The final migration was instead preflighted twice against disposable copies of the
+preserved pre-rename databases. Both enabled and disabled values were preserved,
+the compatibility column remained present and unused, later user changes survived
+the second initializer run, and each migration marker remained unique.
+
+Final repository validation:
+
+- Scaramouche: **686 passed, 1 skipped** in 141.86s; focused suite **34 passed**.
+- Wanderer: **230 passed, 1 skipped** in 43.51s; focused suite **46 passed**.
+- Modified-file compilation and diff checks passed in both repositories.
+- Case-insensitive tracked-file searches found zero occurrences of the retired
+  terminology in either repository. Compatibility detection is assembled only
+  inside the two narrowly scoped migrations.
+- The deprecated command alias was deliberately not retained; only
+  `!unrestricted [on/off]` is registered.
+
+Fresh backups of both live local databases and shared state are stored under
+`/opt/scara-wanderer-staging-fallback/config-backups/unrestricted-final-44a2fe3`.
+All user values matched those backups after restart, both one-time migration markers
+were present, and `PRAGMA quick_check` returned `ok` for all three databases.
+
+Final deployment at 2026-10-06 04:54 UTC
+(2026-10-05 21:54 America/Los_Angeles):
+
+| Bot | Exact live code SHA | Release directory |
+| --- | --- | --- |
+| Scaramouche | `44a2fe33428f1116342ff43c3c6d9cba7e13638f` | `/opt/scara-wanderer-staging-fallback/releases/scaramouche-44a2fe3` |
+| Wanderer | `53138641356a61e0e146346385aac9befb9562a3` | `/opt/scara-wanderer-staging-fallback/releases/wanderer-5313864` |
+
+Both services are active/running (PIDs 2463361 / 2463369) with `NRestarts=0`.
+The immediate Wanderer post-restart verifier initially ran before asynchronous
+database initialization completed; after the bot logged online, the same verifier
+passed. Startup logs contain zero ERROR/Traceback/initialization-failed matches.
+Each service was intentionally restarted once. Heavy staging configuration and all
+unrelated behavior remain unchanged.
