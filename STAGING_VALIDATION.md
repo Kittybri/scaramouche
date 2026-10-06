@@ -879,3 +879,25 @@ The pre-restart diagnostics requested after green-ring confirmation were not
 received before deployment. Live success must not be inferred from unit tests.
 Current state: **STAGING_GATE_B_BLOCKED** pending this human live retry and the
 remaining Gate B scenarios. No Gate C work begun.
+
+### Post-registration live retry failed — October 6, 11:27 AM PDT
+
+The human started a fresh Scaramouche session at 11:26 AM and reported no reply.
+The 11:27 AM owner diagnostic confirms `receive_handshake_sent=1`, but all
+61 UDP callbacks were non-audio datagrams: zero RTP/DAVE/PCM/STT/playback events.
+Both workers were healthy, reader listening, DAVE ready, two mapped speakers and
+one mapped participant. The live service still runs `ea8e43a`, PID 2719372,
+`NRestarts=0`. Therefore the initial speaking-state registration **did not resolve
+the live incident**; it must not be reported as the confirmed root cause.
+
+Discord's visible connection details showed average ping 19ms, last ping 20ms,
+and end-to-end encryption. Client green-ring activity was confirmed by the
+human; this still does not establish outbound media delivery. No audio payload,
+credentials, or raw recording were captured. No new code change or service
+restart was performed during this investigation.
+
+Next isolated recovery check requested: leave the bot connected, disconnect and
+rejoin only the primary human account, wait for any arrival greeting to finish,
+then ask the same question. Record greeting and question-answer outcomes
+separately and correlate fresh diagnostics. Awaiting the human action; still
+**STAGING_GATE_B_BLOCKED**. No passed Gate A/B tests repeated.
