@@ -692,9 +692,11 @@ showed connected/listening/receive-proven, `KEYWORD` mode, two participants, one
 focused speaker, healthy receive/transcribe workers, seven successful STT
 results and multiple STT completions interleaved with completed playback. It
 contained zero `voice_interrupted` events and zero cancelled responses. This
-isolated the failure before playback cancellation: the exact, start-anchored
+showed that no successful cancellation was recorded. The exact, start-anchored
 keyword matcher did not tolerate realistic leading words, split names or minor
-Groq spelling variation. No transcript or raw audio was logged.
+Groq spelling variation, and was hardened accordingly. The original diagnostic
+does not contain transcripts, so it cannot prove that spelling variation caused
+that particular live failure. No transcript or raw audio was logged.
 
 Both bots now use a bounded spoken-command matcher. It accepts stop/wait/no/
 listen and the two-word hold-on/shut-up commands within a short opening window,
@@ -728,3 +730,29 @@ was 951 MiB total with 335 MiB available; swap remained 148 MiB of 3062 MiB.
 The failed keyword scenario must now be repeated once on Scaramouche. Do not
 mark keyword interruption passed until audible stop behavior and the new
 sanitized cancellation counters both confirm it. Gate B remains in progress.
+
+### Subsequent silent-turn investigation — receive/playback observed
+
+After starting the repaired Scaramouche candidate at 17:11 UTC, the human
+reported no reply. A 17:12 UTC diagnostic showed one enrolled/focused participant
+and healthy workers but empty receive metrics/events. This snapshot cannot
+distinguish absence of incoming audio from pre-eligibility packet drops. The
+bot's receiver currently counts packets only after speaker eligibility checks.
+
+After the requested spoken “Scaramouche, can you hear me?” probe, a later
+diagnostic from the same process/session showed 165 eligible packets, 110 DAVE
+frames, 102 PCM frames, two STT successes, two scheduled responses, and five
+completed playback chunks. All events were attributed to the primary staging
+user `563157483196121109`. Both workers remained healthy and listening. One
+keyword detection arrived after playback had finished; no live cancellation has
+yet been demonstrated. The human subsequently confirmed the reply to the probe
+was audibly heard. Receive, transcription, scheduling and audible playback are
+therefore observed in this session; the preceding silent interval's cause is
+still unproven.
+
+Additional receiver diagnostics are prepared in both repositories:
+callback/RTP counts, unknown/ineligible-speaker drops, listener failure state,
+mapped participant counts and DAVE readiness. They report neither payloads nor
+keys. The affected receive/session/integration suites each passed **66 passed,
+1 skipped**. These diagnostics are not deployed at this checkpoint; the live
+code remains `25d4a5a` / `5fa2025` and the current voice session is preserved.
