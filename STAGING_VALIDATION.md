@@ -665,3 +665,20 @@ Unrestricted migration state and unrelated integrations were unchanged.
 The interrupted keyword-interruption live scenario must be restarted on these
 exact candidates. Named arrival and same-session return lines require live human
 confirmation before they are marked passed. Gate B remains in progress.
+
+### Named arrival and same-session return — PASS
+
+On the exact candidates above, the primary human started Scaramouche in the
+approved General staging VC. The public status reported automatic listening and
+one participant; no per-session enrollment command was used. When disposable
+staging user `kittybi` joined, the user audibly confirmed Scaramouche said
+“kittybi, what do you want?” When the same user left, waited, and rejoined while
+Scaramouche remained connected, the user audibly confirmed the distinct return
+line “kittybi again? You just left. What is it this time?”
+
+This passes first-arrival name inclusion, automatic membership, same-session
+arrival history, and separate rejoin wording. The disposable user remained in
+the guild and no unrelated state was changed. Gate B remains in progress; the
+next unfinished block is the restarted keyword, natural and interruption-off
+sequence on Scaramouche, followed by the still-pending Wanderer and two-bot
+voice checks.
