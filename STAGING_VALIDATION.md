@@ -566,3 +566,67 @@ database initialization completed; after the bot logged online, the same verifie
 passed. Startup logs contain zero ERROR/Traceback/initialization-failed matches.
 Each service was intentionally restarted once. Heavy staging configuration and all
 unrelated behavior remain unchanged.
+
+## 2026-10-06 — Gate B live voice continuation
+
+Gate A was not repeated. Gate C, Google Connect, cloud-account setup, physical-
+device actions and new feature work were not started. The exact live candidates
+remain Scaramouche `44a2fe33428f1116342ff43c3c6d9cba7e13638f` and Wanderer
+`53138641356a61e0e146346385aac9befb9562a3`.
+
+### B-02 focused follow-up retest — PASS
+
+In the approved General staging VC, the primary human started Scaramouche in
+CONVERSATION targeting mode. They asked “Scaramouche, can you hear me?”, waited
+for the audible reply, then asked “Do you like ice cream?” without repeating the
+name. The human confirmed both replies were heard completely. This demonstrates
+that the 90-second conversation focus retained ownership of the unnamed follow-up.
+
+The immediate sanitized diagnostic reported connected/listening/receive-proven,
+one participant, one focused user, healthy receive and transcription workers, no
+pending audio, 451 received packets, 378 authenticated DAVE frames, 367 PCM
+frames, five VAD segments, five successful STT results, five scheduled responses,
+four completed playbacks and four spoken chunks. Every recorded STT, scheduling
+and completed-playback event was attributed to primary human Discord user
+`563157483196121109`; no bot speaker ID appeared. Observed latency samples were
+1536 ms STT, 906 ms response generation, 1432 ms TTS and 2338 ms first audio.
+
+The human confirmed that all five STT results represented five intentional human
+utterances. The fifth response was scheduled after the diagnostic snapshot and its
+FFmpeg process was stopped when the human left the page. The human confirmed the
+departure was intentional. The voice pipeline records memory only after a
+successful `playback_completed` result, so this cancelled fifth playback was not
+classified as delivered. The four preceding FFmpeg processes all exited with code
+0. No service crash or automatic restart occurred (`NRestarts=0`). This is not an
+unresolved B-02 defect.
+
+Gate B remains in progress. The next uncompleted live block is sustained
+Scaramouche conversation followed by keyword, natural and disabled-interruption
+checks. Wanderer receive/playback and the remaining two-participant/two-bot,
+reconnect, failure-injection, stability and resource checks remain pending.
+
+### 2026-10-06 — automatic live-voice membership requirement
+
+During the keyword-interruption setup, the preserved diagnostic isolated a silent
+turn to `participants=0`: receive/DAVE/PCM remained active and both workers were
+healthy, but leaving the VC had correctly revoked the former per-session consent
+and rejoining did not restore it without `!voice listen on`. No Groq, Fish or
+playback call occurred for the ignored turn.
+
+The user then explicitly superseded the earlier per-session opt-in requirement.
+Both bots now include eligible humans in an active allowlisted VC automatically,
+including people present at startup and humans who leave and later rejoin. The
+`!voice listen on/off` command path and `VOICE_AUTO_LISTEN` switch were removed.
+The internal participant set remains only as a bounded routing mechanism. Bots,
+people outside the active VC, people beyond the configured participant limit and
+users whose persistent `!voice off` preference is set are still excluded. The
+visible disclosure that speech is sent to Groq remains mandatory, raw audio is
+still not saved, and leaving immediately discards queued audio and temporary
+speaker state. Party-game consent remains independent and unchanged.
+
+Focused voice validation passed **99 tests with 1 skipped** in each repository.
+Complete suites passed Scaramouche **685 passed, 1 skipped** in 154.97 seconds and
+Wanderer **229 passed, 1 skipped** in 62.67 seconds. The warning is the existing
+local LibreSSL warning; the skip remains the optional local real-Opus roundtrip.
+Compilation and diff checks passed. Live redeployment and the interrupted Gate B
+scenario remain pending at this checkpoint.
