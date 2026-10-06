@@ -36,6 +36,9 @@ def test_fresh_install_records_independent_current_schema_versions(tmp_path):
         "scope": "shared", "version": 1, "current": 1, "pending": 0, "error": ""
     }
     assert {"bot_name"} <= columns(memory.db_path, "messages")
+    user_columns = columns(memory.db_path, "users")
+    assert "unrestricted_mode" in user_columns
+    assert "ns" + "fw_mode" not in user_columns
     assert {"important_prop"} <= columns(memory.db_path, "scene_state")
     assert {"chaos_court", "voice_reactions_enabled"} <= columns(
         memory.db_path, "user_preferences"
@@ -70,20 +73,29 @@ def test_current_schema_without_metadata_bootstraps_without_data_loss(tmp_path):
     assert run(reopened.schema_status())["local"]["version"] == 4
 
 
-def test_legacy_mature_mode_is_preserved_under_unrestricted_name(tmp_path):
+@pytest.mark.parametrize("legacy_value", [0, 1])
+def test_retired_mode_value_is_preserved_once_for_unrestricted(tmp_path, legacy_value):
     memory = Memory("scaramouche", str(tmp_path / "local.db"), str(tmp_path / "shared.db"))
     run(memory.init())
     run(memory.upsert_user(71, "legacy", "Legacy"))
     legacy_column = "ns" + "fw_mode"
     with sqlite3.connect(memory.db_path) as db:
         db.execute(f"ALTER TABLE users ADD COLUMN {legacy_column} INTEGER DEFAULT 0")
-        db.execute(f"UPDATE users SET {legacy_column}=1 WHERE user_id=71")
-        db.execute("UPDATE users SET unrestricted_mode=0 WHERE user_id=71")
+        db.execute(
+            f"UPDATE users SET {legacy_column}=? WHERE user_id=71", (legacy_value,)
+        )
+        db.execute(
+            "UPDATE users SET unrestricted_mode=? WHERE user_id=71",
+            (int(not legacy_value),),
+        )
         db.execute("DELETE FROM schema_migrations WHERE scope='local' AND version=4")
     reopened = Memory("scaramouche", memory.db_path, memory.shared_db_path)
     run(reopened.init())
-    assert run(reopened.get_user(71))["unrestricted_mode"] is True
-    assert legacy_column not in columns(memory.db_path, "users")
+    assert run(reopened.get_user(71))["unrestricted_mode"] is bool(legacy_value)
+    assert legacy_column in columns(memory.db_path, "users")
+    run(reopened.set_mode(71, "unrestricted_mode", not bool(legacy_value)))
+    run(reopened.init())
+    assert run(reopened.get_user(71))["unrestricted_mode"] is not bool(legacy_value)
     assert run(reopened.schema_status())["local"]["version"] == 4
     assert run(reopened.schema_status())["shared"]["version"] == 1
 

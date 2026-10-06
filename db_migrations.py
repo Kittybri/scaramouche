@@ -35,49 +35,6 @@ async def ensure_columns(db, table: str, definitions: dict[str, str]) -> None:
             present.add(name)
 
 
-async def _rebuild_without_column(db, table: str, removed: str) -> None:
-    """Drop one legacy column on SQLite versions predating DROP COLUMN."""
-    rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
-    kept = [row for row in rows if str(row[1]) != removed]
-    if len(kept) == len(rows):
-        return
-    primary = [row for row in kept if int(row[5] or 0)]
-    definitions = []
-    for row in kept:
-        _, name, kind, not_null, default, _ = row
-        definition = f'"{name}" {kind or ""}'.rstrip()
-        if not_null:
-            definition += " NOT NULL"
-        if default is not None:
-            definition += f" DEFAULT {default}"
-        if len(primary) == 1 and primary[0][1] == name:
-            definition += " PRIMARY KEY"
-        definitions.append(definition)
-    if len(primary) > 1:
-        ordered = sorted(primary, key=lambda row: int(row[5]))
-        definitions.append(
-            "PRIMARY KEY (" + ",".join(f'"{row[1]}"' for row in ordered) + ")"
-        )
-    dependent_sql = await (
-        await db.execute(
-            "SELECT sql FROM sqlite_master WHERE tbl_name=? "
-            "AND type IN ('index','trigger') AND sql IS NOT NULL",
-            (table,),
-        )
-    ).fetchall()
-    temporary = f"{table}__unrestricted_migration"
-    quoted = ",".join(f'"{row[1]}"' for row in kept)
-    await db.execute(f'DROP TABLE IF EXISTS "{temporary}"')
-    await db.execute(f'CREATE TABLE "{temporary}" ({",".join(definitions)})')
-    await db.execute(
-        f'INSERT INTO "{temporary}" ({quoted}) SELECT {quoted} FROM "{table}"'
-    )
-    await db.execute(f'DROP TABLE "{table}"')
-    await db.execute(f'ALTER TABLE "{temporary}" RENAME TO "{table}"')
-    for (sql,) in dependent_sql:
-        await db.execute(sql)
-
-
 USER_COLUMNS = {
     "username": "TEXT", "display_name": "TEXT",
     "romance_mode": "INTEGER DEFAULT 0", "unrestricted_mode": "INTEGER DEFAULT 0",
@@ -192,7 +149,7 @@ async def _local_message_scene_and_privacy(db, bot_name):
 
 
 async def _local_unrestricted_mode(db, _bot_name):
-    """Preserve the former mature-mode preference under its new product name."""
+    """Copy the retired preference once and leave its column unused."""
     columns = await _columns(db, "users")
     legacy_column = "ns" + "fw_mode"
     await ensure_columns(db, "users", {"unrestricted_mode": "INTEGER DEFAULT 0"})
@@ -200,7 +157,6 @@ async def _local_unrestricted_mode(db, _bot_name):
         await db.execute(
             f"UPDATE users SET unrestricted_mode=COALESCE({legacy_column},0)"
         )
-        await _rebuild_without_column(db, "users", legacy_column)
 
 
 async def _shared_duo_columns(db, _bot_name):
@@ -216,7 +172,7 @@ LOCAL_MIGRATIONS = (
     Migration(1, "legacy_relationship_columns", _local_relationship_columns),
     Migration(2, "feature_preference_columns", _local_feature_preferences),
     Migration(3, "message_scene_and_privacy_ledger", _local_message_scene_and_privacy),
-    Migration(4, "rename_mature_mode_to_unrestricted", _local_unrestricted_mode),
+    Migration(4, "unrestricted_mode_preference", _local_unrestricted_mode),
 )
 SHARED_MIGRATIONS = (
     Migration(1, "duo_session_columns", _shared_duo_columns),
