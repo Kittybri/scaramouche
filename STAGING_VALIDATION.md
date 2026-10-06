@@ -468,3 +468,53 @@ New non-secret integration JSON lives under
 `/opt/scara-wanderer-staging-fallback/config/light-trolling-heavy-staging`, selected
 by each service's `50-staging-chaos.conf`. No secret environment file or unrelated
 integration was changed. The voice follow-up live retest above remains pending.
+
+## 2026-10-05 — Unrestricted mode rename
+
+Renamed the former mature-content mode to **Unrestricted** across both bots:
+Discord command (`!unrestricted on/off`), help entries, runtime keys, prompt labels,
+logging names, privacy/terms/search-safety copy, and persisted schema. The previous
+command name is not retained as an alias. Scaramouche still permits enabling the
+mode only in a DM or Discord age-restricted channel; this rename does not weaken
+the existing age/channel policy. Wanderer's behavior is otherwise unchanged.
+
+Migration version 4 on Scaramouche and Wanderer's idempotent initializer preserve
+the former boolean value as `unrestricted_mode`, then remove the obsolete column.
+The server's Wanderer runtime uses SQLite 3.34.1, so a first copy-only preflight
+correctly rejected unsupported `ALTER TABLE ... DROP COLUMN`; no drop-in, service,
+or live database had changed at that point. A transaction-safe table rebuild was
+then added and regression-tested for older SQLite. It preserves column types,
+defaults, primary keys, data, and any explicit indexes/triggers.
+
+Final automated validation:
+
+- Scaramouche: **682 passed, 1 skipped** in 114.49s; existing LibreSSL warning.
+- Wanderer: **225 passed, 1 skipped** in 48.93s.
+- Focused migration/runtime validation: Scaramouche 30 passed; Wanderer 41 passed.
+- Both offline startups registered `unrestricted`, rejected the prior command
+  name, and shut down with network access blocked (132 / 141 commands).
+- Compile, diff, scoped added-code secret scan, and full repository old-name scan
+  passed. The only skips remain the optional local real-Opus roundtrip checks.
+
+Before live migration, SQLite backups of both local databases and shared state were
+saved under
+`/opt/scara-wanderer-staging-fallback/config-backups/unrestricted-rename-b08b2b2`.
+The migration then passed against disposable copies of the actual live databases
+(Scaramouche 3 users; Wanderer 2 users) before either service restarted. Live
+post-migration comparison confirmed every user/value matched its corresponding
+backup; both old columns were absent; all three `quick_check` results were `ok`.
+
+Deployed at 2026-10-06 04:34 UTC (2026-10-05 21:34 America/Los_Angeles):
+
+| Bot | Exact live code SHA | Release directory |
+| --- | --- | --- |
+| Scaramouche | `b08b2b2bb8bc8151490551b7175c0eddc1300296` | `/opt/scara-wanderer-staging-fallback/releases/scaramouche-b08b2b2` |
+| Wanderer | `800f9545ec3cdcd113f0d7b20e4c83a474cdd12c` | `/opt/scara-wanderer-staging-fallback/releases/wanderer-800f954` |
+
+Both logged online after migration (PIDs 2457142 / 2457150), are active/running,
+and report `NRestarts=0`. Scoped startup logs contained zero ERROR/Traceback/
+initialization-failed entries. Available RAM was 363 MiB and swap use 147 MiB.
+Each service was intentionally restarted once. Heavy staging configuration from
+the preceding section remains active and unchanged. No Discord message, preference,
+prank, voice game, server cosmetic, moderation action, or cloud/device action was
+performed for this rename. The voice follow-up live retest remains pending.
