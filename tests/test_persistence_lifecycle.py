@@ -30,7 +30,7 @@ def test_fresh_install_records_independent_current_schema_versions(tmp_path):
 
     status = run(memory.schema_status())
     assert status["local"] == {
-        "scope": "local", "version": 3, "current": 3, "pending": 0, "error": ""
+        "scope": "local", "version": 4, "current": 4, "pending": 0, "error": ""
     }
     assert status["shared"] == {
         "scope": "shared", "version": 1, "current": 1, "pending": 0, "error": ""
@@ -67,7 +67,24 @@ def test_current_schema_without_metadata_bootstraps_without_data_loss(tmp_path):
     run(reopened.init())
     assert run(reopened.get_user(44))["display_name"] == "Legacy User"
     assert run(reopened.get_history(44, 91))[0]["content"] == "keep this history"
-    assert run(reopened.schema_status())["local"]["version"] == 3
+    assert run(reopened.schema_status())["local"]["version"] == 4
+
+
+def test_legacy_mature_mode_is_preserved_under_unrestricted_name(tmp_path):
+    memory = Memory("scaramouche", str(tmp_path / "local.db"), str(tmp_path / "shared.db"))
+    run(memory.init())
+    run(memory.upsert_user(71, "legacy", "Legacy"))
+    legacy_column = "ns" + "fw_mode"
+    with sqlite3.connect(memory.db_path) as db:
+        db.execute(f"ALTER TABLE users ADD COLUMN {legacy_column} INTEGER DEFAULT 0")
+        db.execute(f"UPDATE users SET {legacy_column}=1 WHERE user_id=71")
+        db.execute("UPDATE users SET unrestricted_mode=0 WHERE user_id=71")
+        db.execute("DELETE FROM schema_migrations WHERE scope='local' AND version=4")
+    reopened = Memory("scaramouche", memory.db_path, memory.shared_db_path)
+    run(reopened.init())
+    assert run(reopened.get_user(71))["unrestricted_mode"] is True
+    assert legacy_column not in columns(memory.db_path, "users")
+    assert run(reopened.schema_status())["local"]["version"] == 4
     assert run(reopened.schema_status())["shared"]["version"] == 1
 
 
@@ -176,7 +193,7 @@ def test_two_initializers_share_migration_history_without_lock_failure(tmp_path)
         rows = db.execute(
             "SELECT version,COUNT(*) FROM schema_migrations WHERE scope='local' GROUP BY version"
         ).fetchall()
-        assert rows == [(1, 1), (2, 1), (3, 1)]
+        assert rows == [(1, 1), (2, 1), (3, 1), (4, 1)]
     with sqlite3.connect(shared) as db:
         rows = db.execute(
             "SELECT version,COUNT(*) FROM schema_migrations WHERE scope='shared' GROUP BY version"

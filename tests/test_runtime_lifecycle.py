@@ -398,16 +398,16 @@ def test_owner_diagnostics_check_exact_nonzero_owner(monkeypatch):
     assert runtime._owner_only(SimpleNamespace(author=SimpleNamespace(id=0))) is False
 
 
-def test_nsfw_prompt_requires_an_allowed_channel(monkeypatch):
+def test_unrestricted_prompt_requires_an_allowed_channel(monkeypatch):
     runtime = load_runtime(monkeypatch)
-    user = {"nsfw_mode": True, "romance_mode": False}
-    assert "## Unfiltered Mode" not in runtime.build_system(user)
-    assert "## Unfiltered Mode" in runtime.build_system(user, allow_nsfw=True)
+    user = {"unrestricted_mode": True, "romance_mode": False}
+    assert "## Unrestricted Mode" not in runtime.build_system(user)
+    assert "## Unrestricted Mode" in runtime.build_system(user, allow_unrestricted=True)
     public = SimpleNamespace(guild=object(), is_nsfw=lambda: False)
     restricted = SimpleNamespace(guild=object(), is_nsfw=lambda: True)
-    assert runtime._channel_allows_nsfw(public) is False
-    assert runtime._channel_allows_nsfw(restricted) is True
-    assert runtime._channel_allows_nsfw(None, is_dm=True) is True
+    assert runtime._channel_allows_unrestricted(public) is False
+    assert runtime._channel_allows_unrestricted(restricted) is True
+    assert runtime._channel_allows_unrestricted(None, is_dm=True) is True
 
 
 def test_member_announcements_are_rate_limited_per_guild(monkeypatch):

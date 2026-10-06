@@ -61,7 +61,7 @@ class Memory:
                     username         TEXT,
                     display_name     TEXT,
                     romance_mode     INTEGER DEFAULT 0,
-                    nsfw_mode        INTEGER DEFAULT 0,
+                    unrestricted_mode INTEGER DEFAULT 0,
                     proactive        INTEGER DEFAULT 1,
                     allow_dms        INTEGER DEFAULT 1,
                     timezone_name    TEXT    DEFAULT 'America/Los_Angeles',
@@ -425,7 +425,7 @@ class Memory:
     async def get_user(self, user_id: int) -> dict | None:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
-                SELECT user_id,username,display_name,romance_mode,nsfw_mode,proactive,allow_dms,
+                SELECT user_id,username,display_name,romance_mode,unrestricted_mode,proactive,allow_dms,
                        timezone_name,quiet_hours_start,quiet_hours_end,dm_frequency_hours,recent_activity_grace_minutes,
                        mood,affection,trust,rival_id,grudge_nick,affection_nick,message_count,
                        milestone_last,first_seen,last_seen,last_active,greeted_today,anniversary_last,
@@ -438,7 +438,7 @@ class Memory:
                 if not row: return None
                 user = {
                     "user_id": row[0], "username": row[1], "display_name": row[2],
-                    "romance_mode": bool(row[3]), "nsfw_mode": bool(row[4]),
+                    "romance_mode": bool(row[3]), "unrestricted_mode": bool(row[4]),
                     "proactive": bool(row[5]), "allow_dms": bool(row[6]),
                     "timezone_name": row[7] or "America/Los_Angeles",
                     "quiet_hours_start": row[8] if row[8] is not None else 23,
@@ -900,7 +900,7 @@ class Memory:
         }
 
     async def set_mode(self, user_id: int, field: str, value: bool):
-        allowed = {"nsfw_mode","romance_mode","proactive","allow_dms"}
+        allowed = {"unrestricted_mode","romance_mode","proactive","allow_dms"}
         if field not in allowed: raise ValueError(f"Unknown: {field}")
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             await db.execute(f"UPDATE users SET {field}=? WHERE user_id=?", (int(value), user_id))
@@ -2087,12 +2087,12 @@ class Memory:
         cutoff = time.time()-86400*7
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
-                SELECT u.user_id,u.display_name,u.romance_mode,u.nsfw_mode
+                SELECT u.user_id,u.display_name,u.romance_mode,u.unrestricted_mode
                 FROM users u WHERE u.allow_dms=1 AND u.last_seen>?
                   AND EXISTS (SELECT 1 FROM messages m WHERE m.user_id=u.user_id AND (m.bot_name=? OR m.bot_name IS NULL))
             """, (cutoff,self.bot_name)) as cur:
                 rows = await cur.fetchall()
-        return [{"user_id":r[0],"display_name":r[1],"romance_mode":bool(r[2]),"nsfw_mode":bool(r[3])} for r in rows]
+        return [{"user_id":r[0],"display_name":r[1],"romance_mode":bool(r[2]),"unrestricted_mode":bool(r[3])} for r in rows]
 
     async def get_proactive_candidates(self, *, absent_before: float, limit: int = 20) -> list[dict]:
         """Return public-channel candidates without coupling them to DM consent."""
@@ -2138,7 +2138,7 @@ class Memory:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
                 SELECT message_count,mood,affection,trust,first_seen,grudge_nick,
-                       affection_nick,romance_mode,nsfw_mode,drift_score,slow_burn
+                       affection_nick,romance_mode,unrestricted_mode,drift_score,slow_burn
                 FROM users WHERE user_id=?
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
@@ -2148,6 +2148,6 @@ class Memory:
         return {
             "message_count":row[0] or 0, "mood":row[1] or 0, "affection":row[2] or 0,
             "trust":row[3] or 0, "first_seen":row[4] or 0, "grudge_nick":row[5],
-            "affection_nick":row[6], "romance_mode":bool(row[7]), "nsfw_mode":bool(row[8]),
+            "affection_nick":row[6], "romance_mode":bool(row[7]), "unrestricted_mode":bool(row[8]),
             "drift_score":row[9] or 0, "slow_burn":row[10] or 0, "joke_count":jokes,
         }

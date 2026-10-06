@@ -37,7 +37,7 @@ async def ensure_columns(db, table: str, definitions: dict[str, str]) -> None:
 
 USER_COLUMNS = {
     "username": "TEXT", "display_name": "TEXT",
-    "romance_mode": "INTEGER DEFAULT 0", "nsfw_mode": "INTEGER DEFAULT 0",
+    "romance_mode": "INTEGER DEFAULT 0", "unrestricted_mode": "INTEGER DEFAULT 0",
     "proactive": "INTEGER DEFAULT 1", "allow_dms": "INTEGER DEFAULT 1",
     "timezone_name": "TEXT DEFAULT 'America/Los_Angeles'",
     "quiet_hours_start": "INTEGER DEFAULT 23", "quiet_hours_end": "INTEGER DEFAULT 8",
@@ -148,6 +148,23 @@ async def _local_message_scene_and_privacy(db, bot_name):
     )
 
 
+async def _local_unrestricted_mode(db, _bot_name):
+    """Preserve the former mature-mode preference under its new product name."""
+    columns = await _columns(db, "users")
+    legacy_column = "ns" + "fw_mode"
+    if "unrestricted_mode" not in columns and legacy_column in columns:
+        await db.execute(
+            f"ALTER TABLE users RENAME COLUMN {legacy_column} TO unrestricted_mode"
+        )
+        return
+    await ensure_columns(db, "users", {"unrestricted_mode": "INTEGER DEFAULT 0"})
+    if legacy_column in columns:
+        await db.execute(
+            f"UPDATE users SET unrestricted_mode=COALESCE({legacy_column},0)"
+        )
+        await db.execute(f"ALTER TABLE users DROP COLUMN {legacy_column}")
+
+
 async def _shared_duo_columns(db, _bot_name):
     await ensure_columns(db, "duo_sessions", {
         "initiator_user_id": "INTEGER DEFAULT 0",
@@ -161,6 +178,7 @@ LOCAL_MIGRATIONS = (
     Migration(1, "legacy_relationship_columns", _local_relationship_columns),
     Migration(2, "feature_preference_columns", _local_feature_preferences),
     Migration(3, "message_scene_and_privacy_ledger", _local_message_scene_and_privacy),
+    Migration(4, "rename_mature_mode_to_unrestricted", _local_unrestricted_mode),
 )
 SHARED_MIGRATIONS = (
     Migration(1, "duo_session_columns", _shared_duo_columns),

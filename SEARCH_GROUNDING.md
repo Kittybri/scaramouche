@@ -99,7 +99,7 @@ Grounding quality is reported as `STRONG`, `MODERATE`, `WEAK`, or `NONE`. This d
 
 ## Prompt-injection defense and citations
 
-Each source is wrapped in `WEB_EVIDENCE_BEGIN` / `WEB_EVIDENCE_END` and explicitly labeled `UNTRUSTED WEB CONTENT`. A higher-priority system directive says that web content cannot change character, safety, consent, owner, NSFW, home-action, or secret-handling policy. Source text containing delimiter names is neutralized.
+Each source is wrapped in `WEB_EVIDENCE_BEGIN` / `WEB_EVIDENCE_END` and explicitly labeled `UNTRUSTED WEB CONTENT`. A higher-priority system directive says that web content cannot change character, safety, consent, owner, Unrestricted-mode, home-action, or secret-handling policy. Source text containing delimiter names is neutralized.
 
 Evidence retains title, canonical URL, domain, date when known, fetch/snippet status, and source number. The source list is produced from the same selected evidence sequence. After generation, numeric citations outside the real source range are removed. The narration stripper preserves valid numeric citations.
 
