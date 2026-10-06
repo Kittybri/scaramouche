@@ -801,3 +801,81 @@ The reproduced defect is fixed in code, but the reported silent phrase still
 requires a live retry on this candidate. Keyword interruption and the remainder
 of Gate B are not marked passed. No Gate A checks were repeated and Gate C has
 not begun.
+
+### Continued silent session — no incoming RTP observed (October 6)
+
+The human reported another unanswered “Scaramouche, are you there?” after
+approximately 28 minutes connected. The **10:57 AM PDT** owner diagnostic on
+live Scaramouche `5daea6e5617167bf7ae94b22d3cfca2e5ea8e3c5` showed:
+
+- `udp_callbacks=1728`, `non_audio_datagrams=1728`; no RTP, DAVE, PCM, VAD,
+  transcription, response, or playback events counted in this session.
+- Connected/listening, healthy receive and transcribe workers, DAVE ready,
+  two mapped speakers and one mapped/enrolled participant; no reader failure.
+- Service journal contained the successful 17:28 UTC voice connection but no
+  subsequent speech-provider requests in the inspected interval.
+
+This failure precedes speech segmentation and Groq. It does **not** prove the
+previous segmenter repair resolved the reported silence, nor distinguish a
+client microphone/transmission problem from Discord delivery to the receiver.
+Read-only Discord inspection showed Mute and Deafen unchecked, the system
+default internal microphone selected, and input volume 100%. No audio settings
+were changed, no participant was disconnected, and no service was restarted.
+Requested a five-second human speech probe with confirmation of Discord's
+green speaking indicator to isolate the next layer. Gate B remains blocked on
+live receive reliability; no additional live scenario is marked passed.
+
+### Receive startup registration repair — candidate validation
+
+The human confirmed Discord's green speaking indicator appears. This confirms
+client-side voice activity, not end-to-end RTP delivery. Source inspection found
+neither our receive startup nor the pinned receiver/discord.py connect path
+sends an initial speaking-state update. Discord's API issue
+<https://github.com/discord/discord-api-docs/issues/808> documents receive-only
+connections not receiving media until their SSRC/speaking state is registered,
+including a successful silent (`speaking=0`) update. This is a strong candidate
+for the current zero-RTP session, not yet a live-confirmed root cause.
+
+Both bots now register `SpeakingState.none` after attaching the receiver. This
+sends control signaling only, not audio, and leaves DAVE decryption requirements
+unchanged. Startup failure/cancellation stops the attached receiver rather than
+leaving a half-started listener. The sanitized `receive_handshake_sent` counter
+confirms successful signaling without claiming media receipt.
+
+Two new regression cases failed before the repair and pass afterward: silent
+registration after listener attachment and listener cleanup on signaling
+failure. Scaramouche's focused voice suites passed **70 passed, 1 skipped**.
+Full-suite validation and deployment results follow; a fresh connection must
+still receive and answer human speech before this incident is marked resolved.
+
+Full validation completed: Scaramouche **702 passed, 1 skipped, 1 warning** in
+216.80s; Wanderer **246 passed, 1 skipped, 1 warning** in 77.33s. The skip is
+optional Opus and the warning is local LibreSSL. The initial Wanderer `tests/`
+run alone passed 230 tests; the subsequent complete discovery includes its
+16 root-level tests. A mistaken explicit root-test invocation in Scaramouche
+collected no tests; its full suite above completed successfully.
+
+Deployed at approximately **11:10 AM PDT, October 6, 2026**:
+
+| Bot | Exact code SHA / release PR head at deployment |
+| --- | --- |
+| Scaramouche | `ea8e43a9e9d59e2a8217ca16ace058f848ed2361` |
+| Wanderer | `2716d464e31265e9f200b6174f94462ab310538e` |
+
+Both existing release branches were pushed, with no PR merge. Release imports,
+compilation and pinned dependency checks passed. SQLite online backups and
+previous service drop-ins are preserved under
+`/opt/scara-wanderer-staging-fallback/config-backups/voice-segmentation-ea8e43a`.
+All three databases returned `quick_check=ok`. Each service was deliberately
+restarted once; PIDs are 2719372 / 2719373, active/running, `NRestarts=0`.
+Both logged online with no startup ERROR/Traceback/initialization-failed matches
+in the inspected deployment interval. Host available RAM: 312/951 MiB; swap:
+148/3062 MiB. User microphone settings and Discord connection were not changed.
+
+Checkpoint: start a **fresh** Scaramouche session with `!voice start scaramouche`,
+say “Scaramouche, are you there?”, then inspect owner diagnostics for
+`receive_handshake_sent=1`, RTP/DAVE/PCM, STT and completed audible playback.
+The pre-restart diagnostics requested after green-ring confirmation were not
+received before deployment. Live success must not be inferred from unit tests.
+Current state: **STAGING_GATE_B_BLOCKED** pending this human live retry and the
+remaining Gate B scenarios. No Gate C work begun.
