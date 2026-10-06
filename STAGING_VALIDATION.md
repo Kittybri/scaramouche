@@ -972,3 +972,101 @@ categories and STT queue timing alongside audible cancellation. Do not infer
 live interruption success or fresh-join reliability from the automated tests.
 Final checkpoint remains **STAGING_GATE_B_BLOCKED** pending human speech and
 remaining voice scenarios. Gate C not started.
+
+## Connected Accounts / Google Phase 1 — isolated feature branch (2026-10-06)
+
+This user-authorized feature batch is separate from unfinished voice validation.
+Gate A is not repeated. Gate B remains **STAGING_GATE_B_BLOCKED**; no voice code
+or Fish Audio behavior is changed here.
+
+Latest user-supplied voice diagnostic (not a new test performed in this batch):
+713 RTP packets, 571 DAVE frames, 557 PCM frames; receive errors split into 61
+unverified drops and 81 decrypt errors; three STT successes; one deferred response,
+one dropped pending response and one cancellation. Keyword detection was 2,650 ms,
+stop 8 ms, total barge-in 2,658 ms; a subsequent response was scheduled. This is
+evidence of a detected interruption/cancellation, not proof of all remaining live
+voice scenarios. The user explicitly wants an in-character interruption reaction.
+No limitation or narration/personality change is introduced.
+
+Verified release bases (local HEAD and actual GitHub release refs before branching):
+Scaramouche `5548cfa8895acfe0521417688e620a05e408b38e`;
+Wanderer `b98912758d49fe7ef39d42c7df90b3e9ba23467b`.
+Scaramouche's difference from functional `ca5af7120de8d91bb860d1d28739c73d555f35c0`
+was staging documentation only. Both new branches are
+`feature/connected-accounts-google`; existing release PRs #22 / #9 remain open
+and unmerged. No completed work was discarded.
+
+Feature implementation and operator instructions: [CONNECTED_ACCOUNTS.md](CONNECTED_ACCOUNTS.md).
+The shared authorization foundation is wired into both bots. Wanderer's actual
+base lacked the hardened Calendar/Tasks command runtime; the guarded implementation
+was reused, including bounded reads, exact stored write proposals, bot-created
+Calendar markers, Tasks fields and owner-only allowlisted Sheets.
+
+Read-only host recheck: both staging services active, working directories still
+`/opt/scara-wanderer-staging-fallback/releases/scaramouche-ca5af71` and
+`/opt/scara-wanderer-staging-fallback/releases/wanderer-b989127`, each
+`NRestarts=0`. No deployment or intentional restart in this feature batch.
+RAM available 330/951 MiB; swap used 148/3062 MiB at that check.
+
+Google live validation is **BLOCKED_BY_OPERATOR_CONFIGURATION**: no OAuth app
+client/secret/master-key/HTTPS callback configuration was present at preflight.
+Publishing status, test-user allowlist and verification status are unknown.
+No Google login, consent, provider read/write, callback deployment or cloud-account
+write was performed. Automated fake-provider tests are not live Google evidence.
+The operator must configure the named HTTPS origin, Google Web application client,
+Calendar/Tasks APIs and approved test user before the user personally signs in.
+
+Initial full regression passes before additional race hardening:
+Scaramouche 755 passed / 1 skipped / 1 warning; Wanderer 299 passed / 1 skipped /
+1 warning. Final expanded-suite results will be appended below; these are not a
+claim that live account linking passed.
+
+Expanded validation found and corrected test-harness issues without changing
+production voice behavior. Wanderer's video-worker test installs a partial vision
+module during collection; the new real-bot registration test now isolates that stub
+and imports under an active Python 3.9 event loop. The combined connection/video
+check passed **68 tests**. A later Wanderer full run passed **312 tests, 1 skipped,
+1 warning** before the final shared voice-test cleanup refinement.
+
+One Scaramouche expanded full run was interrupted after **714 passing tests**
+because the existing keyword-diagnostic voice test was waiting indefinitely for
+its manually started transcription worker to cancel. It is not counted as a
+complete suite pass. Isolated connection + voice tests passed **120 tests**.
+Three test cleanups now stop session eligibility before cancelling their manually
+owned worker, with a bounded wait, matching the existing managed shutdown order.
+Assertions and all production voice files remain unchanged. Final complete suites
+are rerun on that candidate; no Gate B live pass is inferred from these tests.
+
+Compile/import checks and dependency consistency passed. The shared connection
+implementation is equivalent in both repositories (blank-line-only differences
+excluded). The focused staged-file credential-pattern scan found **zero findings**
+across 21 Scaramouche and 25 Wanderer files; no real Google credentials were used.
+This is a scoped pattern scan, not a claim of an independent security audit.
+
+Final complete regression on the feature candidates:
+
+| Repository | Passed | Skipped | Warnings | Duration |
+| --- | ---: | ---: | ---: | ---: |
+| Scaramouche | 768 | 1 | 1 | 776.27 seconds |
+| Wanderer | 312 | 1 | 1 | 178.24 seconds |
+
+Each includes 61 connected-account regression cases. The existing optional Opus
+skip and local LibreSSL warning remain. Scaramouche's 45-second faulthandler
+diagnostic printed stacks during slow existing stress/voice tests; the run
+continued and exited successfully, with no failed tests. Encryption, migration,
+synthetic two-user/two-bot isolation, replay/wrong-user rejection, atomic refresh,
+revocation/deletion races and restart persistence passed. Synthetic SQLite
+`quick_check` returned `ok`; no live database was migrated by this batch.
+
+Wanderer feature commit: `9026ec0bd036b4c5f8f5f98209cf437eebc0e608`, draft
+[PR #10](https://github.com/Kittybri/Wanderer/pull/10), stacked on the release
+branch. Its external `Workers Builds: wanderer` check failed; the existing release
+PR #9 also reports that same failing check. GitHub exposes no diagnostic cause in
+the check summary beyond a Cloudflare build link. This is an unresolved external
+check, not a green PR or a demonstrated new code regression. No Cloudflare
+configuration or deployment was manually changed to resolve it.
+
+Google live authorization, provider reads, unconfirmed write previews, live
+refresh and service-restart persistence remain **BLOCKED_BY_OPERATOR_CONFIGURATION**.
+Automated persistence tests do not replace these live checks. No real Calendar or
+Tasks writes were performed. Gate B remains **STAGING_GATE_B_BLOCKED**.

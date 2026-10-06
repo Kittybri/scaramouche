@@ -12,9 +12,11 @@ class _GoogleBase:
 
     @property
     def ready(self) -> bool:
-        return bool(self.account.get("access_token") or self.account.get("refresh_token"))
+        return bool(self.account.get("token_resolver") or self.account.get("access_token") or self.account.get("refresh_token"))
 
     async def _token(self) -> str:
+        if self.account.get("token_resolver"):
+            return await self.account["token_resolver"]()
         token = str(self.account.get("access_token") or "")
         if token and float(self.account.get("expires_at") or 0) > time.time() + 30:
             return token

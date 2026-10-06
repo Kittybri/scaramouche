@@ -1,5 +1,11 @@
 # Cloud integrations
 
+**Google onboarding update:** [CONNECTED_ACCOUNTS.md](CONNECTED_ACCOUNTS.md) is now
+the canonical Calendar/Tasks account-linking, credential-storage and lifecycle guide.
+The static Google account configuration described below is legacy; the live bot
+runtime does not use it as a Calendar/Tasks fallback. Owner-only allowlisted Sheets
+stays on its existing administrative boundary. Operation guards below still apply.
+
 Repair Batch 9A wires the existing cloud adapters into one bounded runtime. All
 automated tests use mocks. Nothing in the test suite creates a real event, task,
 playlist, issue, or Sheet row.
