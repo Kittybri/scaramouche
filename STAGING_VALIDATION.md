@@ -642,3 +642,26 @@ again passed **99 tests with 1 skipped**. Complete suites passed Scaramouche
 **685 passed, 1 skipped** in 123.58 seconds and Wanderer **229 passed, 1 skipped**
 in 54.28 seconds. Compilation and diff checks passed; live deployment evidence
 for this refinement follows after completion.
+
+Final automatic-membership + named-arrival deployment at 2026-10-06 16:34 UTC:
+
+| Bot | Exact live code SHA | Release directory |
+| --- | --- | --- |
+| Scaramouche | `6134aee740dff3c1031be046ce1c5506fcf8905d` | `/opt/scara-wanderer-staging-fallback/releases/scaramouche-6134aee` |
+| Wanderer | `c9056927bae76b64c77a51250727891f6e12a9e7` | `/opt/scara-wanderer-staging-fallback/releases/wanderer-c905692` |
+
+Pinned receive-dependency and release-import checks passed before activation.
+Pre-deployment SQLite backups and the previous voice drop-ins are stored under
+`/opt/scara-wanderer-staging-fallback/config-backups/voice-arrival-greetings-20261006`.
+Post-restart `PRAGMA quick_check` returned `ok` for Scaramouche, Wanderer and
+shared state. Scaramouche PID 2680074 and Wanderer PID 2680082 are active/running;
+both report `NRestarts=0`. The two implementation rounds in this continuation
+intentionally restarted each service twice; no automatic restart occurred.
+Both bots logged online, and the scoped startup log contains zero ERROR,
+Traceback or initialization-failed matches. Host memory was 951 MiB total with
+346 MiB available; swap use remained 148 MiB of 3062 MiB. Heavy staging settings,
+Unrestricted migration state and unrelated integrations were unchanged.
+
+The interrupted keyword-interruption live scenario must be restarted on these
+exact candidates. Named arrival and same-session return lines require live human
+confirmation before they are marked passed. Gate B remains in progress.
