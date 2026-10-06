@@ -901,3 +901,74 @@ rejoin only the primary human account, wait for any arrival greeting to finish,
 then ask the same question. Record greeting and question-answer outcomes
 separately and correlate fresh diagnostics. Awaiting the human action; still
 **STAGING_GATE_B_BLOCKED**. No passed Gate A/B tests repeated.
+
+### Human reconnect recovered speech; delayed-stop repair (October 6)
+
+The human confirmed hearing both the rejoin greeting and a reply to the question.
+Their subsequent pasted owner report proves receive/transcribe/playback in that
+session: 1564 eligible RTP packets, 1286 DAVE frames, 1233 PCM frames, seven STT
+successes, seven scheduled responses, eight completed chunks, healthy workers
+and no pending audio. This confirms recovery after human rejoin, **not** that
+fresh receive-only joins are reliable. The underlying zero-RTP incident remains
+unresolved.
+
+The same report includes 278 generic receive errors and one cancelled response
+with detection=4705ms, stop-call=9ms, total barge-in=4714ms. Three keyword events
+arrived after playback. No raw transcript exists to determine which packet
+errors or utterances contributed, and detection timing includes the utterance
+itself; 4705ms must not be characterized as pure processing latency.
+
+Source inspection reproduced a separate blocking defect: an ordinary follow-up
+during playback made the sole STT worker await that playback, preventing a later
+stop utterance from being transcribed. The new failing-before/passing-after test
+holds playback open, submits an ordinary follow-up followed by “stop”, and checks
+cancellation plus suppression of the superseded reply.
+
+Both bots now keep one latest pending response outside the STT loop. Waiting or
+superseding that response never cancels active playback; interruption-off mode
+is preserved. Pending work is discarded on interruption, speaker revocation,
+session stop, or age expiry; user/epoch checks precede dispatch. Regression
+coverage includes latest-turn replacement, normal completion, revocation, stop,
+and expiry without unintended playback cancellation. Sanitized queue-wait and
+speech-onset-to-STT timings distinguish backlog from utterance duration.
+
+Receive failures now additionally count fixed categories: RTP parsing, transport
+decryption, DAVE decryption, unverified DAVE output, and packet routing. Aggregate
+errors are retained, all encrypted/authentication checks remain fail-closed,
+and exception text, keys, raw packets and transcripts are never logged. These
+are diagnostic categories, **not a claimed fix for the 278 historical errors**.
+Both focused suites passed 74 tests with one optional skip before the additional
+expiry regression. Full-suite/deployment results and live retry remain pending.
+
+Validation completed: Scaramouche **707 passed, 1 skipped, 1 warning** in
+219.44s; Wanderer **251 passed, 1 skipped, 1 warning** in 80.46s. The final focused
+voice suites each passed **75 passed, 1 skipped**. The optional Opus skip and
+local LibreSSL warning remain. Preliminary full runs were interrupted to correct
+an invalid synthetic expiry-test threshold; a focused run exposed an existing
+20ms test sleep racing response scheduling. That test now waits for the response
+condition with a one-second deadline; production timing limits were not loosened.
+
+Deployed at **12:22 PM PDT, October 6, 2026**:
+
+| Bot | Exact functional code SHA |
+| --- | --- |
+| Scaramouche | `ca5af7120de8d91bb860d1d28739c73d555f35c0` |
+| Wanderer | `b98912758d49fe7ef39d42c7df90b3e9ba23467b` |
+
+Release imports/compilation/pinned dependency checks succeeded. Both release
+branches were pushed; neither PR was merged. Online SQLite backups and previous
+drop-ins are preserved under
+`/opt/scara-wanderer-staging-fallback/config-backups/voice-segmentation-ca5af71`.
+All three databases returned `quick_check=ok`. Both services are active/running,
+PIDs 2746361 / 2746360, `NRestarts=0`; one intentional restart each in this batch.
+Both logged online, with no startup ERROR/Traceback/initialization-failed matches
+in the inspected deployment window. RAM available: 320/951 MiB; swap:145/3062 MiB.
+
+At 12:23 PM, issued `!voice start scaramouche` in approved staging #general with
+the primary human still connected to General. Required live test: establish
+audible conversation, then during a longer answer say an ordinary follow-up
+without his name, followed by “Scaramouche, stop”. Inspect the new receive-error
+categories and STT queue timing alongside audible cancellation. Do not infer
+live interruption success or fresh-join reliability from the automated tests.
+Final checkpoint remains **STAGING_GATE_B_BLOCKED** pending human speech and
+remaining voice scenarios. Gate C not started.
