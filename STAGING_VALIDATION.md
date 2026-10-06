@@ -756,3 +756,48 @@ mapped participant counts and DAVE readiness. They report neither payloads nor
 keys. The affected receive/session/integration suites each passed **66 passed,
 1 skipped**. These diagnostics are not deployed at this checkpoint; the live
 code remains `25d4a5a` / `5fa2025` and the current voice session is preserved.
+
+### Short speech segmentation repair — live confirmation pending
+
+At 10:20 AM PDT the primary user reported another unanswered “Scaramouche, are
+you there?” The same-session diagnostic advanced from 165 to 202 eligible
+packets, 110 to 131 DAVE frames and 102 to 121 PCM frames, but STT and VAD
+utterance totals remained two. Thus this interval produced no completed speech
+segment; it was not an LLM/TTS request failure. These counters cannot establish
+the content of the received frames or exclude upstream microphone clipping.
+
+Inspection reproduced a segmenter defect: three 100ms speech fragments separated
+by 60ms VAD-negative gaps supplied 300ms total speech yet produced zero
+utterances. The early-onset rule repeatedly deleted each fragment before it
+could reach the 120ms start threshold. Both bots now retain the bounded candidate
+until ordinary end-of-speech timeout. Minimum speech duration, maximum buffer
+size, per-user separation and consecutive-speech barge-in rules remain enforced.
+Regression tests verify fragmented speech survives while short isolated noises
+are still rejected. New VAD counters report speech/non-speech frames and dropped
+short candidates without storing audio or transcripts. The previously prepared
+receiver diagnostics are included in this deployment.
+
+Complete validation: Scaramouche **700 passed, 1 skipped** in 162.51s;
+Wanderer **244 passed, 1 skipped** in 65.81s. The optional Opus skip and existing
+LibreSSL warning remain. One preliminary timing-sensitive focused test run was
+interrupted after hanging; the later complete suites finished successfully.
+
+Deployed at **10:27 AM PDT, October 6, 2026**:
+
+| Bot | Exact live code SHA |
+| --- | --- |
+| Scaramouche | `5daea6e5617167bf7ae94b22d3cfca2e5ea8e3c5` |
+| Wanderer | `efab40fbebe8790268782ea3f0ef855bb557c625` |
+
+Release imports, pinned receive-dependency checks and compilation passed before
+activation. SQLite online backups and previous drop-ins are retained under
+`/opt/scara-wanderer-staging-fallback/config-backups/voice-segmentation-5daea6e`.
+All three live databases returned `quick_check=ok`. Both services logged online,
+with PIDs 2701258 / 2701259 and `NRestarts=0`; each was intentionally restarted
+once. No startup ERROR/Traceback/initialization-failed entry was observed. Host
+available RAM was 342 MiB of 951 MiB; swap use was 148 MiB of 3062 MiB.
+
+The reproduced defect is fixed in code, but the reported silent phrase still
+requires a live retry on this candidate. Keyword interruption and the remainder
+of Gate B are not marked passed. No Gate A checks were repeated and Gate C has
+not begun.
