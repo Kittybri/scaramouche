@@ -12,7 +12,7 @@ No release PR was merged. No voice behavior, Fish Audio, character prompt, troll
 preference, or heavy staging setting is changed. Gate A remains passed; the available
 voice evidence does **not** establish Gate B completion. See `STAGING_VALIDATION.md`.
 
-**Live Google linking is not validated or deployed.** At preflight the staging host
+**Historical preflight (superseded by the staging closure record):** At preflight the staging host
 had no configured Google OAuth client/redirect/master-key variables and no callback
 service or HTTPS reverse proxy listening. Google's app publishing status, approved
 test-user list, domain/certificate, API enablement and verification status are
@@ -20,6 +20,13 @@ test-user list, domain/certificate, API enablement and verification status are
 credentials and fake Google responses only.
 
 ## Architecture
+
+For current live HTTPS/OAuth deployment, two-user isolation, disconnect/reconnect,
+full-suite results and remaining closure gates, see the canonical
+[STAGING_VALIDATION.md](STAGING_VALIDATION.md), section "Google Phase 1 closure audit".
+The preflight paragraph above describes the original starting state, not the
+current deployment. The expanded closure is pending the second user's renewed
+partner grant and final reconnect retest; do not infer readiness from older totals.
 
 Both bots and the separate callback process use the **same existing shared SQLite
 database**. `ConnectedAccountService` owns authorization; neither character's LLM

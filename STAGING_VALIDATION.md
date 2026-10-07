@@ -1070,3 +1070,516 @@ Google live authorization, provider reads, unconfirmed write previews, live
 refresh and service-restart persistence remain **BLOCKED_BY_OPERATOR_CONFIGURATION**.
 Automated persistence tests do not replace these live checks. No real Calendar or
 Tasks writes were performed. Gate B remains **STAGING_GATE_B_BLOCKED**.
+
+### Staging infrastructure preparation — 2026-10-06 continuation
+
+Verified both clean feature worktrees and matching open/draft PR heads before
+changes: Scaramouche #23 `908e60363cbf1ffd3253b669420b07a60061f2e6`;
+Wanderer #10 `9026ec0bd036b4c5f8f5f98209cf437eebc0e608`. Both are mergeable;
+both external Cloudflare Workers checks now report failure (also present on
+release baselines). Neither PR was merged.
+
+Oracle remains on functional Scaramouche `ca5af7120de8d91bb860d1d28739c73d555f35c0`
+and Wanderer `b98912758d49fe7ef39d42c7df90b3e9ba23467b`; both services are
+active/running with `NRestarts=0`. No restart or running-code switch this continuation.
+Reviewed feature archives were extracted into `releases/scaramouche-908e603` and
+`releases/wanderer-9026ec0` under `/opt/scara-wanderer-staging-fallback`, but are
+**staged, not activated**. Compile/import checks pass in both existing Python 3.9.25
+environments; both `pip check` results are clean. No dependency upgrade was needed.
+
+Both live bots resolve their canonical shared store to
+`/opt/scara-wanderer-staging-fallback/data-gate-a-6eab863-0d36a90/shared_state.db`.
+Online backups of all three databases are preserved in the root-only directory
+`/opt/scara-wanderer-staging-fallback/config-backups/google-connect-phase1-20261006`.
+All three preflight/backup integrity checks passed. Additive connections migration
+version 1 was applied to the canonical shared store and repeated idempotently:
+`quick_check=ok`, zero foreign-key violations, zero linked accounts.
+
+A cryptographically random 32-byte master key was generated directly on Oracle in
+`/opt/scara-wanderer-staging-fallback/env/connections-key.env` (root-owned, 0600).
+Its value was never displayed or copied into Git/chat. This file is not yet wired
+into any service. Preserve it on continuation; do not generate a replacement.
+Idempotent preparation script is in local `oracle_ops/deploy_staging/` and the host
+`uploads/google-connect-phase1-20261006/prepare.py` (no embedded secrets).
+
+Network preflight: no nginx/certbot installation, callback listener, or configured
+TLS proxy. Firewalld public zone exposes SSH only (plus dhcpv6-client service).
+Oracle VCN ingress has not yet been verified. No firewall/DNS/TLS changes made.
+Available RAM 377/951 MiB; swap used 174/3062 MiB; disk available 48 GiB.
+
+User approved existing Google project `sheets-editor-510419` (Sheets editor).
+Browser inspection confirms External / Testing, one approved test user matching
+the signed-in owner account, no authorized domains and no homepage/privacy URL.
+Calendar and Tasks are absent from the 24 enabled APIs. Calendar API activation
+page explicitly links API terms; handed the Enable step to the user as requested
+for legal acceptance. No Google configuration write, credential creation, consent
+or provider operation has been performed. The account is already signed in.
+
+User does not know whether they own a domain. No usable hostname was found in
+the inspected bot deployment or OAuth branding. A free DuckDNS staging subdomain
+was proposed, not registered; Google callback acceptance and HTTPS still require
+verification. Do not claim the user owns no domains outside this inspected scope.
+
+Resume after the user reviews/enables Calendar and chooses/registers a hostname.
+Complete Tasks enablement with any required personal acceptance; then configure
+hostname/TLS, OAuth Web client and protected credentials, activate services and
+hand off actual Google account consent to the user. Live Google remains blocked;
+no real Calendar/Tasks writes are permitted in validation.
+
+Follow-up: user enabled Calendar personally; Google service details now explicitly
+show `calendar-json.googleapis.com` Enabled. User requested a free hostname.
+Opened DuckDNS registration/sign-in page and handed off personal sign-in. No
+hostname registered yet. Proposed `kittybri-bots.duckdns.org` remains unverified
+for availability. On return, do not capture the whole signed-in DuckDNS page or
+screenshots: it may display its persistent account token. Inspect only narrowly
+scoped non-secret domain controls. Do not ask the user to share that token.
+
+### Hostname and infrastructure checkpoint — 2026-10-06 evening PDT
+
+User completed DuckDNS sign-in and CAPTCHA personally. Registered
+`kittybri-bots.duckdns.org` and changed its A record to staging Oracle
+`163.192.24.7`; independent DNS resolution confirms that address. Only domain
+controls were inspected; no DuckDNS token was read/output or installed.
+
+Google Tasks API was enabled in the approved existing project, with the Enabled
+status and Disable API control verified afterward. Calendar was already enabled
+by the user. Prepared a **separate**, not-yet-submitted Web OAuth client named
+`Scaramouche + Wanderer Staging` with sole redirect URI
+`https://kittybri-bots.duckdns.org/oauth/google/callback`; no JavaScript origins.
+The existing Chrome extension client is untouched. The user was asked to review,
+click Create and download JSON locally, without sharing its contents. No client
+secret is installed yet. User acceptance of Let's Encrypt subscriber agreement
+v1.8 was separately requested before certificate issuance/automatic renewal.
+
+Installed nginx (Oracle package 1.20.1-28.0.1.el9_8.6) and Certbot 3.1.0 from
+official configured Oracle repositories. The initial metadata job for the unrelated
+large OCI-included repository caused memory pressure and was stopped before its
+package transaction; a restricted-repository installation completed successfully.
+Both bot services remained active with `NRestarts=0`; final observed available
+RAM 363/951 MiB, swap used 418/3062 MiB.
+
+Added a dedicated OCI NSG `bots-google-staging-https`, attached only to the verified
+staging VNIC, with stateful inbound TCP 80 and 443. Existing NSG assignments and
+security-list rules were preserved; baseline is saved locally in the private
+`oracle_ops/deploy_staging/google-connect-phase1-20261006/network-baseline.json`.
+Firewalld now permits HTTP/HTTPS in addition to its prior services.
+
+Nginx is enabled/active with one worker, request logging disabled, and only the
+HTTP ACME challenge directory exposed. Public verification returned HTTP 200 and
+the expected synthetic marker at
+`http://kittybri-bots.duckdns.org/.well-known/acme-challenge/staging-network-check`.
+Plain HTTP `/oauth/google/callback` returned 404 as intended. This is network
+readiness evidence, **not** OAuth callback health or HTTPS success.
+
+Installed (but did not start/enable) `connections-staging.service`; it uses the
+reviewed Scaramouche candidate, existing runtime and canonical shared SQLite path.
+Protected non-secret connection configuration and existing root-only key file are
+referenced. A missing `env/connections-google.env` prevents premature startup.
+Original nginx configuration is backed up alongside database backups. Operational
+scripts/configurations are preserved in local and remote `google-connect-phase1-20261006`
+staging folders. No bot code activation/restart, certificate issuance, Google
+account link, provider read or provider write has occurred at this checkpoint.
+
+Next user check: Google UI explicitly reports `OAuth client created` for the
+prepared Web client. Download JSON was invoked; the browser download-event wait
+timed out, but the resulting file was independently located in local Downloads.
+Local validation confirms Web application, project `sheets-editor-510419`, exactly
+the registered HTTPS callback and nonempty app credentials. File permission was
+restricted to 0600. No credential values were output. Credentials are not yet
+installed on Oracle. Let's Encrypt agreement/issuance approval remains pending;
+do not infer it from the user's “check now” request.
+
+### HTTPS and reviewed-candidate activation — 2026-10-06 evening PDT
+
+User explicitly accepted Let's Encrypt certificate issuance and automatic renewal.
+Certbot obtained a valid certificate for `kittybri-bots.duckdns.org` (issuer YE2;
+expiry 2027-01-05 00:56:15 UTC / January 4, 2027 4:56:15 PM PST). Registration did
+not transmit a personal email address. `certbot-renew.timer` is enabled/active;
+the deploy hook validates and reloads nginx after renewal.
+
+Google Web client JSON was transferred through SSH stdin directly to a validating
+root-side installer, never displayed or placed in Git. The resulting
+`env/connections-google.env` is root-owned 0600. Master-key and non-secret config
+files are also root-owned 0600. Original local download remains owner-only 0600;
+it has not been deleted. Do not expose it in screenshots or logs.
+
+`connections-staging.service` and nginx are enabled/active. SELinux remains
+Enforcing; port TCP/8787 has HTTP port labeling and the HTTP relay boolean is on
+for reverse proxying (general httpd network-connect boolean was not enabled).
+The callback itself listens only on loopback. Public HTTPS `/health` returned
+200 `ok` with certificate validation enabled and no-store/referrer/CSP headers.
+Missing-state `/oauth/google/callback` returned fixed safe HTTP 400. Plain HTTP
+OAuth remains unavailable (404). This does not establish a successful real OAuth
+exchange or user authorization.
+
+Activated exact reviewed feature candidates with new `60-google-connections.conf`
+drop-ins, retaining earlier voice/trolling settings and taking copies of prior
+drop-in directories. Functional deployed SHAs:
+
+| Service | Exact deployed functional SHA |
+| --- | --- |
+| Scaramouche staging | `908e60363cbf1ffd3253b669420b07a60061f2e6` |
+| Wanderer staging | `9026ec0bd036b4c5f8f5f98209cf437eebc0e608` |
+| Connections staging | `908e60363cbf1ffd3253b669420b07a60061f2e6` |
+
+Both bots logged online after one intentional deployment restart each. All three
+services are active/running, `NRestarts=0`, with zero startup ERROR lines or
+tracebacks in the inspected startup windows. In-memory environment checks confirm
+the three processes have identical nonempty OAuth settings/master key, and both
+bot data directories resolve to the callback's canonical shared database. Checks
+reported only booleans, never credentials. All three databases: `quick_check=ok`.
+Linked account count is zero. Host observation: available RAM 301/951 MiB, swap
+used 179/3062 MiB. Both feature PRs remain open/draft/unmerged at the reviewed heads.
+
+Next handoff is the user's real Discord `!connections` flow. The existing project's
+public consent branding remains `Sheets editor` to avoid silently renaming its
+separate Chrome-extension client. The user must personally review requested
+identity/Calendar/Tasks permissions and privately confirm the bot account link.
+No real Google Calendar/Tasks read or write, grant validation, authenticated token
+refresh, or post-link restart persistence has occurred yet. No provider writes
+are permitted during the remaining preview-only validation.
+
+Certificate renewal dry run completed successfully, including the nginx deploy
+hook. The first dry run was stopped during Certbot's randomized scheduling delay;
+the repeated validation used `--no-random-sleep-on-renew` only for that manual test.
+The normal scheduled renewal retains its default jitter. Hook stderr contained
+nginx's successful configuration-test messages; the command exited 0 and reported
+all simulated renewals successful. HTTPS health was rechecked after the reload.
+
+### Real account link and read-only validation — 2026-10-06 19:15 PDT
+
+User reported completing Connect Google. Canonical database verification found
+one CONNECTED Google account bound to the expected primary Discord user, encrypted
+credential material present, and no pending OAuth session. The live Google
+userinfo subject matched the identity sealed at confirmation; email verification
+was true. No identity, credential, calendar event, or task contents were printed.
+
+Scaramouche grant is enabled. Wanderer is independently denied with BOT_DISABLED;
+no grant was silently added. User was asked to use `!google permissions` privately
+and enable Wanderer. That action is still pending at this checkpoint.
+
+Using the exact deployed candidate's ConnectedGoogleRuntime and canonical store:
+
+| Live validation | Result |
+| --- | --- |
+| Scaramouche bounded Calendar read | PASS |
+| Scaramouche bounded Tasks read | PASS |
+| Confirmed Discord / Google subject binding | PASS |
+| Authenticated encrypted credential decryption | PASS |
+| Independent Wanderer grant enforcement | PASS: denied while disabled |
+| Unconfirmed Calendar creation proposal | PASS: dry-run only |
+| Unconfirmed Tasks creation proposal | PASS: dry-run only |
+| Provider requests during both previews | Zero |
+| Provider Calendar/Tasks writes sent | Zero |
+| Ephemeral synthetic previews cleared | PASS |
+| Real OAuth token refresh and sealed persistence | PASS |
+
+Validation used an HTTP guard that permits only GET for Calendar/Tasks; no
+mutating request was attempted or sent. Neither proposal was confirmed. The
+proposals were exercised directly through deployed runtime methods, not through
+Discord UI; no claim of additional command/UI interaction is made. Their in-memory
+pending store was cleared without deleting the connected account.
+
+Refresh was exercised once by conditionally expiring only this account's local
+access-token cache expiry, then invoking the ordinary service refresh path with
+real wall time. Google accepted the refresh; the service preserved the account
+revision, persisted encrypted refreshed credentials and a future expiry, recorded
+last_refresh_at, and released its refresh lease. No scope/grant was changed.
+
+Restarted connections-staging and wanderer-staging once each after linking, then
+reran identity/decryption/Scaramouche reads successfully using the Wanderer release
+runtime. All three services active; NRestarts=0; inspected current-start journals
+had zero ERROR/traceback lines. All three SQLite quick checks returned ok. HTTPS
+health HTTP 200 with TLS verification success. Host available RAM 336/951 MiB,
+swap used 173/3062 MiB. Scaramouche was deliberately not restarted yet to preserve
+the user's pending permission-button interaction.
+
+Functional SHAs and draft PR heads remain unchanged: Scaramouche #23
+`908e60363cbf1ffd3253b669420b07a60061f2e6`; Wanderer #10
+`9026ec0bd036b4c5f8f5f98209cf437eebc0e608`. Existing automated totals remain
+768 passed / 1 skipped (Scaramouche), 312 passed / 1 skipped (Wanderer), one warning
+each; not rerun this checkpoint because no application code changed.
+
+Remaining: user's explicit Wanderer grant, live reads with that bot grant,
+Scaramouche post-link restart and persistence recheck, and private Discord
+`!google status` / `!google permissions` UI confirmation. Do not claim staging
+fully complete yet. No Phase 2 work or PR merge occurred.
+
+### Independent Wanderer grant and restart persistence — 2026-10-06 19:28 PDT
+
+User reported enabling Wanderer. Live canonical status now confirms both distinct
+grants enabled, with the same confirmed primary Discord / Google identity binding.
+Using the Wanderer candidate runtime, both bots' bounded Calendar and Tasks reads
+passed. Both bots' Calendar/Tasks proposals were dry-run only, made zero provider
+requests, and were cleared from the diagnostic runtime's ephemeral pending store.
+No Calendar or Tasks mutation was attempted or sent.
+
+Then intentionally restarted both bots and the connection service together once.
+Repeated validation using the Scaramouche candidate runtime passed for both bot
+grants, both provider reads, encrypted credential decryption, Google subject binding,
+and no-write previews. Google remains CONNECTED with Calendar and Tasks available.
+The real OAuth refresh test from the preceding checkpoint also remains passed.
+
+| Deployment / health | Result |
+| --- | --- |
+| Scaramouche RELEASE_SHA | `908e60363cbf1ffd3253b669420b07a60061f2e6` |
+| Wanderer RELEASE_SHA | `9026ec0bd036b4c5f8f5f98209cf437eebc0e608` |
+| Callback code | Same Scaramouche candidate |
+| All three services | active; automatic NRestarts=0 each |
+| Inspected current-start ERROR/traceback lines | 0 each |
+| shared_state / scaramouche / wanderer database quick_check | ok / ok / ok |
+| Callback HTTPS health | 200; TLS verification succeeded |
+| nginx / certbot renewal timer | active; renewal timer enabled |
+| Host available RAM / total | 332 / 951 MiB |
+| Host swap used / total | 173 / 3062 MiB |
+| Scaramouche #23 / Wanderer #10 | open, draft, unmerged at above heads |
+
+Intentional restarts during this Phase 1 activation/validation sequence: Scaramouche
+two (deployment plus post-link validation); Wanderer three (deployment plus two
+post-link validations); callback initial start plus two post-link restarts. These
+are distinct from systemd's automatic NRestarts counters, all zero.
+
+Google OAuth configuration was last directly observed External / Testing with one
+approved test user. No publishing change was made. HTTPS hostname remains
+`kittybri-bots.duckdns.org`, redirect path `/oauth/google/callback`. Certificate
+renewal simulation already passed; neither TLS nor master key was regenerated.
+
+Application code and prior automated totals are unchanged. `git diff --check`
+passed for the updated validation record. No complete suite was rerun for these
+infrastructure-only live checks.
+
+**Infrastructure and authenticated runtime validation: PASS. Final Discord command
+display confirmation remains pending.** The in-app Discord tab is logged out, so
+it cannot currently supply UI evidence for `!google status` / `!google permissions`.
+Asked the user to run both commands privately with each bot and report only whether
+connected, module availability, and both grants are displayed. Do not conflate
+backend runtime verification with command-UI verification. No known backend blocker
+was observed; no Phase 2 work, real provider write, or PR merge occurred.
+
+Next Phase 2 recommendation after final command confirmation: choose and scope
+one read-only provider module, including minimal scopes and revocation/deletion
+tests, before implementing anything. No additional Google scope has been requested.
+
+### Phase 1 staging completion — 2026-10-06, user-reported 20:27 PDT
+
+User confirmed receiving the expected status and permissions displays from both
+bots and supplied Wanderer's two Connected Accounts responses. Both show Google
+Connected, modules calendar/tasks, Scaramouche Allowed, Wanderer Allowed, and the
+notice that writes require a separate exact confirmation. Account identity remained
+masked. This is user-provided Discord command evidence, not a new direct browser
+observation; the in-app Discord tab remains logged out.
+
+**Google Connected Accounts Phase 1 staging: PASS.** This closes the final pending
+command-display check above. Live authenticated reads, independent grants,
+encrypted credential use, real token refresh, restart persistence, no-write
+previews, HTTPS/renewal, service health, and database integrity were established in
+the preceding checkpoints. No real Calendar/Tasks write was performed. No known
+Phase 1 staging blocker remains. This does not change any separate voice gate.
+
+No application code, deployed SHA, secret, Google publishing state, or PR state was
+changed for this confirmation. Feature PRs remain draft/unmerged at the previously
+verified heads. Existing suite totals remain 768 passed / 1 skipped for Scaramouche
+and 312 passed / 1 skipped for Wanderer, one warning each; suites were not rerun for
+this documentation-only update. OAuth remains a Testing deployment, not a public
+production launch. Phase 2 remains unstarted and requires separate authorization.
+
+### Google command discovery follow-up — 2026-10-06 20:44 PDT
+
+User requested visible `!google` guidance in both character help menus and slash
+commands so friends can connect their own accounts. Added a prominent first-page
+help description to `!scarahelp` and `!wanhelp` / `!wandererhelp`, without increasing
+embed field counts. Added `/google` to both bots; it defers privately and returns
+the same user-bound account controls as an ephemeral response, including when DMs
+are closed. Prefix commands and aliases retain existing behavior. No OAuth scope,
+test-user allowlist, grant default, confirmation rule or publishing change occurred.
+
+Deployment and draft PR heads:
+- Scaramouche #23: `e42c9f1f14c18e559b069a304eea3c807a64f286`.
+- Wanderer #10: `aad50ac9b9b2a83e2f9135f0a06b47ee22d9557a`.
+- Callback remains on `908e60363cbf1ffd3253b669420b07a60061f2e6`;
+  this change affects bot discovery/UI only.
+
+Read-only Discord registration checks found nine legacy Scaramouche global slash
+commands absent from its local tree. Scaramouche therefore upserts only `/google`
+instead of bulk-syncing and deleting those registrations. Wanderer retains its
+existing full-tree startup sync. After deployment Discord reports all nine old
+Scaramouche commands plus google, and all five old Wanderer commands plus google.
+Both new commands have no administrator/default member permission restriction and
+are enabled for DMs. Registration was verified through Discord's API; invocation
+privacy, caller binding, sanitized failures, actual help rendering limits and
+single-command upsert preservation were verified by regression tests. No claim
+of a fresh browser slash invocation: Discord remains logged out in the in-app tab.
+
+Targeted tests: Scaramouche 73 passed, Wanderer 67 passed, one existing local
+LibreSSL warning each. Both git diff checks passed. Full suites were not rerun for
+this bounded UI/discovery change. Both bots restarted once for these candidates;
+all services active, automatic NRestarts=0, inspected current-start ERROR/traceback
+counts zero, all three database quick checks ok. Live reads and private no-write
+previews passed again for both grants using both new runtime candidates; encrypted
+identity and grants persisted. No provider write was attempted or sent. Both PRs
+remain open/draft/unmerged. Old release directories and protected configuration
+remain intact; only a new WorkingDirectory drop-in selects each new bot release.
+
+Friends can now discover `/google`, but Google Testing still requires their own
+Google accounts to be explicitly approved as test users by the operator. No friend
+was automatically granted access and no account was linked on another user's behalf.
+
+### Additional Google test user — 2026-10-06
+
+At the user's explicit request and subsequent Save confirmation, added their
+second Google account to the existing project's OAuth test-user allowlist.
+Google Cloud Audience now shows two test users; the original entry is preserved
+and publishing remains Testing. No Discord link, bot grant, OAuth consent,
+Calendar/Tasks read or write was performed for this second account. The user must
+personally complete any subsequent connection flow from their intended Discord
+account. No credential or full test-user email was added to this record.
+
+User subsequently reported completing the second connection. Read-only canonical
+store inspection confirms two separate Discord-owned Google records, both
+CONNECTED with encrypted credentials present, no pending final confirmation,
+and quick_check=ok. The primary Discord account retains both bot grants; the
+secondary account currently grants only Scaramouche. No grant was added on the
+user's behalf. This check verifies stored link state, not the secondary account's
+Google identity or live provider reads; no secondary provider content was fetched.
+
+After the user's subsequent grant confirmation, read-only inspection confirms
+Scaramouche and Wanderer are now both enabled for the secondary account. The
+primary account remains separately CONNECTED with both grants; shared database
+quick_check remains ok. No provider read/write or account relinking was performed
+for this grant verification.
+
+## Google Phase 1 closure audit — 2026-10-06
+
+This section supersedes earlier completion shorthand for the expanded closure
+request. No Phase 2 work, real Calendar/Tasks mutation, or PR merge is authorized
+or performed. Canonical live evidence remains in this file.
+
+### Candidate and regression evidence
+
+Current deployed/tested functional heads (including help discovery and `/google`):
+- Scaramouche: `e42c9f1f14c18e559b069a304eea3c807a64f286`.
+- Wanderer: `aad50ac9b9b2a83e2f9135f0a06b47ee22d9557a`.
+- Callback remains `908e60363cbf1ffd3253b669420b07a60061f2e6`; provider and store
+  implementation is unchanged by the subsequent bot UI/discovery commits.
+
+Fresh complete suites, not the earlier 768/312 runs or targeted discovery runs:
+
+| Check | Scaramouche | Wanderer |
+| --- | --- | --- |
+| Complete `python -m pytest -q` | 774 passed, 1 skipped, 1 warning; 133.11s | 318 passed, 1 skipped, 1 warning; 70.65s |
+| Connected accounts + discovery rerun | 67 passed | Included in 83-pass connections/discovery/release-hardening rerun |
+| Persistence/migration/privacy rerun | 14 passed | Privacy coordinator cases included in 83-pass rerun and full suite |
+| Tracked Python compile checks | 133 files passed | 76 files passed |
+| Tracked-file credential-pattern scan | 179 files, zero matches | 109 files, one reviewed fixture-only match; no credential |
+| `git diff --check` | PASS | PASS |
+
+Full suites exercise actual bot imports, prefix/slash registration, encrypted
+connections, migrations, privacy deletion, refresh rotation/concurrency, stale
+account races and user-bound Discord UI. One auxiliary Scaramouche targeted command
+initially referenced Wanderer's nonexistent `test_release_hardening.py` and ran no
+tests; corrected paths were rerun successfully as listed above. This did not affect
+the successful full-suite run.
+
+Both skips are the optional real Opus encode/decode test requiring
+VOICE_OPUS_LIBRARY; separately verified with `-rs` (16 passed / 1 skipped per bot).
+The warnings are the local urllib3/LibreSSL environment warning. No live voice
+testing occurred. Wanderer's scan match is an assertion containing only the
+literal private-key BEGIN delimiter in tests/test_release_hardening.py:70, used to
+test secret detection; no key body exists there. Findings were reported by location
+and rule only, never by credential value.
+
+### Live two-user isolation and disconnect
+
+The diagnostic imported each candidate's ConnectedGoogleRuntime and real canonical
+service, and resolved two separate Discord-owned Google records. For every live
+Calendar/Tasks request, a guarded GET-only HTTP client verified the outgoing bearer
+token's Google userinfo subject against the subject sealed to that Discord user's
+record before forwarding the read. A and B subjects were distinct. Reports contain
+only synthetic LOCAL_USER_A / LOCAL_USER_B labels and success booleans; no event,
+task, subject, email, token or response body was output. These are local probe
+markers, not independently seeded provider-content canaries. No Calendar event or
+Task was created to manufacture evidence.
+
+Before disconnect: all eight reads passed (two users x two bots x two modules),
+with each request bound to the intended Google subject. No cross-user token/data
+routing was observed on those requests. The checks call deployed runtime methods;
+they are not a claim of observing all eight commands in Discord UI.
+
+With explicit user authorization, disconnected B through the service's normal
+disconnect operation with an expected account revision. Google revocation returned
+DISCONNECTED. B's connected-account row, grants and OAuth sessions were removed;
+status became NOT_CONNECTED and both bots were denied for both modules. A's complete
+account row (including encrypted credentials), grants and sessions compared
+byte-for-byte identical immediately before/after B's disconnect and after A's
+subsequent successful Calendar/Tasks reads with both bots. Shared quick_check=ok.
+
+User personally reconnected B using Wanderer's normal OAuth/Discord confirmation
+flow. New canonical state is CONNECTED with Wanderer allowed; as designed,
+Scaramouche requires a fresh explicit grant. The first strict two-bot retest stopped
+at the missing grant (diagnostic assertion, not a provider/code failure). A
+Wanderer-only reconnect retest passed Calendar/Tasks reads for both users, with
+distinct Google subjects and correct outgoing request identity checks. The user has
+been asked to enable Scaramouche from B's `/google` panel. No grant was fabricated.
+
+**Expanded closure state: NOT_READY pending B's renewed Scaramouche grant and the
+final both-bot post-reconnect isolation retest.** Earlier Phase 1 PASS described the
+original one-user checklist, not this additional disconnect/reconnect requirement.
+
+### Infrastructure and unchanged validation
+
+HTTPS callback `https://kittybri-bots.duckdns.org/oauth/google/callback` is live;
+fresh `/health` check returned 200 with certificate verification. Prior successful
+renewal simulation, encrypted refresh and restart-persistence evidence is retained
+above. Both original accounts/grants survived bot discovery deployment restarts.
+No new token-refresh claim is inferred solely from a successful read.
+
+All three SQLite quick checks passed. Three services remain active with automatic
+NRestarts=0. Latest host sample: 350/951 MiB available RAM, 176/3062 MiB swap used.
+Current-start Scaramouche logs include two legacy `/dashboard` CommandNotFound
+tracebacks (tree.py lookup), outside Google Phase 1; the global registration exists
+but that legacy handler is absent locally. Preserved registrations were not deleted
+to mask this issue. No unrelated repair was attempted. Wanderer and callback had
+zero inspected ERROR/traceback lines. Do not report all service logs as error-free.
+
+Both feature PRs (#23 / #10) are open, draft, MERGEABLE. Cloudflare Workers checks
+fail independently of passing local suites; matching failures were verified on
+both release-base SHAs (`5548cfa...` / `b989127...`). No Cloudflare changes were made.
+Mergeability is not equivalent to every external check passing.
+
+### Exact remaining Testing-to-Production preparation (not performed)
+
+Read-only Cloud Console inspection shows External / Testing, two test users, Publish
+app disabled until branding is complete, app name `Sheets editor`, blank homepage,
+privacy-policy and terms URLs, and authorized domain `kittybri-bots.duckdns.org`.
+Verification Center says verification is not required while Testing. Data Access
+currently declares userinfo.email and the separate existing Sheets scope; it does
+not declare the bots' runtime Calendar/Tasks scopes. No existing Sheets client or
+scope was removed or repurposed.
+
+1. Plan a separate production project/client from this staging project, preserving
+   the existing Sheets application. Select accurate bot branding and maintain valid
+   support/developer contacts.
+2. Publish a public homepage describing the bots and a matching privacy policy
+   covering Google data access, use, encrypted storage, sharing, retention, deletion
+   and disconnect. Link both in branding. Terms are optional for Google's stated
+   homepage requirements; supply them if applicable rather than claiming mandatory.
+3. Verify ownership of applicable authorized domains in Search Console. DuckDNS
+   issuance/TLS alone is not Google domain-ownership verification; determine whether
+   this subdomain is acceptable or use a domain under the operator's verified control.
+4. Declare the exact actual scopes: openid/email, calendar.events and tasks; justify
+   write scopes for the existing separately confirmed write features. Do not add
+   Gmail/Drive/other Phase 2 scopes. Resolve the Sheets branding/scope mismatch through
+   the separate production design, not by disrupting the existing client.
+5. For a public launch, complete brand and applicable sensitive-scope verification,
+   including scope justifications and a consent/feature demonstration. A limited
+   personal-use app for a few known users may qualify for an exception; this is not
+   the same as public verification and retains unverified-app constraints.
+6. After required Google approval/operator authorization, configure production
+   client credentials and redirect, publish appropriately, reauthorize and repeat
+   identity/isolation/revocation tests. No production project, publishing action or
+   verification submission was performed during this Phase 1 audit.
+
+Sources checked for this checklist:
+- https://developers.google.com/identity/protocols/oauth2/policies
+- https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification
+- https://support.google.com/cloud/answer/13464321
