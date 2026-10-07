@@ -6546,6 +6546,8 @@ async def help_cmd(ctx):
         c = 0x4B0082
         e1 = discord.Embed(title="Commands (1/3) — Talk & Fight",
                            description="Hmph. Only saying this once.", color=c)
+        from connections.discord_ui import GOOGLE_HELP
+        e1.description += "\n\n" + GOOGLE_HELP
         for n,v in [
             ("🔊 !voice <msg>","Voice message — !speak !say"),
             ("📨 !dm [msg]","He DMs you privately"),
@@ -6748,6 +6750,7 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
 from connections.discord_ui import ConnectionsController
 CONNECTIONS_UI = ConnectionsController(
     bot, CONNECTIONS, CLOUD_INTEGRATIONS, "scaramouche", PRIVACY_DELETION.is_pending,
+    sync_google=True,
 ).install()
 
 
