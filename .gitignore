@@ -1,4 +1,9 @@
 .env
+.env.*
+connections.env
+*client_secret*.json
+*.sqlite3
+*.sqlite3-*
 .venv/
 .venv*/
 *.db
