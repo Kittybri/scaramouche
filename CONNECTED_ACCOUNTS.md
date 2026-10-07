@@ -25,8 +25,9 @@ For current live HTTPS/OAuth deployment, two-user isolation, disconnect/reconnec
 full-suite results and remaining closure gates, see the canonical
 [STAGING_VALIDATION.md](STAGING_VALIDATION.md), section "Google Phase 1 closure audit".
 The preflight paragraph above describes the original starting state, not the
-current deployment. The expanded closure is pending the second user's renewed
-partner grant and final reconnect retest; do not infer readiness from older totals.
+current deployment. Expanded two-user disconnect/reconnect and restart closure is
+now READY_FOR_MERGE for Phase 1, with full current regressions in the canonical
+record; Google Production preparation and external PR checks remain separate.
 
 Both bots and the separate callback process use the **same existing shared SQLite
 database**. `ConnectedAccountService` owns authorization; neither character's LLM

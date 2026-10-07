@@ -1521,9 +1521,10 @@ Wanderer-only reconnect retest passed Calendar/Tasks reads for both users, with
 distinct Google subjects and correct outgoing request identity checks. The user has
 been asked to enable Scaramouche from B's `/google` panel. No grant was fabricated.
 
-**Expanded closure state: NOT_READY pending B's renewed Scaramouche grant and the
-final both-bot post-reconnect isolation retest.** Earlier Phase 1 PASS described the
-original one-user checklist, not this additional disconnect/reconnect requirement.
+**Expanded closure state: READY_FOR_MERGE for Google Connected Accounts Phase 1.**
+The renewed grant and final both-bot post-reconnect retest have now passed, as
+recorded in the final closure evidence below. This is not a Production launch or
+a claim that external Cloudflare checks are green.
 
 ### Infrastructure and unchanged validation
 
@@ -1583,3 +1584,37 @@ Sources checked for this checklist:
 - https://developers.google.com/identity/protocols/oauth2/policies
 - https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification
 - https://support.google.com/cloud/answer/13464321
+
+### Final reconnect and two-account restart evidence — 2026-10-06 21:25 PDT
+
+Canonical inspection confirmed the user enabled B's Scaramouche grant. Repeated
+all eight live identity-checked reads using the Wanderer candidate: PASS. Restarted
+both bots and the callback once and compared both accounts' complete account rows,
+encrypted credential bytes, bot grants and session state before/after: exactly
+equal. Repeated all eight reads using the Scaramouche candidate after restart:
+PASS. Both Google subjects remain distinct; both bots resolve the intended user.
+No synthetic provider items were created and no provider contents were reported.
+Calendar/Tasks writes sent throughout these probes: zero.
+
+All three services are active with NRestarts=0. The inspected new-start error counts
+are zero; this does not erase the earlier unrelated dashboard errors recorded above.
+All three SQLite quick checks pass. Final host sample: 343/951 MiB available RAM,
+176/3062 MiB swap used. This closure added one controlled restart per service.
+The earlier actual Google token-refresh success remains valid evidence; refresh
+rotation/concurrency tests passed in the complete current suites. Callback HTTPS,
+Testing/two approved test users, original and secondary human authorization,
+independent grants, `/google` discovery, disconnect isolation, reconnect isolation,
+and two-account restart persistence are all now covered.
+
+Full suites also reran successfully on the first pushed documentation checkpoint
+heads: Scaramouche `329633f43c604446b4541c87b7999013f703d15b` — 774 passed,
+1 skipped, 1 warning in 124.07s; Wanderer
+`ffe984ac510c7e3dd519d4abc55ca9857ceb9658` — 318 passed, 1 skipped, 1 warning
+in 66.48s. Subsequent closure commits modify documentation only; deployed functional
+SHAs remain e42c9f1 / aad50ac. Exact final PR heads and their final full-suite results
+are reported in the handoff, without embedding a commit's own SHA into its contents.
+
+**No remaining Google Phase 1 code/live-validation blocker is known.** PRs remain
+draft and unmerged; an operator still must handle the independently failing/pending
+Cloudflare integration according to repository merge policy. Google Production
+preparation remains the explicit checklist above. No Phase 2 work was started.
