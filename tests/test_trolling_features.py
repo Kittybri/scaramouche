@@ -76,11 +76,7 @@ async def fixture(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "block",
     [
-        "guild",
-        "feature",
-        "channel",
         "consent",
-        "expiry",
         "quiet",
         "muted",
         "bot",
@@ -91,17 +87,9 @@ async def fixture(tmp_path, monkeypatch):
 def test_typing_gates(tmp_path, monkeypatch, block):
     async def check():
         e, o, c, s = await fixture(tmp_path, monkeypatch)
-        if block == "guild":
-            o.cfg(5)["enabled"] = False
-        if block == "feature":
-            o.cfg(5)["trolling"]["typing"] = False
-        if block == "channel":
-            o.cfg(5)["allowed_channels"] = []
         if block == "consent":
-            await o.store.remove(e.key(5, 2))
-        if block == "expiry":
             await o.store.put(
-                e.key(5, 2), "chaos_trollprefs", dict(expires=0, flags={"typing": True})
+                e.key(5, 2), "chaos_trollprefs", dict(expires=0, flags={"typing": False})
             )
         if block == "quiet":
             monkeypatch.setattr("trolling_features.quiet", lambda p: True)
@@ -127,6 +115,119 @@ def test_typing_once_uses_shared_budget_no_ping(tmp_path, monkeypatch):
         assert not c.send.call_args.kwargs["allowed_mentions"].everyone
         assert not c.send.call_args.kwargs["allowed_mentions"].users
 
+    run(check())
+
+
+@pytest.mark.parametrize("configuration", ["missing", "disabled", "channel", "feature", "runtime"])
+def test_light_behaviors_ignore_server_configuration_but_heavy_does_not(tmp_path, monkeypatch, configuration):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        if configuration == "missing":
+            o.config["guilds"].clear()
+        elif configuration == "disabled":
+            o.cfg(5)["enabled"] = False
+        elif configuration == "channel":
+            o.cfg(5)["allowed_channels"] = []
+        elif configuration == "feature":
+            o.cfg(5)["features"]["trolling"] = False
+            o.cfg(5)["trolling"] = {}
+        else:
+            await o.store.put("chaos:control:5", "chaos_control", {"enabled": False})
+        assert all([await e.gate(c.channel, s.author, f) for f in e.PERSONALITY_FEATURES])
+        assert not await e.gate(c.channel, s.author, "parody")
+        assert not await e.gate(c.channel, c.author, "phantomping", personal=False)
+        await e.typing(c.channel, s.author)
+        c.send.assert_awaited_once()
+        o.reserve = AsyncMock()  # Isolate each behavior from the shared guild budget.
+        assert await e.before_reply(s)
+        s.add_reaction.assert_awaited_once()
+        sent = NS(id=102, author=o.bot.user, content="This is a good game.", edit=AsyncMock())
+        c.channel.fetch_message.side_effect = lambda mid: s if mid == s.id else sent
+        revision = await e.revision(5, 2)
+        await o.store.put("chaos:control:5", "chaos_control", {"enabled": False})
+        monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
+        await e.edit_later(s, sent, revision)
+        sent.edit.assert_awaited_once()
+        c.author = s.author
+        await e.preferences(c, "off")
+        assert not any([await e.gate(c.channel, s.author, f) for f in e.PERSONALITY_FEATURES])
+    run(check())
+
+
+def test_light_defaults_and_persistent_optout_do_not_extend_parody(tmp_path, monkeypatch):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        await o.store.remove(e.key(5, 2))
+        defaults = await e.prefs(5, 2)
+        assert all(defaults[k] for k in e.LIGHT_FLAGS)
+        assert not defaults["parody"]
+        await e.typing(c.channel, s.author)
+        c.send.assert_awaited_once()
+        c.author = s.author
+        await e.preferences(c, "off")
+        restarted = TrollingEngine(o)
+        assert not any((await restarted.prefs(5, 2)).values())
+        await e.preferences(c, "judge", "on")
+        flags = await e.prefs(5, 2)
+        assert flags["judge"] and not flags["typing"] and not flags["parody"]
+        await e.preferences(c, "parody", "on")
+        expires = (await o.store.get(e.key(5, 2)))["expires"]
+        await e.preferences(c, "typing", "off")
+        assert (await o.store.get(e.key(5, 2)))["expires"] == expires
+        monkeypatch.setattr("trolling_features.time.time", lambda: expires + 90 * 86400)
+        flags = await restarted.prefs(5, 2)
+        assert not flags["typing"] and flags["judge"] and not flags["parody"]
+    run(check())
+
+
+def test_legacy_expired_choices_and_master_off_survive(tmp_path, monkeypatch):
+    async def check():
+        e, o, _, _ = await fixture(tmp_path, monkeypatch)
+        await o.store.put(e.key(5, 2), "chaos_trollprefs", dict(flags={}, expires=0))
+        assert not any((await e.prefs(5, 2)).values())
+        await o.store.put(e.key(5, 2), "chaos_trollprefs",
+                          dict(flags={"typing": True, "edits": False, "parody": True}, expires=0))
+        flags = await e.prefs(5, 2)
+        assert flags["typing"] and not flags["edits"] and not flags["parody"]
+        assert (TrollingConfig.TYPING_CHANCE, TrollingConfig.JUDGE_CHANCE,
+                TrollingConfig.EDIT_CHANCE) == (0.003, 0.018, 0.012)
+    run(check())
+
+
+def test_pranks_off_is_durable_but_privacy_forget_erases_preferences(tmp_path, monkeypatch):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        c.author = s.author
+        await o.dispatch(c, "pranks", "off", "")
+        assert not any((await e.prefs(5, 2)).values())
+        await o.dispatch(c, "pranks", "forget", "")
+        assert not await o.store.get(e.key(5, 2))
+        assert not any((await o.store.prefs(2)).values())
+    run(check())
+
+
+def test_owner_ping_bypasses_target_consent_and_preserves_own_message_cleanup(tmp_path, monkeypatch):
+    async def check():
+        e, o, c, s = await fixture(tmp_path, monkeypatch)
+        monkeypatch.setattr("server_chaos.service.quiet", lambda p: False)
+        await o.store.preference(2, "chaos_ping", False)
+        await o.store.put(e.key(5, 2), "chaos_trollprefs", dict(flags={}, expires=0))
+        with pytest.raises(ValueError):
+            await o.pranks(c, "phantom", "")
+        with pytest.raises(ValueError):
+            await o.phantom(c.channel, s.author, owner_actor=2)
+        msg = NS(id=777, author=o.bot.user, delete=AsyncMock())
+        c.channel.send.return_value = msg
+        await e.manual(c, "phantomping", s.author)
+        assert "owner-triggered" in c.send.call_args.args[0]
+        receipts = await o.store.recent("chaos_ping", 10)
+        assert receipts[0][1]["message_id"] == 777
+        c.channel.fetch_message.return_value = msg
+        await o.cleanup_ping(receipts[0][1])
+        msg.delete.assert_awaited_once()
+        c.author = s.author
+        with pytest.raises(ValueError):
+            await e.manual(c, "phantomping", c.guild.get_member(1))
     run(check())
 
 
@@ -217,7 +318,8 @@ def test_visible_edit_preserves_original_and_rechecks(tmp_path, monkeypatch, cha
             fresh if mid == s.id else current
         )
         if change == "optout":
-            await o.store.remove(e.key(5, 2))
+            c.author = s.author
+            await e.preferences(c, "edits", "off")
         if change == "edited":
             current.content = "Newer text"
         if change == "source":
@@ -228,8 +330,8 @@ def test_visible_edit_preserves_original_and_rechecks(tmp_path, monkeypatch, cha
             o.cfg(5)["enabled"] = False
         monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
         await e.edit_later(s, sent)
-        assert current.edit.await_count == int(change == "none")
-        if change == "none":
+        assert current.edit.await_count == int(change in {"none", "disabled"})
+        if change in {"none", "disabled"}:
             text = current.edit.call_args.kwargs["content"]
             assert text.startswith(sent.content) and "Visible character gag" in text
 
@@ -265,12 +367,13 @@ def test_delayed_edit_cancellation_propagates_and_cleans_state(tmp_path, monkeyp
     run(check())
 
 
-def test_restore_and_reenable_does_not_revive_pending_edit(tmp_path, monkeypatch):
+def test_personal_off_and_reenable_does_not_revive_pending_edit(tmp_path, monkeypatch):
     async def check():
         e, o, c, s = await fixture(tmp_path, monkeypatch)
         revision = await e.revision(5, 2)
-        await o.dispatch(c, "chaos", "restore-all", "")
-        await o.dispatch(c, "chaos", "enable", "")
+        c.author = s.author
+        await e.preferences(c, "edits", "off")
+        await e.preferences(c, "edits", "on")
         sent = NS(id=102, author=o.bot.user, content="This is a good game.")
         monkeypatch.setattr(TrollingConfig, "EDIT_DELAY", 0)
         await e.edit_later(s, sent, revision)
@@ -303,7 +406,8 @@ def test_muzzle_recovery_and_optout(tmp_path, monkeypatch, operation):
             await o.dispatch(c, "chaos", "restore-all", "")
         if operation == "forget":
             await o.forget(s.author.id)
-            assert not await e.prefs(5, s.author.id)
+            assert not (await e.prefs(5, s.author.id))["parody"]
+            assert not await o.store.get(e.key(5, s.author.id))
         if operation == "expire":
             await o.store.transition(
                 "muzzle:5:2", {"created"}, {"expires": time.time() - 1}
@@ -348,9 +452,9 @@ def test_slowtrap_durable_restore_preserves_admin_change(tmp_path, monkeypatch):
 def test_adapters_reuse_consent_and_existing_vc_game(tmp_path, monkeypatch):
     async def check():
         e, o, c, s = await fixture(tmp_path, monkeypatch)
-        o.dispatch = AsyncMock()
+        o.phantom = AsyncMock()
         await e.manual(c, "phantomping", s.author)
-        o.dispatch.assert_awaited_once_with(c, "pranks", "phantom", "")
+        o.phantom.assert_awaited_once_with(c.channel, s.author, owner_actor=1)
         o.voice.features.games.command = AsyncMock()
         await e.manual(c, "kidnap", s.author)
         o.voice.features.games.command.assert_awaited_once_with(c, "interrogate", "")

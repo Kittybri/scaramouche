@@ -19,8 +19,20 @@ from db_migrations import (
     LOCAL_MIGRATIONS, SHARED_MIGRATIONS, migration_status, run_migrations,
 )
 
-# Use Railway volume if available, otherwise current directory
-_data_dir = "/data" if os.path.isdir("/data") else "."
+# Prefer an explicitly configured deployment directory. Falling back to /data
+# preserves Railway compatibility; local development still uses the cwd.
+def _resolve_data_dir() -> str:
+    configured = (os.getenv("MEMORY_DATA_DIR") or os.getenv("BOT_DATA_DIR") or "").strip()
+    if configured:
+        configured = os.path.abspath(os.path.expanduser(configured))
+        os.makedirs(configured, exist_ok=True)
+        return configured
+    if os.path.isdir("/data"):
+        return "/data"
+    return "."
+
+
+_data_dir = _resolve_data_dir()
 DB_PATH = os.path.join(_data_dir, "scaramouche.db")
 SHARED_DB_PATH = os.path.join(_data_dir, "shared_state.db")
 log = logging.getLogger(__name__)
@@ -49,7 +61,7 @@ class Memory:
                     username         TEXT,
                     display_name     TEXT,
                     romance_mode     INTEGER DEFAULT 0,
-                    nsfw_mode        INTEGER DEFAULT 0,
+                    unrestricted_mode INTEGER DEFAULT 0,
                     proactive        INTEGER DEFAULT 1,
                     allow_dms        INTEGER DEFAULT 1,
                     timezone_name    TEXT    DEFAULT 'America/Los_Angeles',
@@ -413,7 +425,7 @@ class Memory:
     async def get_user(self, user_id: int) -> dict | None:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
-                SELECT user_id,username,display_name,romance_mode,nsfw_mode,proactive,allow_dms,
+                SELECT user_id,username,display_name,romance_mode,unrestricted_mode,proactive,allow_dms,
                        timezone_name,quiet_hours_start,quiet_hours_end,dm_frequency_hours,recent_activity_grace_minutes,
                        mood,affection,trust,rival_id,grudge_nick,affection_nick,message_count,
                        milestone_last,first_seen,last_seen,last_active,greeted_today,anniversary_last,
@@ -426,7 +438,7 @@ class Memory:
                 if not row: return None
                 user = {
                     "user_id": row[0], "username": row[1], "display_name": row[2],
-                    "romance_mode": bool(row[3]), "nsfw_mode": bool(row[4]),
+                    "romance_mode": bool(row[3]), "unrestricted_mode": bool(row[4]),
                     "proactive": bool(row[5]), "allow_dms": bool(row[6]),
                     "timezone_name": row[7] or "America/Los_Angeles",
                     "quiet_hours_start": row[8] if row[8] is not None else 23,
@@ -623,6 +635,40 @@ class Memory:
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
             await db.commit()
 
+    async def forget_scene_state_matches(self, channel_id: int, query: str) -> int:
+        """Remove matching scene fields without discarding unrelated channel context."""
+        needle = (query or "").strip().lower()
+        if not needle:
+            return 0
+        columns = (
+            "location", "situation", "last_beat", "emotional_temp",
+            "objective", "present", "important_prop",
+        )
+        async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
+            async with db.execute(
+                f"SELECT {','.join(columns)} FROM scene_state WHERE channel_id=?",
+                (channel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return 0
+            values = [value or "" for value in row]
+            matched = [needle in value.lower() for value in values]
+            removed = sum(matched)
+            if not removed:
+                return 0
+            scrubbed = ["" if is_match else value for value, is_match in zip(values, matched)]
+            if any(scrubbed):
+                assignments = ",".join(f"{column}=?" for column in columns)
+                await db.execute(
+                    f"UPDATE scene_state SET {assignments}, updated_ts=? WHERE channel_id=?",
+                    (*scrubbed, time.time(), channel_id),
+                )
+            else:
+                await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
+            await db.commit()
+        return removed
+
     async def add_memory_event(self, user_id: int, kind: str, memory: str, weight: int = 1):
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute(
@@ -804,8 +850,10 @@ class Memory:
                 (user_id, needle, needle, needle),
             )
             milestone_cur = await db.execute(
-                "DELETE FROM relationship_milestones WHERE scope LIKE ? AND INSTR(LOWER(note),?)>0",
-                (f"{self.bot_name}:user:{user_id}%", needle),
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
             )
             user_cur = await db.execute(
                 """UPDATE users SET
@@ -833,8 +881,10 @@ class Memory:
                 (user_id, needle),
             )
             shared_milestone_cur = await db.execute(
-                "DELETE FROM relationship_milestones WHERE scope LIKE ? AND INSTR(LOWER(note),?)>0",
-                (f"%user:{user_id}", needle),
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
             )
             await db.commit()
         return {
@@ -850,7 +900,7 @@ class Memory:
         }
 
     async def set_mode(self, user_id: int, field: str, value: bool):
-        allowed = {"nsfw_mode","romance_mode","proactive","allow_dms"}
+        allowed = {"unrestricted_mode","romance_mode","proactive","allow_dms"}
         if field not in allowed: raise ValueError(f"Unknown: {field}")
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             await db.execute(f"UPDATE users SET {field}=? WHERE user_id=?", (int(value), user_id))
@@ -1743,9 +1793,21 @@ class Memory:
             await db.execute("DELETE FROM user_preferences WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM dm_cooldown WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM bot_mutes WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
             await db.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+            # Restored stores share this local transaction. Legacy rows are also
+            # erased so a later migration cannot resurrect forgotten progress.
+            tables = {row[0] for row in await (await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+            for table in ("restored_campaigns", "restored_medals", "restored_birthdays", "rpg_state", "rpg_medals"):
+                if table in tables:
+                    await db.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
             await db.commit()
         self._muted.pop(user_id, None)
 
@@ -1753,10 +1815,61 @@ class Memory:
         """Delete user-scoped shared records without touching bot-pair state."""
         async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
             await db.execute("BEGIN IMMEDIATE")
+            tables = {
+                row[0]
+                for row in await (await db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )).fetchall()
+            }
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.execute("DELETE FROM duo_sessions WHERE initiator_user_id=?", (user_id,))
             await db.execute("DELETE FROM shared_users WHERE user_id=?", (user_id,))
+            # These tables are created by optional shared features and by the
+            # Wanderer process. Keep the statements static and only run them
+            # when that compatible table is present.
+            if "user_bot_attention" in tables:
+                await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
+            if "shared_birthday_profiles" in tables:
+                await db.execute("DELETE FROM shared_birthday_profiles WHERE user_id=?", (user_id,))
+            if "hidden_achievements" in tables:
+                await db.execute(
+                    "DELETE FROM hidden_achievements "
+                    "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                    (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+                )
+            if "shared_world_entities" in tables:
+                await db.execute(
+                    "DELETE FROM shared_world_entities WHERE owner_user_id=? OR channel_id=?",
+                    (user_id, user_id),
+                )
+            if "shared_world_cases" in tables:
+                await db.execute(
+                    "DELETE FROM shared_world_cases WHERE channel_id=?", (user_id,)
+                )
+            if "face_profiles" in tables:
+                await db.execute(
+                    "DELETE FROM face_profiles WHERE owner_user_id=?", (user_id,)
+                )
+            if "shared_event_memories" in tables:
+                await db.execute(
+                    "DELETE FROM shared_event_memories WHERE channel_id=?", (user_id,)
+                )
+            if "shared_evidence_locker" in tables:
+                await db.execute(
+                    "DELETE FROM shared_evidence_locker WHERE owner_user_id=? OR channel_id=?",
+                    (user_id, user_id),
+                )
+            if "interbot_private_opinions" in tables:
+                await db.execute(
+                    "DELETE FROM interbot_private_opinions "
+                    "WHERE scope=? OR scope LIKE ? OR scope LIKE ? OR subject_key=?",
+                    (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", str(user_id)),
+                )
             await db.commit()
 
     async def reset_user(self, user_id: int):
@@ -1984,12 +2097,12 @@ class Memory:
         cutoff = time.time()-86400*7
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
-                SELECT u.user_id,u.display_name,u.romance_mode,u.nsfw_mode
+                SELECT u.user_id,u.display_name,u.romance_mode,u.unrestricted_mode
                 FROM users u WHERE u.allow_dms=1 AND u.last_seen>?
                   AND EXISTS (SELECT 1 FROM messages m WHERE m.user_id=u.user_id AND (m.bot_name=? OR m.bot_name IS NULL))
             """, (cutoff,self.bot_name)) as cur:
                 rows = await cur.fetchall()
-        return [{"user_id":r[0],"display_name":r[1],"romance_mode":bool(r[2]),"nsfw_mode":bool(r[3])} for r in rows]
+        return [{"user_id":r[0],"display_name":r[1],"romance_mode":bool(r[2]),"unrestricted_mode":bool(r[3])} for r in rows]
 
     async def get_proactive_candidates(self, *, absent_before: float, limit: int = 20) -> list[dict]:
         """Return public-channel candidates without coupling them to DM consent."""
@@ -2035,7 +2148,7 @@ class Memory:
         async with aiosqlite.connect(self.db_path, timeout=15.0) as db:
             async with db.execute("""
                 SELECT message_count,mood,affection,trust,first_seen,grudge_nick,
-                       affection_nick,romance_mode,nsfw_mode,drift_score,slow_burn
+                       affection_nick,romance_mode,unrestricted_mode,drift_score,slow_burn
                 FROM users WHERE user_id=?
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
@@ -2045,6 +2158,6 @@ class Memory:
         return {
             "message_count":row[0] or 0, "mood":row[1] or 0, "affection":row[2] or 0,
             "trust":row[3] or 0, "first_seen":row[4] or 0, "grudge_nick":row[5],
-            "affection_nick":row[6], "romance_mode":bool(row[7]), "nsfw_mode":bool(row[8]),
+            "affection_nick":row[6], "romance_mode":bool(row[7]), "unrestricted_mode":bool(row[8]),
             "drift_score":row[9] or 0, "slow_burn":row[10] or 0, "joke_count":jokes,
         }

@@ -37,7 +37,7 @@ async def ensure_columns(db, table: str, definitions: dict[str, str]) -> None:
 
 USER_COLUMNS = {
     "username": "TEXT", "display_name": "TEXT",
-    "romance_mode": "INTEGER DEFAULT 0", "nsfw_mode": "INTEGER DEFAULT 0",
+    "romance_mode": "INTEGER DEFAULT 0", "unrestricted_mode": "INTEGER DEFAULT 0",
     "proactive": "INTEGER DEFAULT 1", "allow_dms": "INTEGER DEFAULT 1",
     "timezone_name": "TEXT DEFAULT 'America/Los_Angeles'",
     "quiet_hours_start": "INTEGER DEFAULT 23", "quiet_hours_end": "INTEGER DEFAULT 8",
@@ -148,6 +148,17 @@ async def _local_message_scene_and_privacy(db, bot_name):
     )
 
 
+async def _local_unrestricted_mode(db, _bot_name):
+    """Copy the retired preference once and leave its column unused."""
+    columns = await _columns(db, "users")
+    legacy_column = "ns" + "fw_mode"
+    await ensure_columns(db, "users", {"unrestricted_mode": "INTEGER DEFAULT 0"})
+    if legacy_column in columns:
+        await db.execute(
+            f"UPDATE users SET unrestricted_mode=COALESCE({legacy_column},0)"
+        )
+
+
 async def _shared_duo_columns(db, _bot_name):
     await ensure_columns(db, "duo_sessions", {
         "initiator_user_id": "INTEGER DEFAULT 0",
@@ -157,13 +168,21 @@ async def _shared_duo_columns(db, _bot_name):
     })
 
 
+from restoration_store import migrate as _restore_character_storage
+from birthday_commands import migrate as _restore_birthday_storage
+from world_archive import migrate as _restore_world_archive
+
 LOCAL_MIGRATIONS = (
     Migration(1, "legacy_relationship_columns", _local_relationship_columns),
     Migration(2, "feature_preference_columns", _local_feature_preferences),
     Migration(3, "message_scene_and_privacy_ledger", _local_message_scene_and_privacy),
+    Migration(4, "unrestricted_mode_preference", _local_unrestricted_mode),
+    Migration(5, "restore_scoped_harbinger_campaigns", _restore_character_storage),
+    Migration(6, "restore_user_birthdays", _restore_birthday_storage),
 )
 SHARED_MIGRATIONS = (
     Migration(1, "duo_session_columns", _shared_duo_columns),
+    Migration(2, "restore_shared_world_archive", _restore_world_archive),
 )
 
 

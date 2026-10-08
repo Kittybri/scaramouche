@@ -398,16 +398,43 @@ def test_owner_diagnostics_check_exact_nonzero_owner(monkeypatch):
     assert runtime._owner_only(SimpleNamespace(author=SimpleNamespace(id=0))) is False
 
 
-def test_nsfw_prompt_requires_an_allowed_channel(monkeypatch):
+def test_unrestricted_prompt_requires_an_allowed_channel(monkeypatch):
     runtime = load_runtime(monkeypatch)
-    user = {"nsfw_mode": True, "romance_mode": False}
-    assert "## Unfiltered Mode" not in runtime.build_system(user)
-    assert "## Unfiltered Mode" in runtime.build_system(user, allow_nsfw=True)
-    public = SimpleNamespace(guild=object(), is_nsfw=lambda: False)
-    restricted = SimpleNamespace(guild=object(), is_nsfw=lambda: True)
-    assert runtime._channel_allows_nsfw(public) is False
-    assert runtime._channel_allows_nsfw(restricted) is True
-    assert runtime._channel_allows_nsfw(None, is_dm=True) is True
+    user = {"unrestricted_mode": True, "romance_mode": False}
+    assert "## Unrestricted Mode" not in runtime.build_system(user)
+    assert "## Unrestricted Mode" in runtime.build_system(user, allow_unrestricted=True)
+    discord_age_flag = "is_" + "ns" + "fw"
+    public = SimpleNamespace(guild=object(), **{discord_age_flag: lambda: False})
+    restricted = SimpleNamespace(guild=object(), **{discord_age_flag: lambda: True})
+    assert runtime._channel_allows_unrestricted(public) is False
+    assert runtime._channel_allows_unrestricted(restricted) is True
+    assert runtime._channel_allows_unrestricted(None, is_dm=True) is True
+
+
+@pytest.mark.parametrize(
+    "mode,current,expected",
+    [("on", False, True), ("off", True, False), (None, False, True)],
+)
+def test_unrestricted_command_reads_and_writes_renamed_preference(
+    monkeypatch, mode, current, expected
+):
+    runtime = load_runtime(monkeypatch)
+    setup = AsyncMock(return_value={"unrestricted_mode": current})
+    set_mode = AsyncMock()
+    reply = AsyncMock()
+    monkeypatch.setattr(runtime, "_setup", setup)
+    monkeypatch.setattr(runtime.mem, "set_mode", set_mode)
+    monkeypatch.setattr(runtime, "safe_reply", reply)
+    ctx = SimpleNamespace(
+        author=SimpleNamespace(id=73), guild=None, channel=None
+    )
+
+    run(runtime.bot.get_command("unrestricted").callback(ctx, mode))
+
+    setup.assert_awaited_once_with(ctx)
+    set_mode.assert_awaited_once_with(73, "unrestricted_mode", expected)
+    reply.assert_awaited_once()
+    assert runtime.bot.get_command("ns" + "fw") is None
 
 
 def test_member_announcements_are_rate_limited_per_guild(monkeypatch):

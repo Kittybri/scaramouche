@@ -119,6 +119,11 @@ class PendingWriteStore:
         self._items.pop(item.request_id, None)
         return item
 
+    def forget_user(self, user_id: int):
+        for key, item in list(self._items.items()):
+            if item.user_id == int(user_id):
+                self._items.pop(key, None)
+
     def get(self, request_id: str, user_id: int, *, provider: str | None = None) -> PendingWrite:
         """Validate a proposal without consuming it."""
         self._prune()
