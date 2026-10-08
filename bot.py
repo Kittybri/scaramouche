@@ -4997,7 +4997,7 @@ async def summarize_cmd(ctx):
         await safe_reply(ctx,reply)
     except Exception as e: log_error("summarize_cmd",e)
 
-@bot.command(name="mute",aliases=["silence","ignore"])
+@bot.command(name="mute",aliases=["silence","ignore","botban","banfrombot"])
 async def mute_cmd(ctx,member:discord.Member=None,minutes:int=10):
     try:
         target=member or ctx.author
@@ -5011,7 +5011,7 @@ async def mute_cmd(ctx,member:discord.Member=None,minutes:int=10):
         else: await safe_reply(ctx,reply)
     except Exception as e: log_error("mute_cmd",e)
 
-@bot.command(name="unmute",aliases=["unsilence"])
+@bot.command(name="unmute",aliases=["unsilence","botunban","unbanfrombot"])
 async def unmute_cmd(ctx,member:discord.Member=None):
     try:
         target=member or ctx.author
@@ -6469,7 +6469,7 @@ def _task_age(timestamp: float | None, *, now: float | None = None) -> str:
     return f"{age // 3600}h"
 
 
-@bot.command(name="taskhealth", aliases=["workerhealth"])
+@bot.command(name="taskhealth", aliases=["workerhealth", "bothealth"])
 async def tasks_cmd(ctx):
     """Owner-only sanitized worker health diagnostic."""
     if not _owner_only(ctx):
@@ -6647,6 +6647,8 @@ async def help_cmd(ctx):
             inline=False)
         e3.set_footer(text="Scaramouche — The Balladeer | !scarahelp for commands")
         pages = [e1, e2, e3]
+        from command_help import public_catalog
+        pages.extend(public_catalog(bot))
         from help_delivery import send_help
         await send_help(ctx, pages)
     except Exception as e:
@@ -6756,6 +6758,9 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
 })
 
 from tarot_commands import TarotController
+from restored_status import ProviderStatus
+PROVIDER_STATUS = ProviderStatus(bot, BOT_NAME, ai, OWNER_ID, environment_monitor).install()
+
 TAROT = TarotController(
     bot, BOT_NAME, ai, GROQ_MODEL, os.path.dirname(mem.db_path),
     PRIVACY_DELETION.is_pending, credential_disclosure, store=TAROT_STORE,

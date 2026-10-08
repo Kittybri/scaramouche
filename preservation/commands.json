@@ -1,0 +1,2281 @@
+{
+  "schema_version": 1,
+  "bot": "scaramouche",
+  "provenance": "historical_audit.json plus verified runtime import; unresolved legacy surfaces retained below",
+  "prefix": {
+    "affection": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "anime": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "bot",
+      "access": "public"
+    },
+    "answer": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "arc": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "arena": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "argue": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "atone": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "persistent_world",
+      "access": "public"
+    },
+    "blackmail": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "both": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "build": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "calendar": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "bot",
+      "access": "public"
+    },
+    "calendar add": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "calendar confirm": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "calendar list": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "calendar update": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "chaos": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "server_chaos.service",
+      "access": "permission_scoped"
+    },
+    "choose": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "compare": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "compliment": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "confess": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "connections": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "connections.discord_ui",
+      "access": "public"
+    },
+    "conspiracy": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "court": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "server_chaos.service",
+      "access": "permission_scoped"
+    },
+    "dare": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "debate": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "deleteface": {
+      "aliases": [
+        "forgetface"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "face_controls",
+      "access": "public"
+    },
+    "dm": {
+      "aliases": [
+        "private",
+        "whisper"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "dmfreq": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "dmgrace": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "dms": {
+      "aliases": [
+        "allowdms",
+        "stopdms"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "duel": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "duet": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "duoauto": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "duostate": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "enrollface": {
+      "aliases": [
+        "reenrollface",
+        "rememberface"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "face_controls",
+      "access": "public"
+    },
+    "faceinfo": {
+      "aliases": [
+        "facestatus"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "face_controls",
+      "access": "public"
+    },
+    "fakewipe": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "permission_scoped"
+    },
+    "forceheartbeat": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "forget": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "fortune": {
+      "aliases": [
+        "fortunecookie"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "githubissue": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "google": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "connections.discord_ui",
+      "access": "public"
+    },
+    "google connect": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "connections.discord_ui",
+      "access": "public"
+    },
+    "google disconnect": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "connections.discord_ui",
+      "access": "public"
+    },
+    "google permissions": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "connections.discord_ui",
+      "access": "public"
+    },
+    "google status": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "connections.discord_ui",
+      "access": "public"
+    },
+    "grudges": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "persistent_world",
+      "access": "public"
+    },
+    "haiku": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "home": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "home.bot_integration",
+      "access": "public"
+    },
+    "home actions": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home agent": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home alarms": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home audit": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home confirm": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home devices": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home disable": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home do": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home enable": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home location": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home output": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home permissions": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home speak": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "permission_scoped"
+    },
+    "home status": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "home test": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.bot_integration",
+      "access": "owner"
+    },
+    "hostage": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "impersonate": {
+      "aliases": [
+        "be",
+        "imitate"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "insidejokes": {
+      "aliases": [
+        "jokes"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "insult": {
+      "aliases": [
+        "roast_single"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "integrations": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "bot",
+      "access": "owner"
+    },
+    "integrations test": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "interrogate": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "jointinterview": {
+      "aliases": [
+        "jointinterrogate"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "judge": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "kidnap": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "public"
+    },
+    "letter": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "lore": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "memories": {
+      "aliases": [
+        "memorybank"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "mission": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "mood": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "mute": {
+      "aliases": [
+        "banfrombot",
+        "botban",
+        "ignore",
+        "silence"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "permission_scoped"
+    },
+    "muzzle": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "public"
+    },
+    "nightmare": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "opinion": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "parodyas": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "permission_scoped"
+    },
+    "pc": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "home.companion_bot",
+      "access": "owner"
+    },
+    "persistence": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "phantomping": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "public"
+    },
+    "pincomfort": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "pinjoke": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "pinpromise": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "pinwound": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "poll": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "popquiz": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "possess": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "pranks": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "server_chaos.service",
+      "access": "public"
+    },
+    "proactive": {
+      "aliases": [
+        "ping_me"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "prophecy": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "quiethours": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "rank": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "rate": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "recognizeface": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "face_controls",
+      "access": "public"
+    },
+    "relationship": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "release": {
+      "aliases": [
+        "freed",
+        "ransom"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "remember": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "remind": {
+      "aliases": [
+        "remindme"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "report": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "reset": {
+      "aliases": [
+        "wipe"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "riddle": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "rival": {
+      "aliases": [
+        "setrival"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "roast": {
+      "aliases": [
+        "roastbattle"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "rpdepth": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "scaradaily": {
+      "aliases": [
+        "scaramouchedaily"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "tarot_commands",
+      "access": "public"
+    },
+    "scarahelp": {
+      "aliases": [
+        "commands"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "scarahistory": {
+      "aliases": [
+        "scaramouchehistory"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "tarot_commands",
+      "access": "public"
+    },
+    "scarasettings": {
+      "aliases": [
+        "scaramouchesettings"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "tarot_commands",
+      "access": "public"
+    },
+    "scaraslowmode": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "permission_scoped"
+    },
+    "scaratarot": {
+      "aliases": [
+        "scaramouchetarot",
+        "scarat"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "tarot_commands",
+      "access": "public"
+    },
+    "scaratimeout": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "permission_scoped"
+    },
+    "scene": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "search": {
+      "aliases": [
+        "find",
+        "lookup"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "selfbackup": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "selfgoals": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "selfstate": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "serverwipe": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "permission_scoped"
+    },
+    "ship": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "slowtrap": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "public"
+    },
+    "solve": {
+      "aliases": [
+        "essay",
+        "math",
+        "write"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "sound": {
+      "aliases": [
+        "soundboard"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "spar": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "speaker": {
+      "aliases": [
+        "activespeaker"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "spotify": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "bot",
+      "access": "public"
+    },
+    "spotify addtracks": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "spotify confirm": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "spotify now": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "spotify playlist": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "spotify playlistinfo": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "stalk": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "stats": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "status": {
+      "aliases": [
+        "aistatus",
+        "scarastatus"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "restored_status",
+      "access": "public"
+    },
+    "steam": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "bot",
+      "access": "public"
+    },
+    "stopinterview": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "permission_scoped"
+    },
+    "story": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "summarize": {
+      "aliases": [
+        "recap"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "taskhealth": {
+      "aliases": [
+        "bothealth",
+        "workerhealth"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "tasks": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": true,
+      "module": "bot",
+      "access": "public"
+    },
+    "tasks add": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "tasks confirm": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "tasks list": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "tasks update": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "tedtalk": {
+      "aliases": [
+        "explain",
+        "lecture",
+        "teach"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "therapy": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "timezone": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "trade": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "translate": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "trial": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "trivia": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "trollprefs": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "public"
+    },
+    "trust": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "truthdare": {
+      "aliases": [
+        "tod"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "unmute": {
+      "aliases": [
+        "botunban",
+        "unbanfrombot",
+        "unsilence"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "permission_scoped"
+    },
+    "unmuzzle": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "trolling_features",
+      "access": "public"
+    },
+    "unrestricted": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "utility": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "vcgame": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "voice_conversation.features",
+      "access": "permission_scoped"
+    },
+    "vcparty": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "voice_conversation.features",
+      "access": "permission_scoped"
+    },
+    "verdict": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "voice": {
+      "aliases": [
+        "say",
+        "speak"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "wager": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "server_chaos.service",
+      "access": "public"
+    },
+    "weather": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "weatherlocation": {
+      "aliases": [
+        "setweather"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "public"
+    },
+    "whoami": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "bot",
+      "access": "owner"
+    },
+    "worldprefs": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "persistent_world",
+      "access": "public"
+    }
+  },
+  "slash": {
+    "dailycard": {
+      "group": false,
+      "module": "tarot_commands"
+    },
+    "google": {
+      "group": false,
+      "module": "connections.discord_ui"
+    },
+    "tarot": {
+      "group": false,
+      "module": "tarot_commands"
+    },
+    "tarothistory": {
+      "group": false,
+      "module": "tarot_commands"
+    },
+    "tarotsettings": {
+      "group": false,
+      "module": "tarot_commands"
+    }
+  },
+  "cogs": [],
+  "extensions": [],
+  "help_entries": [
+    "!activespeaker",
+    "!affection",
+    "!aistatus",
+    "!allowdms",
+    "!anime",
+    "!answer",
+    "!arc",
+    "!arena",
+    "!argue",
+    "!atone",
+    "!banfrombot",
+    "!be",
+    "!blackmail",
+    "!botban",
+    "!both",
+    "!botunban",
+    "!calendar",
+    "!calendar add",
+    "!calendar confirm",
+    "!calendar list",
+    "!calendar update",
+    "!chaos",
+    "!choose",
+    "!commands",
+    "!compare",
+    "!compliment",
+    "!confess",
+    "!connections",
+    "!conspiracy",
+    "!court",
+    "!dare",
+    "!debate",
+    "!deleteface",
+    "!dm",
+    "!dmfreq",
+    "!dmgrace",
+    "!dms",
+    "!duel",
+    "!duet",
+    "!duoauto",
+    "!duostate",
+    "!enrollface",
+    "!essay",
+    "!explain",
+    "!faceinfo",
+    "!facestatus",
+    "!fakewipe",
+    "!find",
+    "!forget",
+    "!forgetface",
+    "!fortune",
+    "!fortunecookie",
+    "!freed",
+    "!google",
+    "!google connect",
+    "!google disconnect",
+    "!google permissions",
+    "!google status",
+    "!grudges",
+    "!haiku",
+    "!home",
+    "!home actions",
+    "!home alarms",
+    "!home confirm",
+    "!home do",
+    "!home location",
+    "!home output",
+    "!home speak",
+    "!hostage",
+    "!ignore",
+    "!imitate",
+    "!impersonate",
+    "!insidejokes",
+    "!insult",
+    "!interrogate",
+    "!jointinterrogate",
+    "!jointinterview",
+    "!jokes",
+    "!judge",
+    "!kidnap",
+    "!lecture",
+    "!letter",
+    "!lookup",
+    "!lore",
+    "!math",
+    "!memories",
+    "!memorybank",
+    "!mission",
+    "!mood",
+    "!mute",
+    "!muzzle",
+    "!nightmare",
+    "!opinion",
+    "!parodyas",
+    "!phantomping",
+    "!pincomfort",
+    "!ping_me",
+    "!pinjoke",
+    "!pinpromise",
+    "!pinwound",
+    "!poll",
+    "!popquiz",
+    "!possess",
+    "!pranks",
+    "!private",
+    "!proactive",
+    "!prophecy",
+    "!quiethours",
+    "!rank",
+    "!ransom",
+    "!rate",
+    "!recap",
+    "!recognizeface",
+    "!reenrollface",
+    "!relationship",
+    "!release",
+    "!remember",
+    "!rememberface",
+    "!remind",
+    "!remindme",
+    "!report",
+    "!reset",
+    "!riddle",
+    "!rival",
+    "!roast",
+    "!roast_single",
+    "!roastbattle",
+    "!rpdepth",
+    "!say",
+    "!scaradaily",
+    "!scarahelp",
+    "!scarahistory",
+    "!scaramouchedaily",
+    "!scaramouchehistory",
+    "!scaramouchesettings",
+    "!scaramouchetarot",
+    "!scarasettings",
+    "!scaraslowmode",
+    "!scarastatus",
+    "!scarat",
+    "!scaratarot",
+    "!scaratimeout",
+    "!scene",
+    "!search",
+    "!serverwipe",
+    "!setrival",
+    "!setweather",
+    "!ship",
+    "!silence",
+    "!slowtrap",
+    "!solve",
+    "!sound",
+    "!soundboard",
+    "!spar",
+    "!speak",
+    "!speaker",
+    "!spotify",
+    "!spotify addtracks",
+    "!spotify confirm",
+    "!spotify now",
+    "!spotify playlist",
+    "!spotify playlistinfo",
+    "!stalk",
+    "!stats",
+    "!status",
+    "!steam",
+    "!stopdms",
+    "!stopinterview",
+    "!story",
+    "!summarize",
+    "!tasks",
+    "!tasks add",
+    "!tasks confirm",
+    "!tasks list",
+    "!tasks update",
+    "!teach",
+    "!tedtalk",
+    "!therapy",
+    "!timezone",
+    "!tod",
+    "!trade",
+    "!translate",
+    "!trial",
+    "!trivia",
+    "!trollprefs",
+    "!trust",
+    "!truthdare",
+    "!unbanfrombot",
+    "!unmute",
+    "!unmuzzle",
+    "!unrestricted",
+    "!unsilence",
+    "!utility",
+    "!vcgame",
+    "!vcparty",
+    "!verdict",
+    "!voice",
+    "!wager",
+    "!weather",
+    "!weatherlocation",
+    "!whisper",
+    "!wipe",
+    "!worldprefs",
+    "!write",
+    "/dailycard",
+    "/google",
+    "/tarot",
+    "/tarothistory",
+    "/tarotsettings"
+  ],
+  "owner_commands": [
+    "build",
+    "forceheartbeat",
+    "githubissue",
+    "home agent",
+    "home audit",
+    "home devices",
+    "home disable",
+    "home enable",
+    "home permissions",
+    "home status",
+    "home test",
+    "integrations",
+    "integrations test",
+    "pc",
+    "persistence",
+    "selfbackup",
+    "selfgoals",
+    "selfstate",
+    "taskhealth",
+    "whoami"
+  ],
+  "public_commands": [
+    "affection",
+    "anime",
+    "answer",
+    "arc",
+    "arena",
+    "argue",
+    "atone",
+    "blackmail",
+    "both",
+    "calendar",
+    "calendar add",
+    "calendar confirm",
+    "calendar list",
+    "calendar update",
+    "choose",
+    "compare",
+    "compliment",
+    "confess",
+    "connections",
+    "conspiracy",
+    "dare",
+    "debate",
+    "deleteface",
+    "dm",
+    "dmfreq",
+    "dmgrace",
+    "dms",
+    "duel",
+    "duet",
+    "duoauto",
+    "duostate",
+    "enrollface",
+    "faceinfo",
+    "forget",
+    "fortune",
+    "google",
+    "google connect",
+    "google disconnect",
+    "google permissions",
+    "google status",
+    "grudges",
+    "haiku",
+    "home",
+    "hostage",
+    "impersonate",
+    "insidejokes",
+    "insult",
+    "interrogate",
+    "jointinterview",
+    "judge",
+    "kidnap",
+    "letter",
+    "lore",
+    "memories",
+    "mission",
+    "mood",
+    "muzzle",
+    "nightmare",
+    "opinion",
+    "phantomping",
+    "pincomfort",
+    "pinjoke",
+    "pinpromise",
+    "pinwound",
+    "poll",
+    "popquiz",
+    "possess",
+    "pranks",
+    "proactive",
+    "prophecy",
+    "quiethours",
+    "rank",
+    "rate",
+    "recognizeface",
+    "relationship",
+    "release",
+    "remember",
+    "remind",
+    "report",
+    "reset",
+    "riddle",
+    "rival",
+    "roast",
+    "rpdepth",
+    "scaradaily",
+    "scarahelp",
+    "scarahistory",
+    "scarasettings",
+    "scaratarot",
+    "scene",
+    "search",
+    "ship",
+    "slowtrap",
+    "solve",
+    "sound",
+    "spar",
+    "speaker",
+    "spotify",
+    "spotify addtracks",
+    "spotify confirm",
+    "spotify now",
+    "spotify playlist",
+    "spotify playlistinfo",
+    "stalk",
+    "stats",
+    "status",
+    "steam",
+    "story",
+    "summarize",
+    "tasks",
+    "tasks add",
+    "tasks confirm",
+    "tasks list",
+    "tasks update",
+    "tedtalk",
+    "therapy",
+    "timezone",
+    "trade",
+    "translate",
+    "trial",
+    "trivia",
+    "trollprefs",
+    "trust",
+    "truthdare",
+    "unmuzzle",
+    "unrestricted",
+    "utility",
+    "verdict",
+    "voice",
+    "wager",
+    "weather",
+    "weatherlocation",
+    "worldprefs"
+  ],
+  "permission_scoped_commands": [
+    "chaos",
+    "court",
+    "fakewipe",
+    "home actions",
+    "home alarms",
+    "home confirm",
+    "home do",
+    "home location",
+    "home output",
+    "home speak",
+    "mute",
+    "parodyas",
+    "scaraslowmode",
+    "scaratimeout",
+    "serverwipe",
+    "stopinterview",
+    "unmute",
+    "vcgame",
+    "vcparty"
+  ],
+  "unresolved_surfaces": [
+    {
+      "surface": "slash",
+      "name": "dashboard",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "world",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "prefs",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "duo",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "prefix",
+      "name": "achievements",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "alias",
+      "name": "gallery",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "prefix",
+      "name": "backupmemory",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "banchannel",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "bannedchannels",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "birthday",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "alias",
+      "name": "dob",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "alias",
+      "name": "birthdate",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "alias",
+      "name": "setbirthday",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "prefix",
+      "name": "blockall",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "blockdm",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "cases",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "prefix",
+      "name": "dmlist",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "exportface",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "faceexport",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "fixdoc",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "docfix",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "gdocfix",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "editdoc",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "gamerank1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "rpgrank1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "medals1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "importface",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "restoreface",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "leaveserver",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "logs",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "owneronly",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "reban",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rebanchannels",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rebuildmemory",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rebuildrank",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "recoverrank",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "rankrecover",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rebuildrelationship",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rebuildstats",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "recoverstats",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "statsrecover",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rpg1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "quest1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "harbinger1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rpg1reset",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "rpgreset1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "rpgstats1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "alias",
+      "name": "queststats1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "servers",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "unbanchannel",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "unblockdm",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "whois",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "prefix",
+      "name": "world",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "prefix",
+      "name": "worldadd",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "dashboard achievements",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "dashboard arc",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "dashboard duostate",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "dashboard relationship",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "dashboard scene",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "duo start",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "duo state",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "prefs duoauto",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "prefs rpdepth",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "prefs speaker",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "prefs utility",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "prefs voice",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "scaramouche",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "world add",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "world cases",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "slash",
+      "name": "world state",
+      "status": "ACCIDENTALLY_MISSING"
+    },
+    {
+      "surface": "help",
+      "name": "!exportface",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "help",
+      "name": "!gamerank1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "help",
+      "name": "!importface",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "help",
+      "name": "!rpg1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "help",
+      "name": "!rpg1reset",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    },
+    {
+      "surface": "help",
+      "name": "!rpgstats1",
+      "status": "UNSAFE_TO_RESTORE_AS_IS"
+    }
+  ],
+  "listeners": {
+    "on_guild_channel_delete": [
+      "voice_conversation.integration.VoiceConversation.channel_deleted"
+    ],
+    "on_ready": [
+      "connections.discord_ui.ConnectionsController.ready",
+      "server_chaos.service.ServerChaos.on_ready",
+      "tarot_commands.TarotController.sync_commands",
+      "voice_conversation.features.AdvancedVC.on_ready"
+    ],
+    "on_voice_state_update": [
+      "voice_conversation.integration.VoiceConversation.voice_state"
+    ]
+  }
+}

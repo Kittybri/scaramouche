@@ -1,0 +1,385 @@
+{
+  "schema_version": 1,
+  "bot": "scaramouche",
+  "components": {
+    "CHAOS": [
+      "server_chaos.service",
+      "ServerChaos"
+    ],
+    "CLOUD_INTEGRATIONS": [
+      "connections.runtime",
+      "ConnectedGoogleRuntime"
+    ],
+    "CONNECTIONS": [
+      "connections.service",
+      "ConnectedAccountService"
+    ],
+    "CONNECTIONS_UI": [
+      "connections.discord_ui",
+      "ConnectionsController"
+    ],
+    "FACE_PROFILES": [
+      "face_controls",
+      "FaceProfiles"
+    ],
+    "HOME": [
+      "home.bot_integration",
+      "HomeBot"
+    ],
+    "PC": [
+      "home.companion_bot",
+      "CompanionBot"
+    ],
+    "PROVIDER_STATUS": [
+      "restored_status",
+      "ProviderStatus"
+    ],
+    "TAROT": [
+      "tarot_commands",
+      "TarotController"
+    ],
+    "VOICE_CONVERSATION": [
+      "voice_conversation.integration",
+      "VoiceConversation"
+    ],
+    "WORLD": [
+      "persistent_world",
+      "PersistentWorld"
+    ],
+    "mem": [
+      "memory",
+      "Memory"
+    ],
+    "self_store": [
+      "self_model",
+      "SelfModelStore"
+    ]
+  },
+  "features": {
+    "tarot": {
+      "status": "PRESENT",
+      "prefix": [
+        "scaratarot",
+        "scaradaily",
+        "scarahistory",
+        "scarasettings"
+      ],
+      "wiring": [
+        "TAROT.payload",
+        "TAROT.session",
+        "TAROT_STORE.forget"
+      ],
+      "callable": [
+        "TAROT.payload",
+        "TAROT.session",
+        "TAROT_STORE.forget"
+      ],
+      "privacy_stages": [
+        "tarot",
+        "tarot_final"
+      ]
+    },
+    "rpg/games": {
+      "status": "ACCIDENTALLY_MISSING",
+      "prefix": [],
+      "wiring": [],
+      "notes": "Other games remain; the Harbinger RPG engine/store are absent. Old code unsafe without deletion fencing and scoped scores."
+    },
+    "party_games": {
+      "status": "PRESENT",
+      "prefix": [
+        "arena",
+        "trivia",
+        "answer",
+        "chaos"
+      ],
+      "wiring": [
+        "CHAOS.install"
+      ],
+      "callable": [
+        "CHAOS.install"
+      ],
+      "privacy_stages": [
+        "server_chaos"
+      ]
+    },
+    "birthdays": {
+      "status": "ACCIDENTALLY_MISSING",
+      "notes": "Character birthday_event is not user birthday registration/delivery. Missing shared profile/claim lifecycle remains unresolved."
+    },
+    "voice": {
+      "status": "PRESENT",
+      "prefix": [
+        "voice",
+        "vcparty",
+        "vcgame"
+      ],
+      "wiring": [
+        "VOICE_CONVERSATION.command",
+        "VOICE_CONVERSATION.voice_state"
+      ],
+      "callable": [
+        "VOICE_CONVERSATION.command",
+        "VOICE_CONVERSATION.voice_state"
+      ],
+      "privacy_stages": [
+        "voice_social"
+      ]
+    },
+    "connected_accounts": {
+      "status": "PRESENT",
+      "prefix": [
+        "connections",
+        "google"
+      ],
+      "wiring": [
+        "CONNECTIONS.authorize",
+        "CONNECTIONS.forget",
+        "CONNECTIONS_UI.panel"
+      ],
+      "callable": [
+        "CONNECTIONS.authorize",
+        "CONNECTIONS.forget",
+        "CONNECTIONS_UI.panel"
+      ],
+      "privacy_stages": [
+        "connected_accounts",
+        "connected_accounts_final"
+      ]
+    },
+    "calendar/tasks": {
+      "status": "PRESENT",
+      "prefix": [
+        "calendar list",
+        "calendar add",
+        "calendar confirm",
+        "tasks list",
+        "tasks add",
+        "tasks confirm"
+      ],
+      "wiring": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "callable": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "privacy_stages": [
+        "connected_proposals"
+      ]
+    },
+    "privacy_deletion": {
+      "status": "PRESENT",
+      "prefix": [
+        "forget",
+        "reset"
+      ],
+      "wiring": [
+        "PRIVACY_DELETION.is_pending",
+        "mem.reset_user_local",
+        "mem.reset_user_shared"
+      ],
+      "callable": [
+        "PRIVACY_DELETION.is_pending",
+        "mem.reset_user_local",
+        "mem.reset_user_shared"
+      ],
+      "privacy_stages": [
+        "memory_local",
+        "memory_shared"
+      ]
+    },
+    "memory": {
+      "status": "PRESENT",
+      "prefix": [
+        "remember",
+        "memories",
+        "pinpromise",
+        "pinwound",
+        "pincomfort",
+        "pinjoke"
+      ],
+      "wiring": [
+        "mem.get_user",
+        "mem.add_memory_event"
+      ],
+      "callable": [
+        "mem.get_user",
+        "mem.add_memory_event"
+      ],
+      "privacy_stages": [
+        "memory_local"
+      ]
+    },
+    "relationships": {
+      "status": "PRESENT",
+      "prefix": [
+        "relationship",
+        "arc",
+        "stats",
+        "affection",
+        "trust"
+      ],
+      "wiring": [
+        "mem.get_user"
+      ],
+      "callable": [
+        "mem.get_user"
+      ],
+      "privacy_stages": [
+        "memory_local"
+      ]
+    },
+    "duo": {
+      "status": "PRESENT",
+      "prefix": [
+        "both",
+        "duet",
+        "argue",
+        "compare",
+        "duostate"
+      ],
+      "wiring": [
+        "mem.get_duo_session",
+        "mem.set_channel_speaker_mode"
+      ],
+      "callable": [
+        "mem.get_duo_session",
+        "mem.set_channel_speaker_mode"
+      ],
+      "privacy_stages": [
+        "memory_shared"
+      ]
+    },
+    "search": {
+      "status": "PRESENT",
+      "prefix": [
+        "search",
+        "weather",
+        "lore"
+      ],
+      "wiring": [
+        "get_response"
+      ],
+      "callable": [
+        "get_response"
+      ],
+      "privacy_stages": []
+    },
+    "home/device": {
+      "status": "PRESENT",
+      "prefix": [
+        "home",
+        "home do",
+        "home confirm",
+        "pc"
+      ],
+      "wiring": [
+        "HOME.action",
+        "PC.install"
+      ],
+      "callable": [
+        "HOME.action",
+        "PC.install"
+      ],
+      "privacy_stages": [
+        "companion"
+      ]
+    },
+    "media/vision": {
+      "status": "PRESENT",
+      "prefix": [
+        "tedtalk",
+        "enrollface",
+        "recognizeface",
+        "deleteface"
+      ],
+      "wiring": [
+        "FACE_PROFILES.delete"
+      ],
+      "callable": [
+        "FACE_PROFILES.delete"
+      ],
+      "privacy_stages": [
+        "face_memory"
+      ]
+    },
+    "document_tools": {
+      "status": "UNSAFE_TO_RESTORE_AS_IS",
+      "notes": "Legacy fixdoc writes Google Docs without Phase 1 user-bound confirmations. No Docs/Phase 2 authorized. Existing tedtalk reads files."
+    },
+    "recovery/admin": {
+      "status": "PRESENT",
+      "prefix": [
+        "taskhealth",
+        "selfbackup",
+        "persistence",
+        "build"
+      ],
+      "wiring": [
+        "mem.backup"
+      ],
+      "callable": [
+        "mem.backup"
+      ],
+      "privacy_stages": [],
+      "notes": "Current owner diagnostics/local backup present; legacy history replay/shared backup/admin controls unresolved; no equivalence claimed."
+    },
+    "provider_status": {
+      "status": "PRESENT",
+      "prefix": [
+        "status"
+      ],
+      "wiring": [
+        "PROVIDER_STATUS.command",
+        "PROVIDER_STATUS.state"
+      ],
+      "callable": [
+        "PROVIDER_STATUS.command",
+        "PROVIDER_STATUS.state"
+      ],
+      "privacy_stages": []
+    },
+    "cloud_integrations": {
+      "status": "PRESENT",
+      "prefix": [
+        "integrations",
+        "githubissue"
+      ],
+      "wiring": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "callable": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "privacy_stages": []
+    },
+    "command_help": {
+      "status": "PRESENT",
+      "prefix": [
+        "scarahelp"
+      ],
+      "wiring": [
+        "help_cmd"
+      ],
+      "callable": [
+        "help_cmd"
+      ],
+      "privacy_stages": []
+    },
+    "character": {
+      "status": "PRESENT",
+      "prefix": [],
+      "wiring": [
+        "get_response"
+      ],
+      "callable": [
+        "get_response"
+      ],
+      "privacy_stages": []
+    },
+    "dashboard": {
+      "status": "ACCIDENTALLY_MISSING",
+      "notes": "Local dashboard/world/prefs/duo slash groups and direct scaramouche handler remain absent; stale remote names are not proof of functioning handlers."
+    }
+  }
+}
