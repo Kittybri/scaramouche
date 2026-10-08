@@ -30,10 +30,10 @@ def test_fresh_install_records_independent_current_schema_versions(tmp_path):
 
     status = run(memory.schema_status())
     assert status["local"] == {
-        "scope": "local", "version": 4, "current": 4, "pending": 0, "error": ""
+        "scope": "local", "version": 6, "current": 6, "pending": 0, "error": ""
     }
     assert status["shared"] == {
-        "scope": "shared", "version": 1, "current": 1, "pending": 0, "error": ""
+        "scope": "shared", "version": 2, "current": 2, "pending": 0, "error": ""
     }
     assert {"bot_name"} <= columns(memory.db_path, "messages")
     user_columns = columns(memory.db_path, "users")
@@ -70,7 +70,7 @@ def test_current_schema_without_metadata_bootstraps_without_data_loss(tmp_path):
     run(reopened.init())
     assert run(reopened.get_user(44))["display_name"] == "Legacy User"
     assert run(reopened.get_history(44, 91))[0]["content"] == "keep this history"
-    assert run(reopened.schema_status())["local"]["version"] == 4
+    assert run(reopened.schema_status())["local"]["version"] == 6
 
 
 @pytest.mark.parametrize("legacy_value", [0, 1])
@@ -96,8 +96,8 @@ def test_retired_mode_value_is_preserved_once_for_unrestricted(tmp_path, legacy_
     run(reopened.set_mode(71, "unrestricted_mode", not bool(legacy_value)))
     run(reopened.init())
     assert run(reopened.get_user(71))["unrestricted_mode"] is not bool(legacy_value)
-    assert run(reopened.schema_status())["local"]["version"] == 4
-    assert run(reopened.schema_status())["shared"]["version"] == 1
+    assert run(reopened.schema_status())["local"]["version"] == 6
+    assert run(reopened.schema_status())["shared"]["version"] == 2
 
 
 def test_representative_pre_duo_shared_schema_migrates_in_place(tmp_path):
@@ -205,12 +205,12 @@ def test_two_initializers_share_migration_history_without_lock_failure(tmp_path)
         rows = db.execute(
             "SELECT version,COUNT(*) FROM schema_migrations WHERE scope='local' GROUP BY version"
         ).fetchall()
-        assert rows == [(1, 1), (2, 1), (3, 1), (4, 1)]
+        assert rows == [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1)]
     with sqlite3.connect(shared) as db:
         rows = db.execute(
             "SELECT version,COUNT(*) FROM schema_migrations WHERE scope='shared' GROUP BY version"
         ).fetchall()
-        assert rows == [(1, 1)]
+        assert rows == [(1, 1), (2, 1)]
         assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
 
 
@@ -308,9 +308,6 @@ def test_reset_user_shared_removes_compatible_wanderer_user_scopes(tmp_path):
     with sqlite3.connect(memory.shared_db_path) as db:
         db.executescript("""
             CREATE TABLE user_bot_attention(user_id INTEGER,bot_name TEXT);
-            CREATE TABLE hidden_achievements(scope TEXT,achievement_key TEXT);
-            CREATE TABLE shared_world_entities(entity_key TEXT,owner_user_id INTEGER,channel_id INTEGER);
-            CREATE TABLE shared_world_cases(case_key TEXT,channel_id INTEGER);
             CREATE TABLE face_profiles(profile_key TEXT,owner_user_id INTEGER);
             CREATE TABLE shared_event_memories(event_key TEXT,channel_id INTEGER);
             CREATE TABLE shared_evidence_locker(evidence_key TEXT,owner_user_id INTEGER,channel_id INTEGER);
@@ -318,9 +315,9 @@ def test_reset_user_shared_removes_compatible_wanderer_user_scopes(tmp_path):
         """)
         for uid in (1, 10):
             db.execute("INSERT INTO user_bot_attention VALUES(?, 'wanderer')", (uid,))
-            db.execute("INSERT INTO hidden_achievements VALUES(?, 'a')", (f'user:{uid}',))
-            db.execute("INSERT INTO shared_world_entities VALUES(?,?,?)", (f'e{uid}', uid, uid))
-            db.execute("INSERT INTO shared_world_cases VALUES(?,?)", (f'c{uid}', uid))
+            db.execute("INSERT INTO hidden_achievements(scope,achievement_key) VALUES(?, 'a')", (f'user:{uid}',))
+            db.execute("INSERT INTO shared_world_entities(entity_key,owner_user_id,channel_id) VALUES(?,?,?)", (f'e{uid}', uid, uid))
+            db.execute("INSERT INTO shared_world_cases(case_key,channel_id) VALUES(?,?)", (f'c{uid}', uid))
             db.execute("INSERT INTO face_profiles VALUES(?,?)", (f'f{uid}', uid))
             db.execute("INSERT INTO shared_event_memories VALUES(?,?)", (f'm{uid}', uid))
             db.execute("INSERT INTO shared_evidence_locker VALUES(?,?,?)", (f'v{uid}', uid, uid))

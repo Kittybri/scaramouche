@@ -433,6 +433,9 @@ class ManagedBot(commands.Bot):
             loop = globals().get(name)
             if loop and loop.is_running():
                 loop.cancel()
+        birthdays = globals().get("BIRTHDAYS")
+        if birthdays and birthdays.delivery.is_running():
+            birthdays.delivery.cancel()
         await super().close()
 
 
@@ -4997,7 +5000,7 @@ async def summarize_cmd(ctx):
         await safe_reply(ctx,reply)
     except Exception as e: log_error("summarize_cmd",e)
 
-@bot.command(name="mute",aliases=["silence","ignore"])
+@bot.command(name="mute",aliases=["silence","ignore","botban","banfrombot"])
 async def mute_cmd(ctx,member:discord.Member=None,minutes:int=10):
     try:
         target=member or ctx.author
@@ -5011,7 +5014,7 @@ async def mute_cmd(ctx,member:discord.Member=None,minutes:int=10):
         else: await safe_reply(ctx,reply)
     except Exception as e: log_error("mute_cmd",e)
 
-@bot.command(name="unmute",aliases=["unsilence"])
+@bot.command(name="unmute",aliases=["unsilence","botunban","unbanfrombot"])
 async def unmute_cmd(ctx,member:discord.Member=None):
     try:
         target=member or ctx.author
@@ -5481,6 +5484,7 @@ async def forget_cmd(ctx,*,topic:str=None):
         await _setup(ctx)
         result=await mem.forget_memory_matches(ctx.author.id, topic)
         result["scene"] = await mem.forget_scene_state_matches(ctx.channel.id, topic)
+        result["tarot"] = await TAROT_STORE.forget(ctx.author.id, topic)
         await CHAOS.forget(ctx.author.id)
         await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
@@ -6468,7 +6472,7 @@ def _task_age(timestamp: float | None, *, now: float | None = None) -> str:
     return f"{age // 3600}h"
 
 
-@bot.command(name="taskhealth", aliases=["workerhealth"])
+@bot.command(name="taskhealth", aliases=["workerhealth", "bothealth"])
 async def tasks_cmd(ctx):
     """Owner-only sanitized worker health diagnostic."""
     if not _owner_only(ctx):
@@ -6548,6 +6552,8 @@ async def help_cmd(ctx):
                            description="Hmph. Only saying this once.", color=c)
         from connections.discord_ui import GOOGLE_HELP
         e1.description += "\n\n" + GOOGLE_HELP
+        from tarot_commands import TAROT_HELP
+        e1.description += "\n\n" + TAROT_HELP + "\nPrefix: !scaratarot · !scaradaily · !scarahistory · !scarasettings"
         for n,v in [
             ("🔊 !voice <msg>","Voice message — !speak !say"),
             ("📨 !dm [msg]","He DMs you privately"),
@@ -6644,6 +6650,8 @@ async def help_cmd(ctx):
             inline=False)
         e3.set_footer(text="Scaramouche — The Balladeer | !scarahelp for commands")
         pages = [e1, e2, e3]
+        from command_help import public_catalog
+        pages.extend(public_catalog(bot))
         from help_delivery import send_help
         await send_help(ctx, pages)
     except Exception as e:
@@ -6728,7 +6736,16 @@ async def _delete_runtime_stage(uid):
             _presence_activity.pop(key, None)
 
 
+from tarot_system import TarotStore
+from restoration_store import RestorationStore
+from restored_lifecycle import WORK as RESTORED_WORK
+RESTORATION_STORE = RestorationStore(mem.db_path)
+TAROT_STORE = TarotStore(os.getenv("TAROT_DB_PATH") or os.path.join(os.path.dirname(mem.db_path), "tarot.sqlite3"))
+
 PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
+    "restored_work": RESTORED_WORK.forget,
+    "restored_campaigns": RESTORATION_STORE.forget,
+    "tarot": TAROT_STORE.forget,
     "connected_accounts": CONNECTIONS.forget,
     "connected_proposals": CLOUD_INTEGRATIONS.forget,
     "memory_local": mem.reset_user_local,
@@ -6745,7 +6762,33 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "memory_local_final": mem.reset_user_local,
     "memory_shared_final": mem.reset_user_shared,
     "connected_accounts_final": CONNECTIONS.forget,
+    "tarot_final": TAROT_STORE.forget,
+    "restored_campaigns_final": RESTORATION_STORE.forget,
 })
+
+from tarot_commands import TarotController
+from restored_status import ProviderStatus
+from restored_admin import install as install_restored_admin
+install_restored_admin(bot, OWNER_ID)
+from harbinger_commands import HarbingerController
+HARBINGER = HarbingerController(bot, RESTORATION_STORE, ai, GROQ_MODEL,
+                               PRIVACY_DELETION.is_pending, credential_disclosure).install()
+from birthday_commands import BirthdayController
+BIRTHDAYS = BirthdayController(bot, mem, PRIVACY_DELETION.is_pending,
+                               credential_disclosure, _setup, _initialize_runtime_once).install()
+PRIVACY_DELETION.stages["user_birthdays"] = BIRTHDAYS.forget
+from world_archive import WorldArchive
+WORLD_ARCHIVE = WorldArchive(bot, mem, HARBINGER.guard).install()
+from restored_slash import RestoredSlash
+RESTORED_SLASH = RestoredSlash(bot, mem, PRIVACY_DELETION, credential_disclosure,
+    WORLD_ARCHIVE, _setup, get_response, _record_delivered_reply).install()
+PRIVACY_DELETION.stages = {"restored_slash": RESTORED_SLASH.forget, **PRIVACY_DELETION.stages}
+PROVIDER_STATUS = ProviderStatus(bot, BOT_NAME, ai, OWNER_ID, environment_monitor).install()
+
+TAROT = TarotController(
+    bot, BOT_NAME, ai, GROQ_MODEL, os.path.dirname(mem.db_path),
+    PRIVACY_DELETION.is_pending, credential_disclosure, store=TAROT_STORE,
+).install()
 
 from connections.discord_ui import ConnectionsController
 CONNECTIONS_UI = ConnectionsController(

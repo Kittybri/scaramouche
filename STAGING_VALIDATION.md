@@ -1618,3 +1618,210 @@ are reported in the handoff, without embedding a commit's own SHA into its conte
 draft and unmerged; an operator still must handle the independently failing/pending
 Cloudflare integration according to repository merge policy. Google Production
 preparation remains the explicit checklist above. No Phase 2 work was started.
+
+## Tarot command recovery — 2026-10-07
+
+This separate regression repair does not repeat or change Gate A, Gate B, or
+Google Phase 1 verdicts. Canonical detailed audit: TAROT_RESTORATION.md.
+
+## Live restoration evidence — 2026-10-07 18:35 PDT
+
+Deployed functional candidates:
+- Scaramouche: `28da58e125e06a6bc7752b970a3e9cac8a7b9213`
+- Wanderer: `5f64866c8335b8ed9fc1170240085e3c0278d86c`
+
+Both bot services are active, with one controlled restart each and NRestarts=0.
+New-start inspected error counts are zero. The connection service was not restarted
+or reconfigured; its process and working directory remained unchanged.
+
+Both candidates verified all 78 original artwork files and rendered all three
+spreads on Oracle. The original tarot SQLite database was backed up before the
+additive session migration. Existing preferences, daily draws and history rows
+were compared before/after and are unchanged. Tarot quick_check is ok; the bot
+and shared-state databases also each report ok.
+
+Discord's live global-command API lists /tarot, /dailycard, /tarothistory and
+/tarotsettings for BOTH bots. Existing /google remains registered. Scaramouche's
+five older remote slash registrations were preserved, not bulk-deleted; their
+missing local handlers remain an outstanding audit finding. No human end-to-end
+Discord tarot button/reading test was observed during this deployment.
+
+Google account/grant rows and protected environment-file hashes are unchanged.
+The callback health endpoint returned HTTP 200 with successful TLS verification.
+No provider write occurred. Host sample: 322/951 MiB available RAM and
+179/3062 MiB swap used. No voice, DNS or Google configuration was changed.
+
+Deployment uses only the new 80-tarot.conf systemd drop-in per bot. Rollback is to
+move that drop-in aside, reload systemd and restart the bot units; prior releases
+remain available. The original tarot database backup is root-protected under
+config-backups/tarot-restoration-20261007 in the existing staging root.
+
+Full candidate test totals remain Scaramouche 794 passed / 1 skipped and Wanderer
+338 passed / 1 skipped. Subsequent evidence commits are documentation-only.
+Draft repair PRs: Scaramouche #24 and Wanderer #11; neither is merged.
+
+Outstanding non-tarot gaps are explicitly documented in TAROT_RESTORATION.md and
+the legacy/current command manifests. In particular, Scaramouche still lacks the
+legacy RPG/birthday/document-editing/recovery command groups and several local
+slash handlers; both bots lack the old provider-status aliases. Intentional
+Unrestricted renames and biometric privacy changes were not reverted. The
+historical migration responsible for the omissions has not been established.
+
+## Preservation deployment evidence — 2026-10-07 23:50 PDT
+
+Exact tested/deployed functional SHAs:
+- Scaramouche: `041775ac6997e032d219a8a1eb4b64ae4df842f4`
+- Wanderer: `ae9d740ceab6c0cc40a71a3eed3d3be5a6152752`
+
+Both candidates also passed actual runtime preservation import/help/wiring checks
+on Oracle before restart. Existing 80-tarot.conf remains intact; the new
+85-preservation.conf changes only the bot WorkingDirectory. Prior releases remain
+available; rollback moves only 85-preservation.conf aside, reloads systemd, and
+restarts the two bots. No database migration or provider write was introduced.
+
+Post-restart both bots and the unchanged callback service are active; NRestarts=0
+and inspected new-start error counts=0 for all three. One controlled restart per
+bot, zero callback restarts. Bot start time: 2026-10-08 06:50:46 UTC.
+Host: 337/951 MiB RAM available, 186/3062 MiB swap used.
+Bot-local and shared SQLite quick_check results: ok; original Tarot DB: ok.
+
+Internal before/after comparisons confirm Google connected-account, bot-grant and
+connection-session rows unchanged; protected Google configuration hashes unchanged;
+callback process/working directory unchanged. Tarot preferences, daily draws and
+saved-history rows unchanged. HTTPS callback HTTP 200, successful TLS verification.
+No OAuth/production-prep/credential/DNS configuration or physical/voice action.
+
+Discord global registration API shows all four Tarot slash roots and /google for
+both bots. Both still have ten remote slash roots. Scaramouche's five legacy
+remote roots remain stale relative to its missing local handlers; this is NOT a
+slash-restoration pass for dashboard/world/prefs/duo/scaramouche. No human Tarot
+button click or provider-status invocation was observed here.
+
+Full local suites: Scaramouche 803 passed, 1 skipped, 1 warning (125.49s);
+Wanderer 347 passed, 1 skipped, 1 warning (73.13s). Nine preservation tests and
+20 Tarot tests per repository pass. Compile/import, alias/slash/help/module and
+feature validation, privacy/isolation/authorization/credential/arbitration suite
+coverage, and whitespace checks pass. Whole-tree secret-pattern scan found no
+real credential; Wanderer's sole flagged file contains known detector fixtures.
+
+GitHub Preservation checks passed for both candidate heads. Repair PRs #24 and
+#11 remain draft, open and mergeable; no merge performed. The inherited
+Scaramouche Cloudflare Workers check was still in progress at the inspected
+checkpoint and is separate from these successful code/test checks.
+
+**State: PRESERVATION_INSTALLED_RESTORATION_INCOMPLETE.**
+Historical name/registration inventory is complete for the recorded snapshots;
+full behavior restoration is not complete. Remaining features and security/scope
+dependencies are retained in PRESERVATION_RESTORATION_AUDIT.md and
+preservation/historical_audit.json. Do not resume Google Production/Phase 2
+automatically or interpret the current supported manifest as proof that omitted
+legacy functionality has been restored.
+
+## Safe restoration continuation — 2026-10-08 (candidate validation)
+
+This section supersedes the earlier incomplete *safe-command* restoration
+checkpoint. Scope and individual unsafe/deferred historical differences are in
+RESTORATION_REVIEW.md and the retained machine-readable audit. No historical
+record/source hash was discarded and no currently registered command was removed.
+
+Scaramouche restores the scoped Harbinger RPG/storage, own birthday lifecycle,
+world/achievement archive, private owner guild inventory, and all five supported
+legacy slash roots. Wanderer's runtime features are unchanged; its preservation
+audit/manifest checker now records the same explicit dispositions. Unsafe raw
+exports, history replay, biometric import/export and Phase-2 Docs writes were not
+restored. Inherited Wanderer admin/document risks are documented, not concealed.
+
+Final corrected local full suites on candidate content:
+- Scaramouche: **833 passed, 1 skipped, 1 warning** (124.87s).
+- Wanderer: **348 passed, 1 skipped, 1 warning** (73.62s).
+- Scaramouche restoration + preservation + Tarot targeted: **59 passed** (24.86s).
+  Each repository includes 10 preservation and 20 Tarot regression tests.
+- Runtime prefix/alias/slash/help/module/component/privacy-stage checks pass.
+  Scaramouche: 182 prefix entries, 25 slash entries. Wanderer: 177 / 25.
+- All Python sources compiled/parsed: Scaramouche 155, Wanderer 89.
+- Whole-source credential-pattern scan: Scaramouche 213 files, zero findings;
+  Wanderer 132 files, one known private-key-header detector fixture at
+  tests/test_release_hardening.py:70 (not an actual credential).
+- git diff --check and preservation shrinkage checks against the previous
+  checkpoint pass with zero unauthorized removals.
+- Full suites include privacy/deletion, isolation, migrations, authorization,
+  credential filtering and interaction arbitration. Synthetic SQLite quick_checks
+  pass. The skipped test needs a configured native Opus library on this Mac;
+  the warning is the existing macOS LibreSSL/urllib3 compatibility warning.
+
+The initial Scaramouche full run exposed 20 failures and 53 setup errors
+(759 passed): all traced to an import-time asyncio semaphore in the restored RPG
+controller on Python 3.9. Fixed by creating it in the running loop, with a new
+regression. The full corrected run above passed; no assertions were skipped or
+weakened to conceal it.
+
+No human RPG-button/provider-generated campaign or actual birthday delivery is
+claimed from automated tests. Live startup/registration evidence follows below.
+
+## Safe restoration live closure — 2026-10-08 10:13 PDT
+
+**Safe restoration batch: COMPLETE_AND_READY_FOR_MERGE.** This is scoped to the
+user-authorized safe restorations, not certification of all inherited commands.
+Unsafe/deferred historical surfaces remain explicitly unresolved (32 Scaramouche
+surface records and 6 Wanderer records, including aliases/help). There are zero
+unexplained ACCIDENTALLY_MISSING command records. See RESTORATION_REVIEW.md.
+
+Validated code candidates:
+- Scaramouche: `1f984c2316231805b2858716eccef5ec42ca1c6f` — deployed.
+- Wanderer: `168f30cfbdb2bddbf059ae634a7fb1da9cdff094` — validation/audit changes;
+  running functional release remains
+  `ae9d740ceab6c0cc40a71a3eed3d3be5a6152752`.
+  Its bot/runtime feature files are identical; no unnecessary restart/deployment.
+  Later evidence-only commits do not change these tested functional candidates.
+
+Oracle pre-start runtime import/preservation check: PASS, 182 prefix/25 slash.
+Additive migrations rehearsed against protected SQLite copies: PASS, including
+unchanged Google account/grant/session rows. Live Scaramouche restored campaign,
+medal and birthday tables exist. Local/shared/Tarot quick_check: all four ok.
+
+Live Discord registration API confirms exactly 25 slash entries / ten roots for
+each bot, including the five repaired Scaramouche roots with all expected children.
+Google and Tarot roots remain registered; Scaramouche/Wanderer direct command names
+remain distinct. Both running processes have gateway-ready evidence; no startup
+tracebacks or restored-registration/birthday-checker errors.
+
+Services:
+- Scaramouche active; started 2026-10-08 17:11:39 UTC.
+- Wanderer active; unchanged start 2026-10-08 06:50:46 UTC.
+- Connections callback active; unchanged start 2026-10-07 04:25:52 UTC.
+- One controlled Scaramouche restart; zero Wanderer/callback restarts.
+  All three NRestarts=0; sanitized inspected error counts=0.
+- Available RAM 335/951 MiB; swap free 2867/3062 MiB.
+- HTTPS callback https://kittybri-bots.duckdns.org/health: HTTP 200 with TLS validation.
+
+Before/after comparisons: protected Google env contents unchanged, Google account/
+grant/session state unchanged, Tarot preferences/daily/history unchanged, callback
+and Wanderer PID/working directories unchanged. No provider write, OAuth change,
+DNS/TLS change, physical action or voice testing performed.
+
+Only Scaramouche's 90-restoration.conf was added, pointing at the exact release
+plus a protected release-metadata file. Previous release and 80/85 drop-ins remain.
+Rollback: move only that new drop-in aside, reload systemd, restart Scaramouche.
+Do not overwrite live databases from backups: migrations are additive and the old
+release can coexist with the extra tables. Protected rehearsal snapshots are
+root-only under config-backups/restoration-20261008; they contain private state
+and must not be exported or committed.
+
+Final contract counts:
+- Scaramouche: 182 prefix, 64 aliases, 25 slash, 244 help entries; 21 PRESENT
+  feature families and one explicitly unsafe/deferred document family.
+- Wanderer: 177 prefix, 74 aliases, 25 slash, 243 help entries; 21 PRESENT families.
+- Historical records retained: Scaramouche 271 PRESENT / 2 RENAMED / 32 UNSAFE;
+  Wanderer 300 PRESENT / 2 RENAMED / 6 UNSAFE. No current command removed.
+- Existing Unrestricted migration and direct-installer equivalents remain intact.
+
+Draft/open PR #24 and #11 are MERGEABLE. Candidate-head GitHub preservation jobs
+passed for both. Scaramouche's inherited external Workers Builds check failed;
+it is reported separately from passing Python/Oracle/Discord validation and was
+not worked around. No external failure is concealed. Neither PR was merged.
+
+Remaining limitations: no human end-to-end RPG click run or real birthday delivery
+observed; unsupported biometric portability, unsafe recovery/export paths and
+heuristic private-event achievement awards remain deferred as documented.
+Inherited Wanderer admin/document risks need separate scoped hardening, not blind
+removal in this task. Google Production and all Phase 2 work remain paused.

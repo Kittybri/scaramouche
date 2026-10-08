@@ -1800,6 +1800,14 @@ class Memory:
             )
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
             await db.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+            # Restored stores share this local transaction. Legacy rows are also
+            # erased so a later migration cannot resurrect forgotten progress.
+            tables = {row[0] for row in await (await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+            for table in ("restored_campaigns", "restored_medals", "restored_birthdays", "rpg_state", "rpg_medals"):
+                if table in tables:
+                    await db.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
             await db.commit()
         self._muted.pop(user_id, None)
 
@@ -1826,6 +1834,8 @@ class Memory:
             # when that compatible table is present.
             if "user_bot_attention" in tables:
                 await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
+            if "shared_birthday_profiles" in tables:
+                await db.execute("DELETE FROM shared_birthday_profiles WHERE user_id=?", (user_id,))
             if "hidden_achievements" in tables:
                 await db.execute(
                     "DELETE FROM hidden_achievements "

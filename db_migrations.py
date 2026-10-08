@@ -168,14 +168,21 @@ async def _shared_duo_columns(db, _bot_name):
     })
 
 
+from restoration_store import migrate as _restore_character_storage
+from birthday_commands import migrate as _restore_birthday_storage
+from world_archive import migrate as _restore_world_archive
+
 LOCAL_MIGRATIONS = (
     Migration(1, "legacy_relationship_columns", _local_relationship_columns),
     Migration(2, "feature_preference_columns", _local_feature_preferences),
     Migration(3, "message_scene_and_privacy_ledger", _local_message_scene_and_privacy),
     Migration(4, "unrestricted_mode_preference", _local_unrestricted_mode),
+    Migration(5, "restore_scoped_harbinger_campaigns", _restore_character_storage),
+    Migration(6, "restore_user_birthdays", _restore_birthday_storage),
 )
 SHARED_MIGRATIONS = (
     Migration(1, "duo_session_columns", _shared_duo_columns),
+    Migration(2, "restore_shared_world_archive", _restore_world_archive),
 )
 
 
