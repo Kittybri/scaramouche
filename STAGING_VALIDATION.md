@@ -1740,7 +1740,7 @@ Final corrected local full suites on candidate content:
   Scaramouche: 182 prefix entries, 25 slash entries. Wanderer: 177 / 25.
 - All Python sources compiled/parsed: Scaramouche 155, Wanderer 89.
 - Whole-source credential-pattern scan: Scaramouche 213 files, zero findings;
-  Wanderer 132 files, one known public-key-header detector fixture at
+  Wanderer 132 files, one known private-key-header detector fixture at
   tests/test_release_hardening.py:70 (not an actual credential).
 - git diff --check and preservation shrinkage checks against the previous
   checkpoint pass with zero unauthorized removals.
@@ -1757,3 +1757,71 @@ weakened to conceal it.
 
 No human RPG-button/provider-generated campaign or actual birthday delivery is
 claimed from automated tests. Live startup/registration evidence follows below.
+
+## Safe restoration live closure — 2026-10-08 10:13 PDT
+
+**Safe restoration batch: COMPLETE_AND_READY_FOR_MERGE.** This is scoped to the
+user-authorized safe restorations, not certification of all inherited commands.
+Unsafe/deferred historical surfaces remain explicitly unresolved (32 Scaramouche
+surface records and 6 Wanderer records, including aliases/help). There are zero
+unexplained ACCIDENTALLY_MISSING command records. See RESTORATION_REVIEW.md.
+
+Validated code candidates:
+- Scaramouche: `1f984c2316231805b2858716eccef5ec42ca1c6f` — deployed.
+- Wanderer: `168f30cfbdb2bddbf059ae634a7fb1da9cdff094` — validation/audit changes;
+  running functional release remains
+  `ae9d740ceab6c0cc40a71a3eed3d3be5a6152752`.
+  Its bot/runtime feature files are identical; no unnecessary restart/deployment.
+  Later evidence-only commits do not change these tested functional candidates.
+
+Oracle pre-start runtime import/preservation check: PASS, 182 prefix/25 slash.
+Additive migrations rehearsed against protected SQLite copies: PASS, including
+unchanged Google account/grant/session rows. Live Scaramouche restored campaign,
+medal and birthday tables exist. Local/shared/Tarot quick_check: all four ok.
+
+Live Discord registration API confirms exactly 25 slash entries / ten roots for
+each bot, including the five repaired Scaramouche roots with all expected children.
+Google and Tarot roots remain registered; Scaramouche/Wanderer direct command names
+remain distinct. Both running processes have gateway-ready evidence; no startup
+tracebacks or restored-registration/birthday-checker errors.
+
+Services:
+- Scaramouche active; started 2026-10-08 17:11:39 UTC.
+- Wanderer active; unchanged start 2026-10-08 06:50:46 UTC.
+- Connections callback active; unchanged start 2026-10-07 04:25:52 UTC.
+- One controlled Scaramouche restart; zero Wanderer/callback restarts.
+  All three NRestarts=0; sanitized inspected error counts=0.
+- Available RAM 335/951 MiB; swap free 2867/3062 MiB.
+- HTTPS callback https://kittybri-bots.duckdns.org/health: HTTP 200 with TLS validation.
+
+Before/after comparisons: protected Google env contents unchanged, Google account/
+grant/session state unchanged, Tarot preferences/daily/history unchanged, callback
+and Wanderer PID/working directories unchanged. No provider write, OAuth change,
+DNS/TLS change, physical action or voice testing performed.
+
+Only Scaramouche's 90-restoration.conf was added, pointing at the exact release
+plus a protected release-metadata file. Previous release and 80/85 drop-ins remain.
+Rollback: move only that new drop-in aside, reload systemd, restart Scaramouche.
+Do not overwrite live databases from backups: migrations are additive and the old
+release can coexist with the extra tables. Protected rehearsal snapshots are
+root-only under config-backups/restoration-20261008; they contain private state
+and must not be exported or committed.
+
+Final contract counts:
+- Scaramouche: 182 prefix, 64 aliases, 25 slash, 244 help entries; 21 PRESENT
+  feature families and one explicitly unsafe/deferred document family.
+- Wanderer: 177 prefix, 74 aliases, 25 slash, 243 help entries; 21 PRESENT families.
+- Historical records retained: Scaramouche 271 PRESENT / 2 RENAMED / 32 UNSAFE;
+  Wanderer 300 PRESENT / 2 RENAMED / 6 UNSAFE. No current command removed.
+- Existing Unrestricted migration and direct-installer equivalents remain intact.
+
+Draft/open PR #24 and #11 are MERGEABLE. Candidate-head GitHub preservation jobs
+passed for both. Scaramouche's inherited external Workers Builds check failed;
+it is reported separately from passing Python/Oracle/Discord validation and was
+not worked around. No external failure is concealed. Neither PR was merged.
+
+Remaining limitations: no human end-to-end RPG click run or real birthday delivery
+observed; unsupported biometric portability, unsafe recovery/export paths and
+heuristic private-event achievement awards remain deferred as documented.
+Inherited Wanderer admin/document risks need separate scoped hardening, not blind
+removal in this task. Google Production and all Phase 2 work remain paused.
