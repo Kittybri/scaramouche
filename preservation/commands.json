@@ -1467,6 +1467,102 @@
       "group": false,
       "module": "persistent_world",
       "access": "public"
+    },
+    "rpg1": {
+      "aliases": [
+        "harbinger1",
+        "quest1"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "harbinger_commands",
+      "access": "public"
+    },
+    "rpgstats1": {
+      "aliases": [
+        "queststats1"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "harbinger_commands",
+      "access": "public"
+    },
+    "rpg1reset": {
+      "aliases": [
+        "rpgreset1"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "harbinger_commands",
+      "access": "public"
+    },
+    "gamerank1": {
+      "aliases": [
+        "medals1",
+        "rpgrank1"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "harbinger_commands",
+      "access": "public"
+    },
+    "birthday": {
+      "aliases": [
+        "birthdate",
+        "dob",
+        "setbirthday"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "birthday_commands",
+      "access": "public"
+    },
+    "world": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "world_archive",
+      "access": "public"
+    },
+    "worldadd": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "world_archive",
+      "access": "public"
+    },
+    "cases": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "world_archive",
+      "access": "public"
+    },
+    "achievements": {
+      "aliases": [
+        "gallery"
+      ],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "world_archive",
+      "access": "public"
+    },
+    "servers": {
+      "aliases": [],
+      "cog": null,
+      "enabled": true,
+      "group": false,
+      "module": "restored_admin",
+      "access": "owner"
     }
   },
   "slash": {
@@ -1489,6 +1585,86 @@
     "tarotsettings": {
       "group": false,
       "module": "tarot_commands"
+    },
+    "dashboard": {
+      "group": true,
+      "module": null
+    },
+    "dashboard achievements": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "dashboard arc": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "dashboard duostate": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "dashboard relationship": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "dashboard scene": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "duo": {
+      "group": true,
+      "module": null
+    },
+    "duo start": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "duo state": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "prefs": {
+      "group": true,
+      "module": null
+    },
+    "prefs duoauto": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "prefs rpdepth": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "prefs speaker": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "prefs utility": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "prefs voice": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "scaramouche": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "world": {
+      "group": true,
+      "module": null
+    },
+    "world add": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "world cases": {
+      "group": false,
+      "module": "restored_slash"
+    },
+    "world state": {
+      "group": false,
+      "module": "restored_slash"
     }
   },
   "cogs": [],
@@ -1702,7 +1878,42 @@
     "/google",
     "/tarot",
     "/tarothistory",
-    "/tarotsettings"
+    "/tarotsettings",
+    "!rpg1",
+    "!harbinger1",
+    "!quest1",
+    "!rpgstats1",
+    "!queststats1",
+    "!rpg1reset",
+    "!rpgreset1",
+    "!gamerank1",
+    "!medals1",
+    "!rpgrank1",
+    "!birthday",
+    "!birthdate",
+    "!dob",
+    "!setbirthday",
+    "!world",
+    "!worldadd",
+    "!cases",
+    "!achievements",
+    "!gallery",
+    "/dashboard achievements",
+    "/dashboard arc",
+    "/dashboard duostate",
+    "/dashboard relationship",
+    "/dashboard scene",
+    "/duo start",
+    "/duo state",
+    "/prefs duoauto",
+    "/prefs rpdepth",
+    "/prefs speaker",
+    "/prefs utility",
+    "/prefs voice",
+    "/scaramouche",
+    "/world add",
+    "/world cases",
+    "/world state"
   ],
   "owner_commands": [
     "build",
@@ -1724,7 +1935,8 @@
     "selfgoals",
     "selfstate",
     "taskhealth",
-    "whoami"
+    "whoami",
+    "servers"
   ],
   "public_commands": [
     "affection",
@@ -1859,7 +2071,16 @@
     "wager",
     "weather",
     "weatherlocation",
-    "worldprefs"
+    "worldprefs",
+    "rpg1",
+    "rpgstats1",
+    "rpg1reset",
+    "gamerank1",
+    "birthday",
+    "world",
+    "worldadd",
+    "cases",
+    "achievements"
   ],
   "permission_scoped_commands": [
     "chaos",
@@ -1884,384 +2105,196 @@
   ],
   "unresolved_surfaces": [
     {
-      "surface": "slash",
-      "name": "dashboard",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "world",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "prefs",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "duo",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "prefix",
-      "name": "achievements",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "alias",
-      "name": "gallery",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
       "surface": "prefix",
       "name": "backupmemory",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy raw local/shared database backups can include credentials and deleted/private content. Current selfbackup/persistence cover local diagnostics only, not equivalent shared export. Retention, encryption and deletion fencing are prerequisites."
     },
     {
       "surface": "prefix",
       "name": "banchannel",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy persistent bot-channel ban requires admission checks across normal replies, duo, jobs and voice. Current Scaramouche has no matching ban backend; a command-only port would falsely claim enforcement."
     },
     {
       "surface": "prefix",
       "name": "bannedchannels",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "birthday",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "alias",
-      "name": "dob",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "alias",
-      "name": "birthdate",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "alias",
-      "name": "setbirthday",
-      "status": "ACCIDENTALLY_MISSING"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Inventory of the absent legacy channel-ban store; no safe equivalent state to report."
     },
     {
       "surface": "prefix",
       "name": "blockall",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Bulk blocks users selected from cached guild membership and sends unsolicited farewells; lacks exact scoped confirmation and current cross-path enforcement."
     },
     {
       "surface": "prefix",
       "name": "blockdm",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "cases",
-      "status": "ACCIDENTALLY_MISSING"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy numeric/name targeting is ambiguous and mutates global DM access with unsolicited outbound messages; missing current admission backend and exact confirmation."
     },
     {
       "surface": "prefix",
       "name": "dmlist",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Enumerates private DM-only identities and relationship/message metadata for the owner. No current privacy-scoped export authorization or redaction contract."
     },
     {
       "surface": "prefix",
       "name": "exportface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "alias",
       "name": "faceexport",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "prefix",
       "name": "fixdoc",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
     },
     {
       "surface": "alias",
       "name": "docfix",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
     },
     {
       "surface": "alias",
       "name": "gdocfix",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
     },
     {
       "surface": "alias",
       "name": "editdoc",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "gamerank1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "alias",
-      "name": "rpgrank1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "alias",
-      "name": "medals1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
     },
     {
       "surface": "prefix",
       "name": "importface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "alias",
       "name": "restoreface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "prefix",
       "name": "leaveserver",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Immediately leaves a guild selected by mutable index/name without durable exact-target confirmation. Membership mutation is not restored as an unrestricted owner action."
     },
     {
       "surface": "prefix",
       "name": "logs",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Exports another user's raw chat history to the owner. Can disclose secrets/private content; no current subject-scoped export, redaction or deletion guard."
     },
     {
       "surface": "prefix",
       "name": "owneronly",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy in-memory global switch is not enforced by all current event/command/background paths. A partial port is unsafe and misleading."
     },
     {
       "surface": "prefix",
       "name": "reban",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Bulk global DM blocking based on inferred membership lacks exact scoped confirmation and the current missing admission backend."
     },
     {
       "surface": "prefix",
       "name": "rebanchannels",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Infers channel bans by scanning old messages; ambiguous text can recreate stale administrative state without confirmation."
     },
     {
       "surface": "prefix",
       "name": "rebuildmemory",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Bulk replay of visible Discord history may resurrect forgotten content or another user's state. Needs tombstone-aware, scoped confirmed recovery."
     },
     {
       "surface": "prefix",
       "name": "rebuildrank",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
     },
     {
       "surface": "alias",
       "name": "recoverrank",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
     },
     {
       "surface": "alias",
       "name": "rankrecover",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
     },
     {
       "surface": "prefix",
       "name": "rebuildrelationship",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Recomputes relationships from historical content without deletion fences or exact scoped confirmation; may recreate deleted relationship state."
     },
     {
       "surface": "prefix",
       "name": "rebuildstats",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
     },
     {
       "surface": "alias",
       "name": "recoverstats",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
     },
     {
       "surface": "alias",
       "name": "statsrecover",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "rpg1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "alias",
-      "name": "quest1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "alias",
-      "name": "harbinger1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "rpg1reset",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "alias",
-      "name": "rpgreset1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "rpgstats1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "alias",
-      "name": "queststats1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "servers",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
     },
     {
       "surface": "prefix",
       "name": "unbanchannel",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Companion to the absent persistent channel-admission backend; do not restore a no-op unblock control."
     },
     {
       "surface": "prefix",
       "name": "unblockdm",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy ambiguous global target selection and missing current DM block backend; cannot safely promise restored access."
     },
     {
       "surface": "prefix",
       "name": "whois",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "prefix",
-      "name": "world",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "prefix",
-      "name": "worldadd",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "dashboard achievements",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "dashboard arc",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "dashboard duostate",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "dashboard relationship",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "dashboard scene",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "duo start",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "duo state",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "prefs duoauto",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "prefs rpdepth",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "prefs speaker",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "prefs utility",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "prefs voice",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "scaramouche",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "world add",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "world cases",
-      "status": "ACCIDENTALLY_MISSING"
-    },
-    {
-      "surface": "slash",
-      "name": "world state",
-      "status": "ACCIDENTALLY_MISSING"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Aggregates global stored identities, message counts and shared-server membership; current privacy architecture does not authorize this cross-user profile export."
     },
     {
       "surface": "help",
       "name": "!exportface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "help",
-      "name": "!gamerank1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "help",
       "name": "!importface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "help",
-      "name": "!rpg1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "help",
-      "name": "!rpg1reset",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
-    },
-    {
-      "surface": "help",
-      "name": "!rpgstats1",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     }
   ],
   "listeners": {
@@ -2272,7 +2305,9 @@
       "connections.discord_ui.ConnectionsController.ready",
       "server_chaos.service.ServerChaos.on_ready",
       "tarot_commands.TarotController.sync_commands",
-      "voice_conversation.features.AdvancedVC.on_ready"
+      "voice_conversation.features.AdvancedVC.on_ready",
+      "birthday_commands.BirthdayController.ready",
+      "restored_slash.RestoredSlash.sync"
     ],
     "on_voice_state_update": [
       "voice_conversation.integration.VoiceConversation.voice_state"

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "bot": "scaramouche",
-  "checkpoint": "fe585b1",
+  "checkpoint": "restoration-continuation-2026-10-08",
   "source_root": "oracle_ops/remote_snapshots/scaramouche",
   "sources": {
     "bot.py": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
@@ -33,8 +33,8 @@
       "historical_source": "cogs/admin.py",
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some historical module commands remain unresolved; do not treat the new architecture as a full replacement.",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Safe available handlers mapped; remaining commands individually reviewed as unsafe, not silently omitted.",
       "unresolved_commands": [
         "banchannel",
         "bannedchannels",
@@ -46,7 +46,6 @@
         "owneronly",
         "reban",
         "rebanchannels",
-        "servers",
         "unbanchannel",
         "unblockdm",
         "whois"
@@ -56,42 +55,32 @@
       "historical_source": "cogs/duo.py",
       "source_sha256": "b00655b97c6dc465e4c0782b662e2f8768d225e8c824ba6e0ab94ae79e63f9f4",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some historical module commands remain unresolved; do not treat the new architecture as a full replacement.",
-      "unresolved_commands": [
-        "achievements",
-        "cases",
-        "world",
-        "worldadd"
-      ]
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
     },
     {
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some historical module commands remain unresolved; do not treat the new architecture as a full replacement.",
-      "unresolved_commands": [
-        "gamerank1",
-        "rpg1",
-        "rpg1reset",
-        "rpgstats1"
-      ]
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
     },
     {
       "historical_source": "cogs/help.py",
       "source_sha256": "d8706dd8612210cf53c41ca4af90f3d4a60020f16d6eed394877e884285d5347",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "All recorded module prefix surfaces are present or explicitly renamed; Cog container removal alone is not a user-facing feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
       "historical_source": "cogs/memory.py",
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some historical module commands remain unresolved; do not treat the new architecture as a full replacement.",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Safe available handlers mapped; remaining commands individually reviewed as unsafe, not silently omitted.",
       "unresolved_commands": [
         "rebuildmemory",
         "rebuildrank",
@@ -104,17 +93,16 @@
       "source_sha256": "447df1d5061a744f76f0927b2ea85e7612c709782378a29876607ddecf336bc9",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "All recorded module prefix surfaces are present or explicitly renamed; Cog container removal alone is not a user-facing feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
       "historical_source": "cogs/settings.py",
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some historical module commands remain unresolved; do not treat the new architecture as a full replacement.",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Safe available handlers mapped; remaining commands individually reviewed as unsafe, not silently omitted.",
       "unresolved_commands": [
-        "birthday",
         "exportface",
         "importface"
       ]
@@ -123,8 +111,8 @@
       "historical_source": "cogs/system.py",
       "source_sha256": "2f39f65a545ba1f7b9ac21ed33731b87ac31e801b2d6824a591c3105e658416e",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some historical module commands remain unresolved; do not treat the new architecture as a full replacement.",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Safe available handlers mapped; remaining commands individually reviewed as unsafe, not silently omitted.",
       "unresolved_commands": [
         "backupmemory",
         "fixdoc"
@@ -135,7 +123,7 @@
       "source_sha256": "1bea4d2a4190cb1f190f7aed107c42be1616b1f76a64bde49054a68b70c1a6bd",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "All recorded module prefix surfaces are present or explicitly renamed; Cog container removal alone is not a user-facing feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     }
   ],
@@ -145,36 +133,36 @@
       "old": "dashboard",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Historical group root has no local handler. Preserve remote registration until a complete safe group restoration is possible."
+      "current_equivalent": "dashboard",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "world",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Historical group root has no local handler. Preserve remote registration until a complete safe group restoration is possible."
+      "current_equivalent": "world",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "prefs",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Historical group root has no local handler. Preserve remote registration until a complete safe group restoration is possible."
+      "current_equivalent": "prefs",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "duo",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Historical group root has no local handler. Preserve remote registration until a complete safe group restoration is possible."
+      "current_equivalent": "duo",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -182,9 +170,9 @@
       "canonical": "achievements",
       "historical_source": "cogs/duo.py",
       "source_sha256": "b00655b97c6dc465e4c0782b662e2f8768d225e8c824ba6e0ab94ae79e63f9f4",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "achievements",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -192,9 +180,9 @@
       "canonical": "achievements",
       "historical_source": "cogs/duo.py",
       "source_sha256": "b00655b97c6dc465e4c0782b662e2f8768d225e8c824ba6e0ab94ae79e63f9f4",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "achievements",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -254,7 +242,7 @@
       "source_sha256": "2f39f65a545ba1f7b9ac21ed33731b87ac31e801b2d6824a591c3105e658416e",
       "current_equivalent": "selfbackup (partial only)",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "selfbackup backs up local memory, not the old local-plus-shared recovery contract; not an equivalent rename. Restore requires approved shared-store backup/encryption/retention handling without copying Connected Accounts secrets."
+      "evidence": "Legacy raw local/shared database backups can include credentials and deleted/private content. Current selfbackup/persistence cover local diagnostics only, not equivalent shared export. Retention, encryption and deletion fencing are prerequisites."
     },
     {
       "surface": "prefix",
@@ -264,7 +252,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Legacy persistent bot-channel ban requires admission checks across normal replies, duo, jobs and voice. Current Scaramouche has no matching ban backend; a command-only port would falsely claim enforcement."
     },
     {
       "surface": "prefix",
@@ -274,7 +262,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Inventory of the absent legacy channel-ban store; no safe equivalent state to report."
     },
     {
       "surface": "prefix",
@@ -282,9 +270,9 @@
       "canonical": "birthday",
       "historical_source": "cogs/settings.py",
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Registration AND local/shared birthday methods/checker missing. Character January-3 birthday_event is distinct, not user-birthday replacement. Safe restoration must reconcile historical shared_birthday_profiles/claims, quiet hours, deletion and delivery deduplication; not a command-only fix."
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -292,9 +280,9 @@
       "canonical": "birthday",
       "historical_source": "cogs/settings.py",
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Registration AND local/shared birthday methods/checker missing. Character January-3 birthday_event is distinct, not user-birthday replacement. Safe restoration must reconcile historical shared_birthday_profiles/claims, quiet hours, deletion and delivery deduplication; not a command-only fix."
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -302,9 +290,9 @@
       "canonical": "birthday",
       "historical_source": "cogs/settings.py",
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Registration AND local/shared birthday methods/checker missing. Character January-3 birthday_event is distinct, not user-birthday replacement. Safe restoration must reconcile historical shared_birthday_profiles/claims, quiet hours, deletion and delivery deduplication; not a command-only fix."
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -312,9 +300,9 @@
       "canonical": "birthday",
       "historical_source": "cogs/settings.py",
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Registration AND local/shared birthday methods/checker missing. Character January-3 birthday_event is distinct, not user-birthday replacement. Safe restoration must reconcile historical shared_birthday_profiles/claims, quiet hours, deletion and delivery deduplication; not a command-only fix."
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -334,7 +322,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Bulk blocks users selected from cached guild membership and sends unsolicited farewells; lacks exact scoped confirmation and current cross-path enforcement."
     },
     {
       "surface": "prefix",
@@ -344,7 +332,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Legacy numeric/name targeting is ambiguous and mutates global DM access with unsolicited outbound messages; missing current admission backend and exact confirmation."
     },
     {
       "surface": "prefix",
@@ -372,9 +360,9 @@
       "canonical": "cases",
       "historical_source": "cogs/duo.py",
       "source_sha256": "b00655b97c6dc465e4c0782b662e2f8768d225e8c824ba6e0ab94ae79e63f9f4",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "cases",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -524,7 +512,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Enumerates private DM-only identities and relationship/message metadata for the owner. No current privacy-scoped export authorization or redaction contract."
     },
     {
       "surface": "prefix",
@@ -624,7 +612,7 @@
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "alias",
@@ -634,7 +622,7 @@
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "prefix",
@@ -654,7 +642,9 @@
       "source_sha256": "2f39f65a545ba1f7b9ac21ed33731b87ac31e801b2d6824a591c3105e658416e",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy handler overwrites Google Docs through a service account/remote helper without the current user-bound exact-confirmation flow. Restoring this here conflicts with explicit no Docs/Phase 2 scope."
+      "evidence": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes.",
+      "disposition": "INTENTIONALLY_DEFERRED_PHASE_2",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "alias",
@@ -664,7 +654,9 @@
       "source_sha256": "2f39f65a545ba1f7b9ac21ed33731b87ac31e801b2d6824a591c3105e658416e",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy handler overwrites Google Docs through a service account/remote helper without the current user-bound exact-confirmation flow. Restoring this here conflicts with explicit no Docs/Phase 2 scope."
+      "evidence": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes.",
+      "disposition": "INTENTIONALLY_DEFERRED_PHASE_2",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "alias",
@@ -674,7 +666,9 @@
       "source_sha256": "2f39f65a545ba1f7b9ac21ed33731b87ac31e801b2d6824a591c3105e658416e",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy handler overwrites Google Docs through a service account/remote helper without the current user-bound exact-confirmation flow. Restoring this here conflicts with explicit no Docs/Phase 2 scope."
+      "evidence": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes.",
+      "disposition": "INTENTIONALLY_DEFERRED_PHASE_2",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "alias",
@@ -684,7 +678,9 @@
       "source_sha256": "2f39f65a545ba1f7b9ac21ed33731b87ac31e801b2d6824a591c3105e658416e",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy handler overwrites Google Docs through a service account/remote helper without the current user-bound exact-confirmation flow. Restoring this here conflicts with explicit no Docs/Phase 2 scope."
+      "evidence": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes.",
+      "disposition": "INTENTIONALLY_DEFERRED_PHASE_2",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "prefix",
@@ -722,9 +718,9 @@
       "canonical": "gamerank1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "gamerank1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -732,9 +728,9 @@
       "canonical": "gamerank1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "gamerank1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -742,9 +738,9 @@
       "canonical": "gamerank1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "gamerank1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -804,7 +800,7 @@
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "alias",
@@ -814,7 +810,7 @@
       "source_sha256": "5bcbf77a71b34864786f56fe57100037a7cf57aa047b214c712e9b6547b9c85d",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "prefix",
@@ -884,7 +880,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Immediately leaves a guild selected by mutable index/name without durable exact-target confirmation. Membership mutation is not restored as an unrestricted owner action."
     },
     {
       "surface": "prefix",
@@ -904,7 +900,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Exports another user's raw chat history to the owner. Can disclose secrets/private content; no current subject-scoped export, redaction or deletion guard."
     },
     {
       "surface": "prefix",
@@ -1044,7 +1040,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Legacy in-memory global switch is not enforced by all current event/command/background paths. A partial port is unsafe and misleading."
     },
     {
       "surface": "prefix",
@@ -1174,7 +1170,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Bulk global DM blocking based on inferred membership lacks exact scoped confirmation and the current missing admission backend."
     },
     {
       "surface": "prefix",
@@ -1184,7 +1180,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Infers channel bans by scanning old messages; ambiguous text can recreate stale administrative state without confirmation."
     },
     {
       "surface": "prefix",
@@ -1194,7 +1190,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Bulk replay of visible Discord history may resurrect forgotten content or another user's state. Needs tombstone-aware, scoped confirmed recovery."
     },
     {
       "surface": "prefix",
@@ -1204,7 +1200,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
     },
     {
       "surface": "alias",
@@ -1214,7 +1210,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
     },
     {
       "surface": "alias",
@@ -1224,7 +1220,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
     },
     {
       "surface": "prefix",
@@ -1234,7 +1230,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Recomputes relationships from historical content without deletion fences or exact scoped confirmation; may recreate deleted relationship state."
     },
     {
       "surface": "prefix",
@@ -1244,7 +1240,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
     },
     {
       "surface": "alias",
@@ -1254,7 +1250,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
     },
     {
       "surface": "alias",
@@ -1264,7 +1260,7 @@
       "source_sha256": "f630bd5dbe758a6161d6c5e6e7fa4b3d47016bba31bd39c59de5a7cbfa3a74f3",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy history replay can re-import forgotten text and relationship data. Requires deletion tombstones, credential/sensitive filters, scoped stored confirmation and per-user isolation before reinstatement; old callback is not a safe drop-in."
+      "evidence": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
     },
     {
       "surface": "prefix",
@@ -1422,9 +1418,9 @@
       "canonical": "rpg1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -1432,9 +1428,9 @@
       "canonical": "rpg1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -1442,9 +1438,9 @@
       "canonical": "rpg1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -1452,9 +1448,9 @@
       "canonical": "rpg1reset",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1reset",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -1462,9 +1458,9 @@
       "canonical": "rpg1reset",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1reset",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -1472,9 +1468,9 @@
       "canonical": "rpgstats1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpgstats1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "alias",
@@ -1482,9 +1478,9 @@
       "canonical": "rpgstats1",
       "historical_source": "cogs/games.py",
       "source_sha256": "22b5bbc619782e8292ad696c9670bac3de1426079d9a8e728d9a93950d1195e5",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpgstats1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -1642,9 +1638,9 @@
       "canonical": "servers",
       "historical_source": "cogs/admin.py",
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "current_equivalent": "servers",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -1934,7 +1930,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Companion to the absent persistent channel-admission backend; do not restore a no-op unblock control."
     },
     {
       "surface": "prefix",
@@ -1944,7 +1940,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Legacy ambiguous global target selection and missing current DM block backend; cannot safely promise restored access."
     },
     {
       "surface": "prefix",
@@ -2064,7 +2060,7 @@
       "source_sha256": "3398c7edbe2e17a3118860a22b91ffeae57c57ef0ccb66bbd5aeef490d7ad351",
       "current_equivalent": null,
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Legacy owner/admin paths expose stored user/server data or mutate blocks/server membership; prerequisites, current persisted authorization and confirmation routes are absent in Scaramouche. No broad old-admin import."
+      "evidence": "Aggregates global stored identities, message counts and shared-server membership; current privacy architecture does not authorize this cross-user profile export."
     },
     {
       "surface": "prefix",
@@ -2072,9 +2068,9 @@
       "canonical": "world",
       "historical_source": "cogs/duo.py",
       "source_sha256": "b00655b97c6dc465e4c0782b662e2f8768d225e8c824ba6e0ab94ae79e63f9f4",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "world",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "prefix",
@@ -2082,9 +2078,9 @@
       "canonical": "worldadd",
       "historical_source": "cogs/duo.py",
       "source_sha256": "b00655b97c6dc465e4c0782b662e2f8768d225e8c824ba6e0ab94ae79e63f9f4",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "worldadd",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
@@ -2100,117 +2096,117 @@
       "old": "dashboard achievements",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "dashboard achievements",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "dashboard arc",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "dashboard arc",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "dashboard duostate",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "dashboard duostate",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "dashboard relationship",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "dashboard relationship",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "dashboard scene",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "dashboard scene",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "duo start",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "duo start",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "duo state",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "duo state",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "prefs duoauto",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "prefs duoauto",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "prefs rpdepth",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "prefs rpdepth",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "prefs speaker",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "prefs speaker",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "prefs utility",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "prefs utility",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "prefs voice",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "prefs voice",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "scaramouche",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "scaramouche",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
@@ -2244,27 +2240,27 @@
       "old": "world add",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "world add",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "world cases",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "world cases",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "slash",
       "old": "world state",
       "historical_source": "bot.py",
       "source_sha256": "6fb81e48cf0bd323b17ae7978e313909d90fd11ff214cc1d9dbb1510da3a2e7c",
-      "current_equivalent": null,
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "No equivalent fully wired handler found. Scaramouche lacks old achievement/world methods; partial bulk sync would delete other remote subcommands. Retain as unresolved until complete groups can be restored with current privacy/channel scope and command admission."
+      "current_equivalent": "world state",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "help",
@@ -2448,7 +2444,7 @@
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "help",
@@ -2478,9 +2474,9 @@
       "surface": "help",
       "old": "!gamerank1",
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "gamerank1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "help",
@@ -2512,7 +2508,7 @@
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "help",
@@ -2766,25 +2762,25 @@
       "surface": "help",
       "old": "!rpg1",
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "help",
       "old": "!rpg1reset",
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpg1reset",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "help",
       "old": "!rpgstats1",
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
-      "current_equivalent": null,
-      "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Scaramouche RPG registration, engine and Memory RPG methods are absent. Legacy in-flight AI/button work lacks current deletion-generation fencing; global leaderboard can disclose across guilds. Requires adapted persistence, cancellation and arbitration, not blind snapshot import."
+      "current_equivalent": "rpgstats1",
+      "classification": "PRESENT",
+      "evidence": "Safely adapted current handler and runtime manifest verified; see RESTORATION_REVIEW.md and regression tests. Historical privacy/targeting differences are explicit, not hidden."
     },
     {
       "surface": "help",
@@ -2987,6 +2983,155 @@
       "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
     }
   ],
-  "unresolved_count": 76,
-  "scope_note": "PRESENT means registration and identified implementation, not live exercise or a blanket security attestation. Original engine snapshots exceed early available Git command coverage. No intentional removals inferred without evidence."
+  "unresolved_count": 32,
+  "scope_note": "Safe restoration closure. Registration is not certification of inherited legacy handlers. Google Production/Phase 2 remain paused. See RESTORATION_REVIEW.md for behavior adaptations, inherited risks, and automated versus live evidence.",
+  "admin_review": [
+    {
+      "name": "backupmemory",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy raw local/shared database backups can include credentials and deleted/private content. Current selfbackup/persistence cover local diagnostics only, not equivalent shared export. Retention, encryption and deletion fencing are prerequisites."
+    },
+    {
+      "name": "banchannel",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy persistent bot-channel ban requires admission checks across normal replies, duo, jobs and voice. Current Scaramouche has no matching ban backend; a command-only port would falsely claim enforcement."
+    },
+    {
+      "name": "unbanchannel",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Companion to the absent persistent channel-admission backend; do not restore a no-op unblock control."
+    },
+    {
+      "name": "bannedchannels",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Inventory of the absent legacy channel-ban store; no safe equivalent state to report."
+    },
+    {
+      "name": "rebanchannels",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Infers channel bans by scanning old messages; ambiguous text can recreate stale administrative state without confirmation."
+    },
+    {
+      "name": "blockall",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Bulk blocks users selected from cached guild membership and sends unsolicited farewells; lacks exact scoped confirmation and current cross-path enforcement."
+    },
+    {
+      "name": "reban",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Bulk global DM blocking based on inferred membership lacks exact scoped confirmation and the current missing admission backend."
+    },
+    {
+      "name": "blockdm",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy numeric/name targeting is ambiguous and mutates global DM access with unsolicited outbound messages; missing current admission backend and exact confirmation."
+    },
+    {
+      "name": "unblockdm",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy ambiguous global target selection and missing current DM block backend; cannot safely promise restored access."
+    },
+    {
+      "name": "dmlist",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Enumerates private DM-only identities and relationship/message metadata for the owner. No current privacy-scoped export authorization or redaction contract."
+    },
+    {
+      "name": "logs",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Exports another user's raw chat history to the owner. Can disclose secrets/private content; no current subject-scoped export, redaction or deletion guard."
+    },
+    {
+      "name": "whois",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Aggregates global stored identities, message counts and shared-server membership; current privacy architecture does not authorize this cross-user profile export."
+    },
+    {
+      "name": "owneronly",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Legacy in-memory global switch is not enforced by all current event/command/background paths. A partial port is unsafe and misleading."
+    },
+    {
+      "name": "leaveserver",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Immediately leaves a guild selected by mutable index/name without durable exact-target confirmation. Membership mutation is not restored as an unrestricted owner action."
+    },
+    {
+      "name": "rebuildmemory",
+      "current_equivalent": null,
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Bulk replay of visible Discord history may resurrect forgotten content or another user's state. Needs tombstone-aware, scoped confirmed recovery."
+    },
+    {
+      "name": "rebuildrank",
+      "current_equivalent": null,
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
+    },
+    {
+      "name": "rebuildstats",
+      "current_equivalent": null,
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
+    },
+    {
+      "name": "rebuildrelationship",
+      "current_equivalent": null,
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Recomputes relationships from historical content without deletion fences or exact scoped confirmation; may recreate deleted relationship state."
+    },
+    {
+      "name": "fixdoc",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
+    },
+    {
+      "name": "exportface",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
+    },
+    {
+      "name": "importface",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
+    }
+  ]
 }

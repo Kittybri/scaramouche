@@ -1716,3 +1716,44 @@ dependencies are retained in PRESERVATION_RESTORATION_AUDIT.md and
 preservation/historical_audit.json. Do not resume Google Production/Phase 2
 automatically or interpret the current supported manifest as proof that omitted
 legacy functionality has been restored.
+
+## Safe restoration continuation — 2026-10-08 (candidate validation)
+
+This section supersedes the earlier incomplete *safe-command* restoration
+checkpoint. Scope and individual unsafe/deferred historical differences are in
+RESTORATION_REVIEW.md and the retained machine-readable audit. No historical
+record/source hash was discarded and no currently registered command was removed.
+
+Scaramouche restores the scoped Harbinger RPG/storage, own birthday lifecycle,
+world/achievement archive, private owner guild inventory, and all five supported
+legacy slash roots. Wanderer's runtime features are unchanged; its preservation
+audit/manifest checker now records the same explicit dispositions. Unsafe raw
+exports, history replay, biometric import/export and Phase-2 Docs writes were not
+restored. Inherited Wanderer admin/document risks are documented, not concealed.
+
+Final corrected local full suites on candidate content:
+- Scaramouche: **833 passed, 1 skipped, 1 warning** (124.87s).
+- Wanderer: **348 passed, 1 skipped, 1 warning** (73.62s).
+- Scaramouche restoration + preservation + Tarot targeted: **59 passed** (24.86s).
+  Each repository includes 10 preservation and 20 Tarot regression tests.
+- Runtime prefix/alias/slash/help/module/component/privacy-stage checks pass.
+  Scaramouche: 182 prefix entries, 25 slash entries. Wanderer: 177 / 25.
+- All Python sources compiled/parsed: Scaramouche 155, Wanderer 89.
+- Whole-source credential-pattern scan: Scaramouche 213 files, zero findings;
+  Wanderer 132 files, one known public-key-header detector fixture at
+  tests/test_release_hardening.py:70 (not an actual credential).
+- git diff --check and preservation shrinkage checks against the previous
+  checkpoint pass with zero unauthorized removals.
+- Full suites include privacy/deletion, isolation, migrations, authorization,
+  credential filtering and interaction arbitration. Synthetic SQLite quick_checks
+  pass. The skipped test needs a configured native Opus library on this Mac;
+  the warning is the existing macOS LibreSSL/urllib3 compatibility warning.
+
+The initial Scaramouche full run exposed 20 failures and 53 setup errors
+(759 passed): all traced to an import-time asyncio semaphore in the restored RPG
+controller on Python 3.9. Fixed by creating it in the running loop, with a new
+regression. The full corrected run above passed; no assertions were skipped or
+weakened to conceal it.
+
+No human RPG-button/provider-generated campaign or actual birthday delivery is
+claimed from automated tests. Live startup/registration evidence follows below.

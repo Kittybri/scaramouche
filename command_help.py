@@ -2,7 +2,7 @@
 import discord
 
 OWNER_COMMANDS = frozenset(["build","forceheartbeat","githubissue","integrations","persistence","selfbackup","selfgoals","selfstate","taskhealth","whoami","home agent","home audit","home devices","home disable","home enable","home permissions","home status","home test"])
-OWNER_COMMANDS = OWNER_COMMANDS | {"pc"}
+OWNER_COMMANDS = OWNER_COMMANDS | {"pc", "servers"}
 
 def owner_only(name):
     return any(name == root or name.startswith(root + " ") for root in OWNER_COMMANDS)

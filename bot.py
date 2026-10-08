@@ -433,6 +433,9 @@ class ManagedBot(commands.Bot):
             loop = globals().get(name)
             if loop and loop.is_running():
                 loop.cancel()
+        birthdays = globals().get("BIRTHDAYS")
+        if birthdays and birthdays.delivery.is_running():
+            birthdays.delivery.cancel()
         await super().close()
 
 
@@ -6734,9 +6737,14 @@ async def _delete_runtime_stage(uid):
 
 
 from tarot_system import TarotStore
+from restoration_store import RestorationStore
+from restored_lifecycle import WORK as RESTORED_WORK
+RESTORATION_STORE = RestorationStore(mem.db_path)
 TAROT_STORE = TarotStore(os.getenv("TAROT_DB_PATH") or os.path.join(os.path.dirname(mem.db_path), "tarot.sqlite3"))
 
 PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
+    "restored_work": RESTORED_WORK.forget,
+    "restored_campaigns": RESTORATION_STORE.forget,
     "tarot": TAROT_STORE.forget,
     "connected_accounts": CONNECTIONS.forget,
     "connected_proposals": CLOUD_INTEGRATIONS.forget,
@@ -6755,10 +6763,26 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "memory_shared_final": mem.reset_user_shared,
     "connected_accounts_final": CONNECTIONS.forget,
     "tarot_final": TAROT_STORE.forget,
+    "restored_campaigns_final": RESTORATION_STORE.forget,
 })
 
 from tarot_commands import TarotController
 from restored_status import ProviderStatus
+from restored_admin import install as install_restored_admin
+install_restored_admin(bot, OWNER_ID)
+from harbinger_commands import HarbingerController
+HARBINGER = HarbingerController(bot, RESTORATION_STORE, ai, GROQ_MODEL,
+                               PRIVACY_DELETION.is_pending, credential_disclosure).install()
+from birthday_commands import BirthdayController
+BIRTHDAYS = BirthdayController(bot, mem, PRIVACY_DELETION.is_pending,
+                               credential_disclosure, _setup, _initialize_runtime_once).install()
+PRIVACY_DELETION.stages["user_birthdays"] = BIRTHDAYS.forget
+from world_archive import WorldArchive
+WORLD_ARCHIVE = WorldArchive(bot, mem, HARBINGER.guard).install()
+from restored_slash import RestoredSlash
+RESTORED_SLASH = RestoredSlash(bot, mem, PRIVACY_DELETION, credential_disclosure,
+    WORLD_ARCHIVE, _setup, get_response, _record_delivered_reply).install()
+PRIVACY_DELETION.stages = {"restored_slash": RESTORED_SLASH.forget, **PRIVACY_DELETION.stages}
 PROVIDER_STATUS = ProviderStatus(bot, BOT_NAME, ai, OWNER_ID, environment_monitor).install()
 
 TAROT = TarotController(

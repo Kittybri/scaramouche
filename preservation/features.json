@@ -53,6 +53,30 @@
     "self_store": [
       "self_model",
       "SelfModelStore"
+    ],
+    "HARBINGER": [
+      "harbinger_commands",
+      "HarbingerController"
+    ],
+    "RESTORATION_STORE": [
+      "restoration_store",
+      "RestorationStore"
+    ],
+    "BIRTHDAYS": [
+      "birthday_commands",
+      "BirthdayController"
+    ],
+    "WORLD_ARCHIVE": [
+      "world_archive",
+      "WorldArchive"
+    ],
+    "RESTORED_SLASH": [
+      "restored_slash",
+      "RestoredSlash"
+    ],
+    "RESTORED_WORK": [
+      "restored_lifecycle",
+      "InteractionTasks"
     ]
   },
   "features": {
@@ -80,10 +104,31 @@
       ]
     },
     "rpg/games": {
-      "status": "ACCIDENTALLY_MISSING",
-      "prefix": [],
-      "wiring": [],
-      "notes": "Other games remain; the Harbinger RPG engine/store are absent. Old code unsafe without deletion fencing and scoped scores."
+      "status": "PRESENT",
+      "prefix": [
+        "rpg1",
+        "rpgstats1",
+        "rpg1reset",
+        "gamerank1"
+      ],
+      "wiring": [
+        "HARBINGER.advance",
+        "HARBINGER.resolve_boss",
+        "RESTORATION_STORE.update",
+        "RESTORATION_STORE.forget"
+      ],
+      "callable": [
+        "HARBINGER.advance",
+        "HARBINGER.resolve_boss",
+        "RESTORATION_STORE.update",
+        "RESTORATION_STORE.forget"
+      ],
+      "privacy_stages": [
+        "restored_work",
+        "restored_campaigns",
+        "restored_campaigns_final"
+      ],
+      "notes": "Historical 11-boss/two-world campaign restored with owner/guild-scoped CAS panels, private legacy import, medals and reset confirmation. Not a replacement for chaos games."
     },
     "party_games": {
       "status": "PRESENT",
@@ -104,8 +149,27 @@
       ]
     },
     "birthdays": {
-      "status": "ACCIDENTALLY_MISSING",
-      "notes": "Character birthday_event is not user birthday registration/delivery. Missing shared profile/claim lifecycle remains unresolved."
+      "status": "PRESENT",
+      "prefix": [
+        "birthday"
+      ],
+      "wiring": [
+        "BIRTHDAYS.command",
+        "BIRTHDAYS.due",
+        "BIRTHDAYS.tick",
+        "BIRTHDAYS.forget"
+      ],
+      "callable": [
+        "BIRTHDAYS.command",
+        "BIRTHDAYS.due",
+        "BIRTHDAYS.tick",
+        "BIRTHDAYS.forget"
+      ],
+      "privacy_stages": [
+        "restored_work",
+        "user_birthdays"
+      ],
+      "notes": "Self-registration, optional age, chosen channel, timezone/quiet-hour/proactive/mute controls, annual claim. Old local dates imported privately; no global profile replay or third-party registration."
     },
     "voice": {
       "status": "PRESENT",
@@ -305,7 +369,7 @@
     },
     "document_tools": {
       "status": "UNSAFE_TO_RESTORE_AS_IS",
-      "notes": "Legacy fixdoc writes Google Docs without Phase 1 user-bound confirmations. No Docs/Phase 2 authorized. Existing tedtalk reads files."
+      "notes": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
     },
     "recovery/admin": {
       "status": "PRESENT",
@@ -313,7 +377,8 @@
         "taskhealth",
         "selfbackup",
         "persistence",
-        "build"
+        "build",
+        "servers"
       ],
       "wiring": [
         "mem.backup"
@@ -322,7 +387,7 @@
         "mem.backup"
       ],
       "privacy_stages": [],
-      "notes": "Current owner diagnostics/local backup present; legacy history replay/shared backup/admin controls unresolved; no equivalence claimed."
+      "notes": "Owner inventory restored privately/fail-closed. Every other legacy recovery/admin surface has an explicit risk disposition in historical_audit.json; no raw shared export or history replay restored."
     },
     "provider_status": {
       "status": "PRESENT",
@@ -378,8 +443,46 @@
       "privacy_stages": []
     },
     "dashboard": {
-      "status": "ACCIDENTALLY_MISSING",
-      "notes": "Local dashboard/world/prefs/duo slash groups and direct scaramouche handler remain absent; stale remote names are not proof of functioning handlers."
+      "status": "PRESENT",
+      "prefix": [],
+      "wiring": [
+        "RESTORED_SLASH.install",
+        "RESTORED_SLASH.invoke",
+        "RESTORED_SLASH.sync",
+        "RESTORED_SLASH.forget"
+      ],
+      "callable": [
+        "RESTORED_SLASH.install",
+        "RESTORED_SLASH.invoke",
+        "RESTORED_SLASH.sync",
+        "RESTORED_SLASH.forget"
+      ],
+      "privacy_stages": [
+        "restored_slash"
+      ],
+      "notes": "Five restored roots via individual upserts; private personal panels, existing guarded duo handlers."
+    },
+    "world_archive": {
+      "status": "PRESENT",
+      "prefix": [
+        "world",
+        "worldadd",
+        "cases",
+        "achievements"
+      ],
+      "wiring": [
+        "WORLD_ARCHIVE.read",
+        "WORLD_ARCHIVE.add"
+      ],
+      "callable": [
+        "WORLD_ARCHIVE.read",
+        "WORLD_ARCHIVE.add"
+      ],
+      "privacy_stages": [
+        "restored_work",
+        "memory_shared"
+      ],
+      "notes": "Shared compatible entities and achievement gallery, channel-scoped current duo-story cases; explicit artifact unlocks. Existing PersistentWorld remains authoritative."
     }
   }
 }
