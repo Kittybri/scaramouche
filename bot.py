@@ -5481,6 +5481,7 @@ async def forget_cmd(ctx,*,topic:str=None):
         await _setup(ctx)
         result=await mem.forget_memory_matches(ctx.author.id, topic)
         result["scene"] = await mem.forget_scene_state_matches(ctx.channel.id, topic)
+        result["tarot"] = await TAROT_STORE.forget(ctx.author.id, topic)
         await CHAOS.forget(ctx.author.id)
         await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
@@ -6548,6 +6549,8 @@ async def help_cmd(ctx):
                            description="Hmph. Only saying this once.", color=c)
         from connections.discord_ui import GOOGLE_HELP
         e1.description += "\n\n" + GOOGLE_HELP
+        from tarot_commands import TAROT_HELP
+        e1.description += "\n\n" + TAROT_HELP + "\nPrefix: !scaratarot · !scaradaily · !scarahistory · !scarasettings"
         for n,v in [
             ("🔊 !voice <msg>","Voice message — !speak !say"),
             ("📨 !dm [msg]","He DMs you privately"),
@@ -6728,7 +6731,11 @@ async def _delete_runtime_stage(uid):
             _presence_activity.pop(key, None)
 
 
+from tarot_system import TarotStore
+TAROT_STORE = TarotStore(os.getenv("TAROT_DB_PATH") or os.path.join(os.path.dirname(mem.db_path), "tarot.sqlite3"))
+
 PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
+    "tarot": TAROT_STORE.forget,
     "connected_accounts": CONNECTIONS.forget,
     "connected_proposals": CLOUD_INTEGRATIONS.forget,
     "memory_local": mem.reset_user_local,
@@ -6745,7 +6752,14 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "memory_local_final": mem.reset_user_local,
     "memory_shared_final": mem.reset_user_shared,
     "connected_accounts_final": CONNECTIONS.forget,
+    "tarot_final": TAROT_STORE.forget,
 })
+
+from tarot_commands import TarotController
+TAROT = TarotController(
+    bot, BOT_NAME, ai, GROQ_MODEL, os.path.dirname(mem.db_path),
+    PRIVACY_DELETION.is_pending, credential_disclosure, store=TAROT_STORE,
+).install()
 
 from connections.discord_ui import ConnectionsController
 CONNECTIONS_UI = ConnectionsController(
