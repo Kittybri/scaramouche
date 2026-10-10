@@ -33,6 +33,7 @@ from character_bits import (
     is_serious_or_utility, reverse_turing_hint,
     selective_hearing_hint, significant_weather, time_drift_prompt,
 )
+from partner_banter_routing import jealousy_context, coherent_partner_reply, contextual_romance_tag
 from interaction_policy import (
     CURRENT, Outcome, classify as classify_interaction, current_or_classify,
     authoritative_prompt, optional_allowed, optional_command_blocked, credential_disclosure,
@@ -1288,16 +1289,24 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             return True
 
         partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
-        extra = ""
-        if jealousy_target:
-            extra = f"\nA romance-mode user you care about is also in this channel: {jealousy_target.display_name}. The jealousy should sharpen the reply."
+        extra = jealousy_context(
+            "Wanderer", getattr(jealousy_target, "display_name", "")
+        ) if jealousy_target else ""
 
         prompt = (
             f"{partner_context}{extra}\n\n"
+            "PRIMARY SPEAKER: Wanderer (the bot). PRIMARY ADDRESSEE: Wanderer. "
+            "This is your reply to Wanderer's Discord message, not to any spectator.\n"
             f"Wanderer just said: '{message.content[:220]}'\n"
             f"Reply as Scaramouche. He is not a stranger anymore; he is a wound that kept talking back. "
             f"If any respect has grown, bury it under sharper precision instead of reusing the same 'pretender/weak' insult. "
-            f"One or two sentences. No narration."
+            "The line you are replying to was said by Wanderer, not by the "
+            "romance-mode person. Keep the original jealous and competitive flavor: "
+            "you may involve or tag that person in a *coherent* teasing aside, "
+            "but make it obvious who made which remark. "
+            "If Wanderer is fishing for people's worst opinions, tease him for "
+            "asking instead of inventing an opinion for a person who never replied. "
+            "One or two sentences. No narration."
         )
         recent_partner_lines = [item.get("content", "") for item in recent_banter]
         reply = await qai(prompt, 180)
@@ -1305,10 +1314,26 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         if not reply:
             return True
 
+        # Preserve the original 45% romance-mode tag chance, but incorporate
+        # the selected mention inside the jealous aside, never as an ambiguous
+        # channel-level prefix unrelated to Wanderer's actual statement.
+        reply = coherent_partner_reply(
+            reply, "Wanderer", getattr(jealousy_target, "display_name", "")
+        )
+        if not reply:
+            return True
         if jealousy_target and random.random() < 0.45:
-            await message.channel.send(f"{jealousy_target.mention} {reply}")
-        else:
-            await message.reply(reply)
+            reply = contextual_romance_tag(
+                reply,
+                getattr(jealousy_target, "display_name", ""),
+                getattr(jealousy_target, "mention", ""),
+            )
+        await message.reply(
+            reply, mention_author=False,
+            allowed_mentions=discord.AllowedMentions(
+                users=True, roles=False, everyone=False, replied_user=False,
+            ),
+        )
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -4375,10 +4400,19 @@ async def _duo_autoplay_loop():
                 if not channel:
                     continue
                 target_message = None
+                partner_message = None
                 interview_mode = session.get("mode") in {"interview", "welcome_interview"}
                 participant_id = int(session.get("initiator_user_id") or 0)
                 async for candidate in channel.history(limit=8):
                     if candidate.author.bot:
+                        # An actual partner turn is the reply anchor, not
+                        # the later-discovered human context for generation.
+                        if (
+                            not interview_mode and PARTNER_BOT_ID
+                            and candidate.author.id == PARTNER_BOT_ID
+                            and partner_message is None
+                        ):
+                            partner_message = candidate
                         continue
                     if interview_mode and candidate.author.id != participant_id:
                         continue
@@ -4402,7 +4436,15 @@ async def _duo_autoplay_loop():
                     channel_obj=channel,
                     is_dm=not bool(getattr(channel, "guild", None)),
                 )
-                await channel.send(reply)
+                if not (reply or "").strip():
+                    continue
+                # A Discord reply renders the correct conversation ancestry.
+                # For interview sessions, the human participant is the anchor.
+                anchor = partner_message or target_message
+                await anchor.reply(
+                    reply, mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
                 if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
                     await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
