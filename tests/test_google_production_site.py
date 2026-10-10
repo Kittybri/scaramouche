@@ -23,3 +23,16 @@ def test_proxy_separates_public_pages_from_oauth():
     assert "proxy_pass http://127.0.0.1:8787;" in conf
     assert "oauth/google/(start/[^/]+|callback)" in conf
     assert "access_log off;" in conf
+
+
+
+def test_full_bot_privacy_discloses_optional_sensitive_features_and_google_limited_use():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    policy = (root / "privacy.html").read_text()
+    scoped = (PUBLIC / "privacy.html").read_text()
+    for term in ("voice audio", "face-recognition", "Google Calendar", "Google Tasks", "Google Workspace", "Limited Use", "!google disconnect"):
+        assert term in policy
+    assert "Limited Use" in scoped
+    assert "AI models" in scoped
+    assert "https://developers.google.com/workspace/workspace-api-user-data-developer-policy" in scoped
