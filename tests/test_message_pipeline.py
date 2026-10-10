@@ -175,6 +175,69 @@ async def test_partner_human_targeted_reply_does_not_trigger_banter(runtime, mon
     observe.assert_not_awaited()
 
 
+
+@async_test
+async def test_partner_rivalry_never_targets_romance_bystander(runtime, monkeypatch):
+    """Regression: Wanderer's open-ended challenge cannot become a user roast."""
+    user = NS(id=77, display_name="Uninvolved Friend", mention="<@77>")
+    message = NS(
+        content="Tell me your worst opinion. I'll tell you exactly why you're wrong.",
+        embeds=[], attachments=[], components=[], stickers=[],
+        channel=NS(id=20, send=AsyncMock()),
+        guild=NS(id=30), reply=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime, "_observe_partner_message",
+        AsyncMock(return_value=({"last_exchange": 0, "stage": "competitive", "respect": 0, "tension": 0}, [], "rivalry")),
+    )
+    monkeypatch.setattr(runtime.mem, "get_duo_session", AsyncMock(return_value=None))
+    monkeypatch.setattr(runtime.mem, "record_bot_banter", AsyncMock())
+    monkeypatch.setattr(runtime.mem, "update_bot_relationship", AsyncMock())
+    monkeypatch.setattr(runtime, "_find_romance_target", AsyncMock(return_value=user))
+    monkeypatch.setattr(runtime.random, "random", lambda: 0)
+    provider = AsyncMock(return_value="Wanderer, you keep begging for opinions you can't handle.")
+    monkeypatch.setattr(runtime, "qai", provider)
+    monkeypatch.setattr(runtime, "_apply_phrase_policy", AsyncMock(side_effect=lambda reply, *_a, **_k: reply))
+
+    await runtime._handle_partner_message(message, {
+        "addressed_me": False, "duo_expected": False, "human_targets": [],
+    })
+
+    provider.assert_awaited_once()
+    prompt = provider.await_args.args[0]
+    assert "Uninvolved Friend" not in prompt
+    assert "inventing an opinion" in prompt
+    message.channel.send.assert_not_awaited()
+    message.reply.assert_awaited_once()
+    assert message.reply.await_args.args[0].startswith("Wanderer,")
+    assert message.reply.await_args.kwargs["mention_author"] is False
+    allowed = message.reply.await_args.kwargs["allowed_mentions"]
+    assert not allowed.users and not allowed.everyone and not allowed.roles
+
+
+@async_test
+async def test_partner_generated_mentions_suppressed_without_pinging_bystanders(runtime, monkeypatch):
+    message = NS(
+        content="Wanderer said something provocative.",
+        embeds=[], attachments=[], components=[], stickers=[],
+        channel=NS(id=20, send=AsyncMock()), guild=NS(id=30), reply=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime, "_observe_partner_message",
+        AsyncMock(return_value=({"last_exchange": 0, "stage": "competitive"}, [], "rivalry")),
+    )
+    monkeypatch.setattr(runtime.mem, "get_duo_session", AsyncMock(return_value=None))
+    monkeypatch.setattr(runtime, "_find_romance_target", AsyncMock(return_value=None))
+    monkeypatch.setattr(runtime.random, "random", lambda: 0)
+    monkeypatch.setattr(runtime, "qai", AsyncMock(return_value="<@77> You are wrong."))
+    monkeypatch.setattr(runtime, "_apply_phrase_policy", AsyncMock(side_effect=lambda reply, *_a, **_k: reply))
+
+    await runtime._handle_partner_message(message, {
+        "addressed_me": False, "duo_expected": False, "human_targets": [],
+    })
+    message.reply.assert_not_awaited()
+    message.channel.send.assert_not_awaited()
+
 async def run_coordinator(runtime, monkeypatch, *, media=False, optional=False):
     message = fake_message(runtime)
     item = prepared()

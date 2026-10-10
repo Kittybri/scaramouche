@@ -1290,14 +1290,23 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
         extra = ""
         if jealousy_target:
-            extra = f"\nA romance-mode user you care about is also in this channel: {jealousy_target.display_name}. The jealousy should sharpen the reply."
+            # A romance-mode bystander can affect Scaramouche's competitive
+            # mood but must never become a target or be named in the prompt.
+            extra = (
+                "\nSomeone you care about may be watching. Let that sharpen "
+                "your rivalry with Wanderer, not become an attack on a human."
+            )
 
         prompt = (
             f"{partner_context}{extra}\n\n"
             f"Wanderer just said: '{message.content[:220]}'\n"
             f"Reply as Scaramouche. He is not a stranger anymore; he is a wound that kept talking back. "
             f"If any respect has grown, bury it under sharper precision instead of reusing the same 'pretender/weak' insult. "
-            f"One or two sentences. No narration."
+            "Address your banter to Wanderer only, never to a bystander. "
+            "Do not mention, tag, quote or personally insult any human in this channel. "
+            "If Wanderer is fishing for people's worst opinions, tease him for "
+            "asking instead of inventing an opinion for a person who never replied. "
+            "One or two sentences. No narration."
         )
         recent_partner_lines = [item.get("content", "") for item in recent_banter]
         reply = await qai(prompt, 180)
@@ -1305,10 +1314,14 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         if not reply:
             return True
 
-        if jealousy_target and random.random() < 0.45:
-            await message.channel.send(f"{jealousy_target.mention} {reply}")
-        else:
-            await message.reply(reply)
+        # Rivalry speech is an optional bot-to-bot reaction, not consent for
+        # a surprise human mention. Suppress any model-generated @ references
+        # rather than trusting its interpretation of the target.
+        if "@" in reply:
+            return True
+        await message.reply(
+            reply, mention_author=False, allowed_mentions=discord.AllowedMentions.none()
+        )
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)

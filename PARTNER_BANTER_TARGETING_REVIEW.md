@@ -1,0 +1,32 @@
+# Partner banter: no unsolicited human target
+
+## Screenshot regression
+Wanderer's unsolicited channel prompt asked people for their "worst
+opinion." Scaramouche then publicly tagged a romance-mode person and
+insulted a fictional opinion as though the person had stated it.
+
+## Confirmed code path
+`_handle_partner_message()` observed otherwise unowned partner-bot
+speech. If a romance-mode user was present in the channel, it augmented
+the prompt with their display name and, with probability 45%, prefixed
+their real Discord mention to Scaramouche's generated reply. This is
+not evidence the person consented to be roasted or even participated.
+
+## Changes
+- Keep existing bot-to-bot rivalry and jealousy *mood*, but do not give
+  the model a bystander's name or ping any real person.
+- Reply to Wanderer's message only. No surprise channel-level user pings.
+- Prompt clearly prohibits inventing a bystander's opinion and redirects
+  teasing back to the partner bot.
+- Drop any optional model-generated rival banter containing an @ mention
+  instead of allowing accidental user, role or everyone pings.
+- Preserve existing skip of messages directly targeting a human, rich
+  command/media outputs, cooldowns, duo-session ownership, and character
+  relationship updates for delivered replies.
+- Add mocked async tests reproducing the unsolicited prompt with a
+  romance-mode bystander and a generated ping.
+
+## Validation
+Run preservation and targeted message-pipeline checks, then full suites,
+then owner-approved real Discord two-bot testing. No voice or Google
+code was changed. No production/release merge or deployment performed.
