@@ -121,22 +121,24 @@ def test_provider_metadata_keeps_legacy_mock_compatibility(tmp_path):
 
 
 def test_five_card_preserves_outcome_and_all_positions():
-    cards = drawing("yes_no")
-    full_text = "\n\n".join([
-        "CURRENT " + "first reading. " * 110,
-        "OBSTACLE " + "second reading. " * 110,
-        "OUTCOME " + "last card concludes clearly. " * 110,
-    ])
-    view = tarot.TarotResultView(
-        1, "Scaramouche", AsyncMock(), "Will I succeed?",
-        tarot.TarotPreferences(), NS(), "yes_no", cards, full_text,
-    )
-    pages = view.content_pages()
-    assert len(pages) > 1
-    assert all(len(page) <= tarot.DISCORD_CONTENT_LIMIT for page in pages)
-    rendered = " ".join(pages)
-    assert rendered.index("CURRENT") < rendered.index("OBSTACLE") < rendered.index("OUTCOME")
-    assert "last card concludes clearly." in pages[-1]
+    async def check():
+        cards = drawing("yes_no")
+        full_text = "\n\n".join([
+            "CURRENT " + "first reading. " * 110,
+            "OBSTACLE " + "second reading. " * 110,
+            "OUTCOME " + "last card concludes clearly. " * 110,
+        ])
+        view = tarot.TarotResultView(
+            1, "Scaramouche", AsyncMock(), "Will I succeed?",
+            tarot.TarotPreferences(), NS(), "yes_no", cards, full_text,
+        )
+        pages = view.content_pages()
+        assert len(pages) > 1
+        assert all(len(page) <= tarot.DISCORD_CONTENT_LIMIT for page in pages)
+        rendered = " ".join(pages)
+        assert rendered.index("CURRENT") < rendered.index("OBSTACLE") < rendered.index("OUTCOME")
+        assert "last card concludes clearly." in pages[-1]
+    run(check())
 
 
 def test_scaramouche_clarifier_remains_in_character():
