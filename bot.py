@@ -33,7 +33,7 @@ from character_bits import (
     is_serious_or_utility, reverse_turing_hint,
     selective_hearing_hint, significant_weather, time_drift_prompt,
 )
-from partner_banter_routing import jealousy_context, coherent_partner_reply, contextual_romance_tag, TurnEnvelope, authorized_ping_ids
+from partner_banter_routing import jealousy_context, coherent_partner_reply, contextual_romance_tag, TurnEnvelope, authorized_ping_ids, resolve_duo_reply_anchor
 from interaction_policy import (
     CURRENT, Outcome, classify as classify_interaction, current_or_classify,
     authoritative_prompt, optional_allowed, optional_command_blocked, credential_disclosure,
@@ -1259,6 +1259,13 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         return True  # Structured server events never trigger free-running bot replies.
     try:
         target_info = target_info or {}
+        # Persist the first partner message for an awaited duo turn. The worker
+        # uses this exact ID rather than selecting unrelated newer channel posts.
+        if target_info.get("duo_expected") and getattr(message, "id", 0):
+            await mem.record_duo_reply_anchor(
+                message.channel.id, BOT_NAME, int(message.id),
+                int(getattr(message.author, "id", 0) or 0),
+            )
         # Human-targeted replies and rich command/media output keep ownership of
         # their interaction.  Optional rivalry is allowed only for an explicit
         # address, an awaited duo turn, or genuinely unowned channel speech.
@@ -4431,6 +4438,17 @@ async def _duo_autoplay_loop():
                     break
                 if not target_message:
                     continue
+                stored_source_id = (
+                    await mem.get_duo_reply_anchor(channel.id, BOT_NAME)
+                    if not interview_mode else None
+                )
+                partner_message = await resolve_duo_reply_anchor(
+                    channel, stored_source_id,
+                    partner_message if not interview_mode else None,
+                    partner_bot_id=PARTNER_BOT_ID or 0,
+                )
+                if stored_source_id and partner_message is None:
+                    continue  # Deleted/forbidden/incorrect source: never mis-thread.
                 await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                 user = await mem.get_user(target_message.author.id)
                 autoplay_prompt = _duo_autoplay_prompt(session)
@@ -4452,14 +4470,18 @@ async def _duo_autoplay_loop():
                 # A Discord reply renders the correct conversation ancestry.
                 # For interview sessions, the human participant is the anchor.
                 anchor = partner_message or target_message
-                await anchor.reply(
+                sent_message = await anchor.reply(
                     reply, mention_author=False,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
                 await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
                 if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
                     await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
-                await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
+                await mem.bump_duo_session(
+                    channel.id, BOT_NAME, partner_bot=PARTNER_NAME,
+                    reply_source_message_id=int(getattr(sent_message, "id", 0) or 0),
+                    reply_source_author_id=int(getattr(getattr(bot, "user", None), "id", 0) or 0),
+                )
             except asyncio.CancelledError:
                 raise
             except (discord.Forbidden, discord.NotFound) as exc:
