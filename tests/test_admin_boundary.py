@@ -17,4 +17,5 @@ def test_self_model_admin_backup_also_fails_closed():
     assert "def _owner_only(ctx) -> bool:" in bot
     at = bot.index("async def selfbackup_cmd(ctx):")
     assert "if not _owner_only(ctx):" in bot[at:at + 100]
-    assert "if not OWNER_ID or" in bot[bot.index("def _owner_only(ctx) -> bool:"):][:170]
+    assert "return is_owner_user(ctx.author.id)" in bot
+    assert "return bool(OWNER_ID and int(user_id) == OWNER_ID)" in bot
