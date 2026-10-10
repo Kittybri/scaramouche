@@ -216,7 +216,7 @@ async def test_partner_romance_tag_is_contextual_and_reply_targets_wanderer(runt
     assert "And don't expect <@77> to rescue that argument." in delivered
     assert message.reply.await_args.kwargs["mention_author"] is False
     allowed = message.reply.await_args.kwargs["allowed_mentions"]
-    assert allowed.users and not allowed.everyone and not allowed.roles
+    assert [u.id for u in allowed.users] == [77] and not allowed.everyone and not allowed.roles
 
 
 @async_test
@@ -241,7 +241,7 @@ async def test_partner_generated_mentions_remain_allowed(runtime, monkeypatch):
     })
     message.reply.assert_awaited_once()
     assert "<@77>" in message.reply.await_args.args[0]
-    assert message.reply.await_args.kwargs["allowed_mentions"].users
+    assert message.reply.await_args.kwargs["allowed_mentions"].users == []  # no eligible user
     message.channel.send.assert_not_awaited()
 
 

@@ -33,7 +33,7 @@ from character_bits import (
     is_serious_or_utility, reverse_turing_hint,
     selective_hearing_hint, significant_weather, time_drift_prompt,
 )
-from partner_banter_routing import jealousy_context, coherent_partner_reply, contextual_romance_tag
+from partner_banter_routing import jealousy_context, coherent_partner_reply, contextual_romance_tag, TurnEnvelope, authorized_ping_ids
 from interaction_policy import (
     CURRENT, Outcome, classify as classify_interaction, current_or_classify,
     authoritative_prompt, optional_allowed, optional_command_blocked, credential_disclosure,
@@ -1322,16 +1322,27 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         )
         if not reply:
             return True
-        if jealousy_target and random.random() < 0.45:
+        romance_ping_selected = bool(jealousy_target and random.random() < 0.45)
+        if romance_ping_selected:
             reply = contextual_romance_tag(
                 reply,
                 getattr(jealousy_target, "display_name", ""),
                 getattr(jealousy_target, "mention", ""),
             )
+        turn = TurnEnvelope(
+            source_message_id=int(getattr(message, "id", 0) or 0),
+            channel_id=int(message.channel.id),
+            speaker_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            speaker_kind="wanderer",
+            addressee_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            addressee_kind="wanderer",
+            romance_target_id=int(jealousy_target.id) if jealousy_target else None,
+        )
+        ping_ids = authorized_ping_ids(turn, romance_ping_selected=romance_ping_selected)
         await message.reply(
             reply, mention_author=False,
             allowed_mentions=discord.AllowedMentions(
-                users=True, roles=False, everyone=False, replied_user=False,
+                users=[discord.Object(id=uid) for uid in sorted(ping_ids)], roles=False, everyone=False, replied_user=False,
             ),
         )
 
