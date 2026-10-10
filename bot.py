@@ -1314,7 +1314,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             ),
         )
         prompt = (
-            f"{authoritative_turn_context(turn)}\\n"
+            f"{authoritative_turn_context(turn)}\n"
             f"{partner_context}{extra}\n\n"
             "PRIMARY SPEAKER: Wanderer (the bot). PRIMARY ADDRESSEE: Wanderer. "
             "This is your reply to Wanderer's Discord message, not to any spectator.\n"
