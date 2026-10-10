@@ -30,3 +30,6 @@ not evidence the person consented to be roasted or even participated.
 Run preservation and targeted message-pipeline checks, then full suites,
 then owner-approved real Discord two-bot testing. No voice or Google
 code was changed. No production/release merge or deployment performed.
+
+## Follow-up targeting clarification
+The romance-mode user may be referred to **in the third person** (without @ ping) to support an intelligible jealousy joke aimed at Wanderer. All organic banter now uses a real Discord message reply to the partner, with the partner explicitly identified in the generated text. The duo autoplay worker also replies to its latest partner message when one occurs after the selected participant's message, falling back to replying to the relevant human participant for the initial handoff. It no longer posts unanchored standalone turns. Untrusted human display names are sanitized before going into the jealousy prompt. These changes retain romance flavor while keeping the speaker and addressee distinct.

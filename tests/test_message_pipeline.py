@@ -205,7 +205,9 @@ async def test_partner_rivalry_never_targets_romance_bystander(runtime, monkeypa
 
     provider.assert_awaited_once()
     prompt = provider.await_args.args[0]
-    assert "Uninvolved Friend" not in prompt
+    assert "Uninvolved Friend" in prompt
+    assert "PRIMARY ADDRESSEE: Wanderer" in prompt
+    assert "not the speaker and not the addressee" in prompt
     assert "inventing an opinion" in prompt
     message.channel.send.assert_not_awaited()
     message.reply.assert_awaited_once()
@@ -237,6 +239,41 @@ async def test_partner_generated_mentions_suppressed_without_pinging_bystanders(
     })
     message.reply.assert_not_awaited()
     message.channel.send.assert_not_awaited()
+
+
+def test_jealousy_reference_is_safe_third_person_and_not_a_mention():
+    from partner_banter_routing import jealousy_context, coherent_partner_reply
+
+    context = jealousy_context("Wanderer", "deluluqueen")
+    assert "deluluqueen" in context
+    assert "PRIMARY_ADDRESSEE: Wanderer" in context
+    assert "third person" in context
+    assert "@" not in context
+    good = coherent_partner_reply(
+        "Your worst opinion? You think clinging to deluluqueen is subtle.",
+        "Wanderer", "deluluqueen",
+    )
+    assert good.startswith("Wanderer, ")
+    assert "deluluqueen" in good
+    assert "@" not in good
+    assert coherent_partner_reply("deluluqueen, your worst opinion is wrong.", "Wanderer", "deluluqueen") == ""
+    assert coherent_partner_reply("<@77> You're wrong.", "Wanderer", "deluluqueen") == ""
+    assert coherent_partner_reply("Wanderer, your own opinion is the problem.", "Wanderer") == (
+        "Wanderer, your own opinion is the problem."
+    )
+
+
+def test_autoplay_bot_to_bot_uses_discord_reply_not_standalone_channel_send():
+    source = (Path(__file__).parents[1] / "bot.py").read_text()
+    start = source.index("async def _duo_autoplay_loop():")
+    end = source.index("async def ", start + 12)
+    body = source[start:end]
+    assert "partner_message = candidate" in body
+    assert "anchor = partner_message or target_message" in body
+    assert "await anchor.reply(" in body
+    assert "mention_author=False" in body
+    assert "await channel.send(reply)" not in body
+
 
 async def run_coordinator(runtime, monkeypatch, *, media=False, optional=False):
     message = fake_message(runtime)
