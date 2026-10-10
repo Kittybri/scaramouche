@@ -1325,7 +1325,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         # the selected mention inside the jealous aside, never as an ambiguous
         # channel-level prefix unrelated to Wanderer's actual statement.
         reply = coherent_partner_reply(
-            reply, "Wanderer", getattr(jealousy_target, "display_name", "")
+            reply, "Wanderer", getattr(jealousy_target, "display_name", ""),
+            getattr(jealousy_target, "mention", ""),
         )
         if not reply:
             return True
