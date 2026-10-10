@@ -33,3 +33,16 @@ code was changed. No production/release merge or deployment performed.
 
 ## Follow-up targeting clarification
 The romance-mode user may be referred to **in the third person** (without @ ping) to support an intelligible jealousy joke aimed at Wanderer. All organic banter now uses a real Discord message reply to the partner, with the partner explicitly identified in the generated text. The duo autoplay worker also replies to its latest partner message when one occurs after the selected participant's message, falling back to replying to the relevant human participant for the initial handoff. It no longer posts unanchored standalone turns. Untrusted human display names are sanitized before going into the jealousy prompt. These changes retain romance flavor while keeping the speaker and addressee distinct.
+
+## Scope correction: restore the behavior the owner requested
+The initial PR disabled the old **45% romance-mode mention chance**, suppressed
+all model-generated `@` mentions and forced every reply to address Wanderer.
+Those restrictions were not requested and are now removed. The original
+probability and existing jealousy/competitive character flavor are retained.
+When the optional romance ping is selected, it is used naturally *inside*
+the jealous remark or a short coherent follow-up rather than incorrectly
+prefixed as the target of a statement by Wanderer. Discord replies continue
+to reference Wanderer's actual message. The only new targeting rule is that
+Scaramouche must not falsely attribute Wanderer's speech to the romance
+user. The overall banter frequency, relationship systems and voice remain
+unchanged.
